@@ -1,25 +1,17 @@
-// src/core/Navigator.ts
-
 import { ContentStore } from './ContentStore.js';
 import { TreeStore } from './TreeStore.js';
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
-import {
-  RetrieveRequest,
-  RetrieveResult,
-  RetrievedNode,
-  BrowseRequest,
-  BrowseResult,
-  TreeNode,
-} from './types.js';
+import { RetrieveRequest, RetrieveResult, RetrievedNode, BrowseRequest, BrowseResult, TreeNode } from './types.js';
+import { DEFAULT_PROMPTS } from '../prompts/default.js';
 
 /**
  * Navigator handles retrieval through zoom traversal
  */
 export class Navigator {
   constructor(
-    private contentStore: ContentStore,
-    private treeStore: TreeStore,
-    private llm: ILLMAdapter
+      private contentStore: ContentStore,
+      private treeStore: TreeStore,
+      private llm: ILLMAdapter
   ) {}
 
   /**
@@ -29,118 +21,121 @@ export class Navigator {
     const tree = await this.treeStore.getTree(request.treeId);
     const root = await this.treeStore.getNodeFromTree(request.treeId, tree.rootNodeId);
 
-    if (!root) {
-      throw new Error(`Root node not found for tree: ${request.treeId}`);
-    }
+    if (!root) throw new Error(`Root node not found for tree: ${request.treeId}`);
+
+    console.log(`\n🧭 Starting Exploration in Tree: ${tree.name}`);
+    console.log(`   Quest: "${request.query}"`);
 
     const navigationPath: string[] = [];
     const results: RetrievedNode[] = [];
 
-    await this.zoom(
-      root,
-      request.query,
-      request.maxDepth ?? 10,
-      request.resolution ?? 'L2',
-      navigationPath,
-      results,
-      0
+    await this.explore(
+        root,
+        request.query,
+        request.maxDepth ?? 5,
+        request.resolution ?? 'L2',
+        navigationPath,
+        results,
+        0
     );
 
+    console.log(`\n🏁 Exploration Complete. Found ${results.length} relevant nodes.`);
     return { nodes: results, navigationPath };
   }
 
-  /**
-   * Recursive zoom traversal
-   */
-  private async zoom(
-    node: TreeNode,
-    query: string,
-    maxDepth: number,
-    targetResolution: 'L0' | 'L1' | 'L2',
-    navigationPath: string[],
-    results: RetrievedNode[],
-    depth: number
+  private async explore(
+      node: TreeNode,
+      query: string,
+      maxDepth: number,
+      targetResolution: 'L0' | 'L1' | 'L2',
+      navigationPath: string[],
+      results: RetrievedNode[],
+      depth: number
   ): Promise<void> {
 
-    navigationPath.push(node.id);
-
-    // Check if this node is relevant
+    // 1. Scout: Is this node relevant?
     let relevant = false;
     let confidence = 0;
 
-    try {
-      const relevanceCheck = await this.llm.complete(
-        `Given the query "${query}", is this content relevant?\n\nGist: ${node.l0Gist}\n\nRespond with JSON: {"relevant": boolean, "confidence": number}`,
-        {}
-      );
-      const parsed = JSON.parse(relevanceCheck);
-      relevant = parsed.relevant;
-      confidence = parsed.confidence;
-    } catch (error) {
-      // If LLM fails, assume not relevant
-      console.error('Failed to check relevance:', error);
-      navigationPath.pop();
-      return;
-    }
-
-    if (!relevant || confidence < 0.5) {
-      navigationPath.pop();
-      return;
-    }
-
-    // If leaf node or max depth reached, collect result
-    const children = await this.treeStore.getChildren(node.id);
-
-    if (children.length === 0 || depth >= maxDepth) {
-      const content = await this.resolveContent(node, targetResolution);
-      results.push({
-        nodeId: node.id,
-        path: node.path,
-        resolution: targetResolution,
-        content,
-        contentId: node.contentId ?? undefined,
-      });
-      return;
-    }
-
-    // Navigate to relevant children using L1 map
-    if (node.l1Map && children.length > 0) {
-      try {
-        const routingPrompt = `
-Query: "${query}"
-
-Available children:
-${node.l1Map.childInventory.map(c => `- ${c.nodeId}: ${c.gist}`).join('\n')}
-
-Which children should be explored? Return JSON: {"childIds": ["id1", "id2"]}
-        `;
-
-        const routing = await this.llm.complete(routingPrompt, {});
-        const { childIds } = JSON.parse(routing);
-
-        for (const childId of childIds) {
-          const child = children.find(c => c.id === childId);
-          if (child) {
-            await this.zoom(child, query, maxDepth, targetResolution, navigationPath, results, depth + 1);
-          }
-        }
-      } catch (error) {
-        // If routing fails, explore all children
-        console.error('Failed to route to children:', error);
-        for (const child of children) {
-          await this.zoom(child, query, maxDepth, targetResolution, navigationPath, results, depth + 1);
-        }
-      }
+    // Optimization: Always explore Root
+    if (depth === 0) {
+      relevant = true;
+      confidence = 1.0;
     } else {
-      // No L1 map, collect this node as result
+      try {
+        const scoutJson = await this.llm.complete(
+            DEFAULT_PROMPTS.evaluateRelevance,
+            { query, gist: node.l0Gist },
+            { maxTokens: 512 }
+        );
+        const scout = JSON.parse(scoutJson);
+        relevant = scout.relevant;
+        confidence = scout.confidence;
+
+        console.log(`   🔎 [Scout] Node: ${node.l0Gist.slice(0, 40)}... -> ${relevant ? 'REL' : 'SKIP'} (${confidence})`);
+      } catch (e) {
+        console.error("Scout failed", e);
+        return; // Abort this branch
+      }
+    }
+
+    if (!relevant || confidence < 0.4) return;
+
+    navigationPath.push(node.id);
+
+    // 2. Leaf or Dive?
+    const children = await this.treeStore.getChildren(node.id);
+    const isLeaf = children.length === 0;
+
+    // If it's a leaf, OR we hit max depth, OR it's highly relevant and we want intermediate content
+    if (isLeaf || depth >= maxDepth) {
+      console.log(`   💎 Found Treasure: ${node.l0Gist.slice(0, 50)}...`);
       const content = await this.resolveContent(node, targetResolution);
       results.push({
         nodeId: node.id,
         path: node.path,
         resolution: targetResolution,
         content,
-        contentId: node.contentId ?? undefined,
+        contentId: node.contentId ?? undefined
       });
+      return;
+    }
+
+    // 3. Router: Which children to visit?
+    if (children.length > 0) {
+      const candidates = children.map(c => `- ID: ${c.id}\n  Gist: ${c.l0Gist}`).join('\n');
+
+      try {
+        const routeJson = await this.llm.complete(
+            DEFAULT_PROMPTS.routeTraversal,
+            {
+              query,
+              parentGist: node.l0Gist,
+              childrenList: candidates
+            },
+            { maxTokens: 1024 }
+        );
+
+        const route = JSON.parse(routeJson);
+        const targets = route.targetChildIds || [];
+
+        if (targets.length > 0) {
+          console.log(`   👉 Routing to ${targets.length} children: ${route.reasoning?.slice(0, 50)}...`);
+
+          // Parallel exploration? Maybe sequential for easier logging/debugging
+          for (const targetId of targets) {
+            const child = children.find(c => c.id === targetId);
+            if (child) {
+              await this.explore(child, query, maxDepth, targetResolution, navigationPath, results, depth + 1);
+            }
+          }
+        } else {
+          console.log(`   🛑 Dead End. No relevant children found.`);
+        }
+
+      } catch (e) {
+        console.error("Router failed", e);
+      }
     }
   }
 
@@ -148,15 +143,14 @@ Which children should be explored? Return JSON: {"childIds": ["id1", "id2"]}
    * Resolve content at the requested resolution level
    */
   private async resolveContent(node: TreeNode, resolution: 'L0' | 'L1' | 'L2'): Promise<string> {
+    // ... existing logic ...
     switch (resolution) {
-      case 'L0':
-        return node.l0Gist;
-      case 'L1':
-        return node.l1Map?.summary ?? node.l0Gist;
+      case 'L0': return node.l0Gist;
+      case 'L1': return node.l1Map?.summary ?? node.l0Gist;
       case 'L2':
         if (node.contentId) {
-          const content = await this.contentStore.get(node.contentId);
-          return content?.payload ?? node.l0Gist;
+          const atom = await this.contentStore.get(node.contentId);
+          return atom?.payload ?? node.l0Gist;
         }
         return node.l1Map?.summary ?? node.l0Gist;
     }
@@ -166,34 +160,19 @@ Which children should be explored? Return JSON: {"childIds": ["id1", "id2"]}
    * Manual browsing of the tree structure
    */
   async browse(request: BrowseRequest): Promise<BrowseResult> {
+    // ... existing logic ...
     const tree = await this.treeStore.getTree(request.treeId);
     const nodeId = request.nodeId ?? tree.rootNodeId;
     const node = await this.treeStore.getNodeFromTree(request.treeId, nodeId);
-
-    if (!node) {
-      throw new Error(`Node not found: ${nodeId}`);
-    }
+    if (!node) throw new Error("Node not found");
 
     const children = await this.treeStore.getChildren(nodeId);
-    const parent = node.parentId
-      ? await this.treeStore.getNode(node.parentId)
-      : null;
+    const parent = node.parentId ? await this.treeStore.getNode(node.parentId) : null;
 
     return {
-      node: {
-        id: node.id,
-        path: node.path,
-        gist: node.l0Gist,
-        summary: request.resolution === 'L1' ? node.l1Map?.summary : undefined,
-      },
-      children: children.map(c => ({
-        id: c.id,
-        gist: c.l0Gist,
-      })),
-      parent: parent ? {
-        id: parent.id,
-        gist: parent.l0Gist,
-      } : undefined,
+      node: { id: node.id, path: node.path, gist: node.l0Gist, summary: request.resolution === 'L1' ? node.l1Map?.summary : undefined },
+      children: children.map(c => ({ id: c.id, gist: c.l0Gist })),
+      parent: parent ? { id: parent.id, gist: parent.l0Gist } : undefined
     };
   }
 }

@@ -45,6 +45,8 @@ export interface PromptSet {
   placeInTree: string;
   detectHeresy: string;             // Audit summaries for accuracy
   findSplitAnchors: string;
+  evaluateRelevance: string;
+  routeTraversal: string;
 }
 
 // ============ CONTENT LAYER ============

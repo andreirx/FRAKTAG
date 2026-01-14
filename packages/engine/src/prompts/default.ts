@@ -137,7 +137,37 @@ Content:
 ---
 
 Respond ONLY with JSON:
-{ "anchors": ["Chapter 1: Introduction...", "The second concept is...", "### Technical Details..."] }`
+{ "anchors": ["Chapter 1: Introduction...", "The second concept is...", "### Technical Details..."] }`,
+  evaluateRelevance: `You are the Scout. Your job is to determine if this knowledge node is relevant to the user's quest.
+
+Quest (Query): "{{query}}"
+
+Node Gist:
+"{{gist}}"
+
+Evaluate relevance.
+- If it seems irrelevant, return relevant: false.
+- If it might contain clues or direct answers, return relevant: true.
+- Confidence: 0.0 to 1.0.
+
+Respond ONLY with JSON:
+{"relevant": boolean, "confidence": number, "reasoning": "short explanation"}`,
+
+  routeTraversal: `You are the Navigator. You are exploring a knowledge tree to answer a query.
+You are currently at a parent node. You must decide which children to visit next.
+
+Quest (Query): "{{query}}"
+
+Parent Context: {{parentGist}}
+
+Available Paths (Children):
+{{childrenList}}
+
+Select the paths that are most likely to contain the answer. You can select multiple.
+If none are relevant, select none.
+
+Respond ONLY with JSON:
+{"targetChildIds": ["id1", "id2"], "reasoning": "why these paths?"}`
 };
 
 /**

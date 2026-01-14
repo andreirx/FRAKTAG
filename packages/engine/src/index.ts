@@ -9,6 +9,7 @@ import { Navigator } from './core/Navigator.js';
 import { JsonStorage } from './adapters/storage/JsonStorage.js';
 import { ILLMAdapter } from './adapters/llm/ILLMAdapter.js';
 import { OllamaAdapter } from './adapters/llm/OllamaAdapter.js';
+import {OpenAIAdapter} from "./adapters/llm/OpenAIAdapter.js";
 import { DEFAULT_PROMPTS } from './prompts/default.js';
 import {
   FraktagConfig,
@@ -461,7 +462,14 @@ export class Fraktag {
           model: config.model,
         });
       case 'openai':
-        throw new Error('OpenAI adapter not yet implemented');
+        if (!config.apiKey) {
+          throw new Error('OpenAI adapter requires an apiKey in config');
+        }
+        return new OpenAIAdapter({
+          apiKey: config.apiKey,
+          model: config.model,
+          endpoint: config.endpoint // Optional override
+        });
       case 'anthropic':
         throw new Error('Anthropic adapter not yet implemented');
       default:

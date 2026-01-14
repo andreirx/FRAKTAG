@@ -58,6 +58,29 @@ async function main() {
             printTree(root, 0);
             break;
 
+        case 'retrieve':
+            if (!ARG1) throw new Error('Usage: retrieve <query> [treeId]');
+            const query = ARG1;
+            const searchTreeId = ARG2 || 'notes';
+
+            const results = await fraktag.retrieve({
+                treeId: searchTreeId,
+                query: query,
+                maxDepth: 5,
+                resolution: 'L2' // We want high fidelity content
+            });
+
+            console.log('\n=========================================');
+            console.log(`RESULTS FOR: "${query}"`);
+            console.log('=========================================');
+
+            results.nodes.forEach((res, i) => {
+                console.log(`\n[Result ${i+1}] Path: ${res.path}`);
+                console.log('-----------------------------------------');
+                console.log(res.content.trim());
+            });
+            break;
+
         case 'verify':
             const vId = ARG1 || 'default';
             const res = await fraktag.verifyTree(vId);
