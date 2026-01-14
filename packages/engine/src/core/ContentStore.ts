@@ -104,8 +104,9 @@ export class ContentStore {
 
   /**
    * Calculate SHA-256 hash of content
+   * Public to allow external deduplication checks
    */
-  private calculateHash(content: string): string {
+  calculateHash(content: string): string {
     const hash = createHash('sha256');
     hash.update(content, 'utf-8');
     return `sha256:${hash.digest('hex')}`;

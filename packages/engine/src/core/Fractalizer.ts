@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { ContentStore } from './ContentStore.js';
 import { TreeStore } from './TreeStore.js';
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
-import { TreeNode, IngestionConfig, PromptSet } from './types.js';
+import { TreeNode, IngestionConfig, PromptSet, TreeConfig } from './types.js';
 
 /**
  * Fractalizer handles content ingestion: splitting, summarizing, and bubble-up
@@ -19,7 +19,9 @@ export class Fractalizer {
   ) {}
 
   /**
-   * Ingest content into a tree, recursively splitting if needed
+   * Ingest content into a tree
+   * If parentId is provided -> Direct placement (splitting use case)
+   * If parentId is null -> Auto-placement (sorting use case)
    */
   async ingest(
     content: string,
@@ -43,7 +45,40 @@ export class Fractalizer {
       { content, organizingPrinciple: tree.organizingPrinciple }
     );
 
-    // 3. Check split decision
+    // 3. Route based on whether parent is specified
+    if (parentId) {
+      // Direct placement with potential splitting
+      return this.processContentWithSplitting(
+        content,
+        contentAtom.id,
+        gist,
+        treeId,
+        parentId,
+        currentPath,
+        depth
+      );
+    } else {
+      // Auto-placement (intelligent sorting)
+      return this.autoPlace(contentAtom.id, gist, treeId);
+    }
+  }
+
+  /**
+   * Process content with splitting logic (for large documents)
+   */
+  private async processContentWithSplitting(
+    content: string,
+    contentId: string,
+    gist: string,
+    treeId: string,
+    parentId: string,
+    currentPath: string,
+    depth: number
+  ): Promise<TreeNode> {
+
+    const tree = await this.treeStore.getTree(treeId);
+
+    // Check split decision
     const wordCount = content.split(/\s+/).length;
     let shouldSplit = false;
     let sections: string[] = [];
@@ -58,13 +93,12 @@ export class Fractalizer {
         shouldSplit = parsed.split;
         sections = parsed.suggestedSections || [];
       } catch (error) {
-        // If LLM response is invalid, don't split
         console.error('Failed to parse split decision:', error);
         shouldSplit = false;
       }
     }
 
-    // 4. Create node
+    // Create node
     const nodeId = randomUUID();
     const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
 
@@ -73,7 +107,7 @@ export class Fractalizer {
       treeId,
       parentId,
       path,
-      contentId: contentAtom.id,
+      contentId,
       l0Gist: gist,
       l1Map: null,
       sortOrder: 0,
@@ -81,7 +115,7 @@ export class Fractalizer {
       updatedAt: new Date().toISOString(),
     };
 
-    // 5. Recurse if splitting
+    // Recurse if splitting
     if (shouldSplit && sections.length > 0) {
       try {
         const chunksResponse = await this.llm.complete(
@@ -93,13 +127,21 @@ export class Fractalizer {
         const children: TreeNode[] = [];
         for (let i = 0; i < parsedChunks.length; i++) {
           const chunk = parsedChunks[i];
-          const child = await this.ingest(chunk, treeId, nodeId, path, depth + 1);
+          const child = await this.processContentWithSplitting(
+            chunk,
+            contentId,
+            gist,
+            treeId,
+            nodeId,
+            path,
+            depth + 1
+          );
           child.sortOrder = i;
           await this.treeStore.saveNode(child);
           children.push(child);
         }
 
-        // 6. Bubble-up: generate L1 from children
+        // Bubble-up: generate L1 from children
         const childGists = children.map(c => c.l0Gist);
         const l1Summary = await this.llm.complete(
           this.prompts.generateL1,
@@ -116,19 +158,170 @@ export class Fractalizer {
           outboundRefs: [],
         };
       } catch (error) {
-        // If splitting fails, keep as single node
         console.error('Failed to split content:', error);
       }
     }
 
     await this.treeStore.saveNode(node);
 
-    // 7. Update parent's L1 if exists
+    // Update parent's L1 if exists
     if (parentId) {
       await this.bubbleUp(parentId);
     }
 
     return node;
+  }
+
+  /**
+   * INTELLIGENT AUTO-PLACEMENT
+   * Uses LLM to recursively find the right spot in the tree hierarchy
+   */
+  async autoPlace(
+    contentId: string,
+    gist: string,
+    treeId: string
+  ): Promise<TreeNode> {
+    const tree = await this.treeStore.getTree(treeId);
+
+    // Start at root
+    let currentParentId = tree.rootNodeId;
+    let currentParent = await this.treeStore.getNodeFromTree(treeId, currentParentId);
+
+    if (!currentParent) {
+      throw new Error(`Root node not found for tree: ${treeId}`);
+    }
+
+    const maxPlacementDepth = 3; // Don't auto-sort too deep
+    let depth = 0;
+
+    // Recursive routing to find the right spot
+    while (depth < maxPlacementDepth) {
+      const children = await this.treeStore.getChildren(currentParentId);
+
+      // If no children, place here
+      if (children.length === 0) {
+        break;
+      }
+
+      // Ask LLM where to route
+      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
+
+      try {
+        const placementJson = await this.llm.complete(
+          this.prompts.placeInTree,
+          {
+            organizingPrinciple: tree.organizingPrinciple,
+            placementStrategy: this.getPlacementStrategy(tree),
+            gist,
+            availableNodes: candidates || 'No existing categories',
+          }
+        );
+
+        const decision = JSON.parse(placementJson);
+
+        // Case A: Place in existing child -> recurse down
+        if (decision.parentNodeId && decision.parentNodeId !== currentParentId) {
+          const nextNode = children.find(c => c.id === decision.parentNodeId);
+          if (nextNode) {
+            currentParentId = nextNode.id;
+            currentParent = nextNode;
+            depth++;
+            continue;
+          }
+        }
+
+        // Case B: Create new category container
+        if (decision.createNodes && decision.createNodes.length > 0) {
+          const categoryName = decision.createNodes[0];
+          const categoryNode = await this.createOrganizationalNode(
+            treeId,
+            currentParentId,
+            currentParent.path,
+            categoryName
+          );
+
+          // Place content inside this new category
+          currentParentId = categoryNode.id;
+          currentParent = categoryNode;
+          break;
+        }
+
+        // Case C: Place at current level
+        break;
+
+      } catch (error) {
+        console.error('Placement routing error:', error);
+        break;
+      }
+    }
+
+    // Final placement: create the content node
+    const content = await this.contentStore.get(contentId);
+    if (!content) {
+      throw new Error(`Content not found: ${contentId}`);
+    }
+
+    return this.processContentWithSplitting(
+      content.payload,
+      contentId,
+      gist,
+      treeId,
+      currentParentId,
+      currentParent.path,
+      0
+    );
+  }
+
+  /**
+   * Create an organizational node (container with no content)
+   */
+  private async createOrganizationalNode(
+    treeId: string,
+    parentId: string,
+    parentPath: string,
+    name: string
+  ): Promise<TreeNode> {
+    // Generate a clean ID from the name
+    const id = `${parentId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    const path = `${parentPath}/${id}`;
+
+    // Check if it already exists
+    const existing = await this.treeStore.getNodeFromTree(treeId, id);
+    if (existing) {
+      return existing;
+    }
+
+    const node: TreeNode = {
+      id,
+      treeId,
+      parentId,
+      path,
+      contentId: null, // Organizational node
+      l0Gist: name,
+      l1Map: null,
+      sortOrder: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.treeStore.saveNode(node);
+
+    // Update parent's L1
+    if (parentId) {
+      await this.bubbleUp(parentId);
+    }
+
+    return node;
+  }
+
+  /**
+   * Get placement strategy for a tree
+   */
+  private getPlacementStrategy(tree: TreeConfig | { organizingPrinciple: string; placementStrategy?: string }): string {
+    if ('placementStrategy' in tree && tree.placementStrategy) {
+      return tree.placementStrategy;
+    }
+    return 'Group by related topics and themes';
   }
 
   /**
@@ -183,51 +376,5 @@ export class Fractalizer {
     if (node.parentId) {
       await this.regenerateSummaries(node.parentId);
     }
-  }
-
-  /**
-   * Auto-place content in a tree based on placement strategy
-   */
-  async autoPlace(
-    contentId: string,
-    gist: string,
-    treeId: string
-  ): Promise<TreeNode> {
-    const tree = await this.treeStore.getTree(treeId);
-    const rootNode = await this.treeStore.getNodeFromTree(treeId, tree.rootNodeId);
-
-    if (!rootNode) {
-      throw new Error(`Root node not found for tree: ${treeId}`);
-    }
-
-    // For now, place everything at root
-    // In a full implementation, this would use LLM to determine placement
-    const content = await this.contentStore.get(contentId);
-    if (!content) {
-      throw new Error(`Content not found: ${contentId}`);
-    }
-
-    const nodeId = randomUUID();
-    const path = `${rootNode.path}${nodeId}`;
-
-    const node: TreeNode = {
-      id: nodeId,
-      treeId,
-      parentId: rootNode.id,
-      path,
-      contentId,
-      l0Gist: gist,
-      l1Map: null,
-      sortOrder: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await this.treeStore.saveNode(node);
-
-    // Update parent's L1
-    await this.bubbleUp(rootNode.id);
-
-    return node;
   }
 }
