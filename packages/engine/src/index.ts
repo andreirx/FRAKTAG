@@ -150,17 +150,12 @@ export class Fraktag {
           path: node.path,
         });
       } else {
-        // Auto-placement: ingest at root first, then place
-        const rootNode = await this.treeStore.getNodeFromTree(treeId, tree.rootNodeId);
-        if (!rootNode) {
-          throw new Error(`Root node not found for tree: ${treeId}`);
-        }
-
+        // Auto-placement: let fractalizer intelligently place content
         const node = await this.fractalizer.ingest(
           request.content,
           treeId,
-          rootNode.id,
-          rootNode.path,
+          null, // Triggers auto-placement logic
+          '',
           0
         );
 
@@ -197,6 +192,95 @@ export class Fraktag {
     } catch (error) {
       throw new Error(`Failed to ingest URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  /**
+   * Upsert content (Update if exists, Insert if new)
+   * Ideal for syncing from external sources like Apple Notes
+   * @param request - Standard ingest request with externalId for tracking
+   * @returns IngestResult with placement information
+   */
+  async upsert(request: IngestRequest & { externalId: string }): Promise<IngestResult> {
+    // Use sourceUri as the primary tracking key
+    const uri = request.sourceUri || `external:${request.externalId}`;
+
+    // Look for existing content with this sourceUri
+    const allContentIds = await this.contentStore.listIds();
+    let existingAtom: ContentAtom | null = null;
+
+    for (const id of allContentIds) {
+      const atom = await this.contentStore.get(id);
+      if (atom && atom.sourceUri === uri) {
+        existingAtom = atom;
+        break;
+      }
+    }
+
+    if (existingAtom) {
+      // Check if content has changed
+      const newHash = this.contentStore.calculateHash(request.content);
+
+      if (existingAtom.hash === newHash) {
+        // No change - return existing placements
+        const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
+        return {
+          contentId: existingAtom.id,
+          placements: nodes.map(n => ({ treeId: n.treeId, nodeId: n.id, path: n.path })),
+        };
+      }
+
+      // Content has changed - create new version
+      const newAtom = await this.contentStore.create({
+        payload: request.content,
+        mediaType: request.mediaType || existingAtom.mediaType,
+        sourceUri: uri,
+        createdBy: existingAtom.createdBy,
+        supersedes: existingAtom.id,
+        metadata: { ...existingAtom.metadata, ...request.metadata },
+      });
+
+      // Update all tree nodes that reference this content
+      const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
+      const placements: IngestResult['placements'] = [];
+
+      for (const node of nodes) {
+        // Update content reference
+        node.contentId = newAtom.id;
+        node.updatedAt = new Date().toISOString();
+
+        // Regenerate gist with new content
+        const tree = await this.treeStore.getTree(node.treeId);
+        try {
+          const newGist = await this.llm.complete(
+            DEFAULT_PROMPTS.generateGist,
+            { content: request.content, organizingPrinciple: tree.organizingPrinciple }
+          );
+          node.l0Gist = newGist;
+        } catch (error) {
+          console.error('Failed to regenerate gist:', error);
+        }
+
+        await this.treeStore.saveNode(node);
+
+        // Bubble up changes to ancestors
+        try {
+          await this.fractalizer.regenerateSummaries(node.id);
+        } catch (error) {
+          console.error('Failed to regenerate summaries:', error);
+        }
+
+        placements.push({
+          treeId: node.treeId,
+          nodeId: node.id,
+          path: node.path,
+        });
+      }
+
+      return { contentId: newAtom.id, placements };
+    }
+
+    // New content - use standard ingest with sourceUri
+    return this.ingest({ ...request, sourceUri: uri });
   }
 
   // ============ RETRIEVAL ============
