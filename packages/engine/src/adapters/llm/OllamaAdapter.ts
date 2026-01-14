@@ -49,6 +49,9 @@ export class OllamaAdapter implements ILLMAdapter {
         ? options.maxTokens 
         : (isSplitRequest ? -1 : 4096); // -1 = Infinite/Context Limit
 
+    // Check if we expect JSON (heuristic based on prompt content)
+    const expectsJSON = prompt.includes('Respond ONLY with JSON') || prompt.includes('Return a JSON list');
+
     try {
       const response = await fetch(`${this.endpoint}/api/generate`, {
         method: 'POST',
@@ -105,6 +108,13 @@ export class OllamaAdapter implements ILLMAdapter {
       this.log(`   ✅ Complete. Raw Output Length: ${fullText.length} chars`);
       
       const cleaned = this.cleanOutput(fullText);
+      const json = this.extractJSON(fullText);
+
+      // if it's supposed to be JSON, then make it JSON
+      if (expectsJSON) {
+        this.log(`   JSON Output: ${json}`);
+        return json;
+      }
 
       // LOG RAW IF CLEAN IS EMPTY
       if (cleaned.length === 0 && fullText.length > 0) {
@@ -123,6 +133,33 @@ export class OllamaAdapter implements ILLMAdapter {
     } catch (error) {
       this.log(`   ❌ LLM Error: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
+    }
+  }
+
+  // ROBUST JSON EXTRACTOR
+  private extractJSON(text: string): string {
+    // 1. Find the first '{'
+    const start = text.indexOf('{');
+    // 2. Find the last '}'
+    const end = text.lastIndexOf('}');
+
+    if (start === -1 || end === -1 || end < start) {
+      // Fallback: Try cleaning and hoping
+      this.log("   ⚠️  Warning: JSON delimiters not found, attempting standard clean");
+      return this.cleanOutput(text);
+    }
+
+    // 3. Extract just the JSON payload
+    const jsonCandidate = text.slice(start, end + 1);
+
+    // 4. Quick validity check (optional, but good for debugging)
+    try {
+      JSON.parse(jsonCandidate);
+      return jsonCandidate; // It's valid!
+    } catch (e) {
+      this.log("   ⚠️  Warning: Extracted JSON was invalid, returning standard clean");
+      // If extraction failed (e.g. nested braces messed us up), fallback
+      return this.cleanOutput(text);
     }
   }
 
