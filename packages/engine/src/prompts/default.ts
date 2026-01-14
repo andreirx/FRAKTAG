@@ -80,7 +80,41 @@ Content gist: {{gist}}
 Available parent nodes:
 {{availableNodes}}
 
-Respond with JSON: {"parentNodeId": "id", "createNodes": ["name1", "name2"], "reasoning": "..."}`
+Respond with JSON: {"parentNodeId": "id", "createNodes": ["name1", "name2"], "reasoning": "..."}`,
+
+  detectHeresy: `You are the Inquisitor. Your job is to detect "Heresy" in a generated summary.
+
+Heresy is defined as:
+- HALLUCINATION: Adding facts not present in the source
+- OMISSION: Removing critical warnings, caveats, or key details
+- DISTORTION: Misrepresenting the tone, intent, or meaning
+- MISCATEGORIZATION: Summary doesn't match the organizing principle
+
+DOGMA (Rules for this tree):
+- The summary must be a faithful compression of the source
+- Do not add information not present in the source
+- Do not omit critical context or warnings
+- Organizing Principle: {{organizingPrinciple}}
+
+Source Content:
+---
+{{content}}
+---
+
+Proposed Summary:
+---
+{{summary}}
+---
+
+Evaluate the summary against the source.
+
+If the summary is accurate and faithful, respond with:
+{"status": "PASS", "reason": "Summary accurately represents source"}
+
+If the summary contains heresy, respond with:
+{"status": "FAIL", "reason": "Specific explanation of the heresy", "correctedSummary": "Your corrected version"}
+
+Respond ONLY with JSON.`
 };
 
 /**

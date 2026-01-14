@@ -24,6 +24,11 @@ export interface TreeConfig {
   organizingPrinciple: string;      // Injected into L0/L1 generation prompts
   autoPlace: boolean;               // Auto-place ingested content in this tree
   placementStrategy?: string;       // Prompt fragment for auto-placement logic
+  dogma?: {                         // Heresy prevention rules
+    strictness: 'lenient' | 'strict' | 'fanatical';
+    forbiddenConcepts?: string[];   // Concepts to exclude from summaries
+    requiredContext?: string[];     // Context that must be preserved
+  };
 }
 
 export interface IngestionConfig {
@@ -38,6 +43,7 @@ export interface PromptSet {
   generateGist: string;
   generateL1: string;
   placeInTree: string;
+  detectHeresy: string;             // Audit summaries for accuracy
 }
 
 // ============ CONTENT LAYER ============
