@@ -44,6 +44,7 @@ export interface PromptSet {
   generateL1: string;
   placeInTree: string;
   detectHeresy: string;             // Audit summaries for accuracy
+  findSplitAnchors: string;
 }
 
 // ============ CONTENT LAYER ============

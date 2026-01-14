@@ -9,10 +9,14 @@ export interface ILLMAdapter {
    * Complete a prompt with the configured LLM
    * @param prompt - The prompt template or direct prompt text
    * @param variables - Variables to substitute in the prompt (if using templates)
+   * @param options - Optional maximum number of tokens
    * @returns The completion text from the LLM
    */
-  complete(prompt: string, variables: Record<string, string | number | string[]>): Promise<string>;
-
+  complete(
+    prompt: string, 
+    variables: Record<string, string | number | string[]>,
+    options?: { maxTokens?: number }
+  ): Promise<string>;
   /**
    * Test the connection to the LLM service
    * @returns true if connection is successful, false otherwise

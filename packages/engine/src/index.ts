@@ -203,6 +203,7 @@ export class Fraktag {
   async upsert(request: IngestRequest & { externalId: string }): Promise<IngestResult> {
     // Use sourceUri as the primary tracking key
     const uri = request.sourceUri || `external:${request.externalId}`;
+    console.log(`📦 [Upsert] Processing: ${uri}`);
 
     // Look for existing content with this sourceUri
     const allContentIds = await this.contentStore.listIds();
@@ -279,6 +280,7 @@ export class Fraktag {
       return { contentId: newAtom.id, placements };
     }
 
+    console.log(`   ➔ New content detected. Triggering Ingest...`);
     // New content - use standard ingest with sourceUri
     return this.ingest({ ...request, sourceUri: uri });
   }

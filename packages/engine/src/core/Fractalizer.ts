@@ -1,4 +1,4 @@
-// src/core/Fractalizer.ts
+// packages/engine/src/core/Fractalizer.ts
 
 import { randomUUID } from 'crypto';
 import { ContentStore } from './ContentStore.js';
@@ -30,27 +30,21 @@ export class Fractalizer {
     currentPath: string,
     depth: number = 0
   ): Promise<TreeNode> {
-
-    // 1. Store content atom
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
       createdBy: 'system',
     });
 
-    // 2. Generate gist
     const tree = await this.treeStore.getTree(treeId);
     const rawGist = await this.llm.complete(
       this.prompts.generateGist,
       { content, organizingPrinciple: tree.organizingPrinciple }
     );
 
-    // 2.5. The Inquisition - audit gist for accuracy
     const gist = await this.sanctify(content, rawGist, treeId, 'L0');
 
-    // 3. Route based on whether parent is specified
     if (parentId) {
-      // Direct placement with potential splitting
       return this.processContentWithSplitting(
         content,
         contentAtom.id,
@@ -61,7 +55,6 @@ export class Fractalizer {
         depth
       );
     } else {
-      // Auto-placement (intelligent sorting)
       return this.autoPlace(contentAtom.id, gist, treeId);
     }
   }
@@ -80,28 +73,26 @@ export class Fractalizer {
   ): Promise<TreeNode> {
 
     const tree = await this.treeStore.getTree(treeId);
-
-    // Check split decision
     const wordCount = content.split(/\s+/).length;
     let shouldSplit = false;
-    let sections: string[] = [];
+    let suggestedSections: string[] = [];
 
+    // 1. Decide IF we should split
     if (wordCount > this.config.splitThreshold && depth < this.config.maxDepth) {
       try {
-        const decision = await this.llm.complete(
+        const decisionJson = await this.llm.complete(
           this.prompts.shouldSplit,
           { content, threshold: this.config.splitThreshold }
         );
-        const parsed = JSON.parse(decision);
+        const parsed = JSON.parse(decisionJson);
         shouldSplit = parsed.split;
-        sections = parsed.suggestedSections || [];
+        suggestedSections = parsed.suggestedSections || [];
       } catch (error) {
         console.error('Failed to parse split decision:', error);
         shouldSplit = false;
       }
     }
 
-    // Create node
     const nodeId = randomUUID();
     const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
 
@@ -118,22 +109,48 @@ export class Fractalizer {
       updatedAt: new Date().toISOString(),
     };
 
-    // Recurse if splitting
-    if (shouldSplit && sections.length > 0) {
+    // 2. Perform Surgical Split
+    if (shouldSplit) {
       try {
-        const chunksResponse = await this.llm.complete(
-          this.prompts.split,
-          { content, sections: sections.join(', ') }
+        console.log(`   🔪 Surgical Split initiated based on: ${suggestedSections.join(', ')}`);
+        
+        const anchorsJson = await this.llm.complete(
+          this.prompts.findSplitAnchors,
+          { content, sections: suggestedSections.join(', ') },
+          { maxTokens: 4096 } // We only need a JSON list, small output
         );
-        const parsedChunks: string[] = JSON.parse(chunksResponse);
+
+        const { anchors } = JSON.parse(anchorsJson) as { anchors: string[] };
+        
+        // EXECUTE THE CUTS
+        const chunks = this.executeCuts(content, anchors);
+        console.log(`   ✂️  Cut into ${chunks.length} chunks`);
 
         const children: TreeNode[] = [];
-        for (let i = 0; i < parsedChunks.length; i++) {
-          const chunk = parsedChunks[i];
+        
+        // 3. Process Children
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          
+          // Materialize Chunk
+          const chunkAtom = await this.contentStore.create({
+              payload: chunk,
+              mediaType: 'text/plain',
+              createdBy: 'system',
+              metadata: { parentContentId: contentId, splitIndex: i, isDerivedChunk: true }
+          });
+
+          // Generate Unique Gist for Chunk
+          const chunkGistRaw = await this.llm.complete(
+              this.prompts.generateGist,
+              { content: chunk, organizingPrinciple: tree.organizingPrinciple }
+          );
+          const chunkGist = await this.sanctify(chunk, chunkGistRaw, treeId, 'L0');
+
           const child = await this.processContentWithSplitting(
             chunk,
-            contentId,
-            gist,
+            chunkAtom.id,
+            chunkGist,
             treeId,
             nodeId,
             path,
@@ -144,7 +161,7 @@ export class Fractalizer {
           children.push(child);
         }
 
-        // Bubble-up: generate L1 from children
+        // 4. Generate L1 Map
         const childGists = children.map(c => c.l0Gist);
         const rawL1Summary = await this.llm.complete(
           this.prompts.generateL1,
@@ -155,7 +172,6 @@ export class Fractalizer {
           }
         );
 
-        // The Inquisition - audit L1 summary
         const childGistsText = childGists.join('\n');
         const l1Summary = await this.sanctify(childGistsText, rawL1Summary, treeId, 'L1');
 
@@ -165,19 +181,66 @@ export class Fractalizer {
           outboundRefs: [],
         };
       } catch (error) {
-        console.error('Failed to split content:', error);
+        console.error('Failed to perform surgical split:', error);
       }
     }
 
     await this.treeStore.saveNode(node);
 
-    // Update parent's L1 if exists
     if (parentId) {
       await this.bubbleUp(parentId);
     }
 
     return node;
   }
+
+  // Helper: The Knife
+  private executeCuts(content: string, anchors: string[]): string[] {
+    const chunks: string[] = [];
+    let lastIndex = 0;
+
+    // Sort anchors by position in text to ensure sequential cutting
+    // Note: We scan from lastIndex to avoid duplicate phrases appearing earlier causing loops
+    const sortedCutPoints: number[] = [];
+    
+    let searchCursor = 0;
+    for (const anchor of anchors) {
+        const idx = content.indexOf(anchor, searchCursor);
+        if (idx !== -1) {
+            sortedCutPoints.push(idx);
+            // Move cursor forward, but allow some overlap if anchors are close? 
+            // Better to strictly move past the anchor.
+            searchCursor = idx + 1; 
+        } else {
+            console.warn(`   ⚠️  Anchor not found: "${anchor.slice(0, 20)}..."`);
+        }
+    }
+
+    // If the first anchor isn't at 0, we have a "Pre-amble" chunk
+    if (sortedCutPoints.length > 0 && sortedCutPoints[0] > 0) {
+        // Option A: Treat 0->FirstAnchor as a chunk
+        // Option B: Assume the first anchor was supposed to be the start
+        // Let's go with Option A to be safe against data loss
+        sortedCutPoints.unshift(0); 
+    }
+
+    // Slice and Dice
+    for (let i = 0; i < sortedCutPoints.length; i++) {
+        const start = sortedCutPoints[i];
+        const end = sortedCutPoints[i + 1] ?? content.length; // Defaults to end of string
+        
+        const text = content.slice(start, end).trim();
+        if (text.length > 0) {
+            chunks.push(text);
+        }
+    }
+
+    // Fallback: If no anchors matched, return original
+    if (chunks.length === 0) return [content];
+
+    return chunks;
+  }
+
 
   /**
    * INTELLIGENT AUTO-PLACEMENT
@@ -190,7 +253,6 @@ export class Fractalizer {
   ): Promise<TreeNode> {
     const tree = await this.treeStore.getTree(treeId);
 
-    // Start at root
     let currentParentId = tree.rootNodeId;
     let currentParent = await this.treeStore.getNodeFromTree(treeId, currentParentId);
 
@@ -198,20 +260,17 @@ export class Fractalizer {
       throw new Error(`Root node not found for tree: ${treeId}`);
     }
 
-    const maxPlacementDepth = 3; // Don't auto-sort too deep
+    const maxPlacementDepth = 3;
     let depth = 0;
 
-    // Recursive routing to find the right spot
     while (depth < maxPlacementDepth) {
       const children = await this.treeStore.getChildren(currentParentId);
 
-      // If no children, place here
       if (children.length === 0) {
         break;
       }
 
-      // Ask LLM where to route
-      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
+      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\\n');
 
       try {
         const placementJson = await this.llm.complete(
@@ -226,7 +285,6 @@ export class Fractalizer {
 
         const decision = JSON.parse(placementJson);
 
-        // Case A: Place in existing child -> recurse down
         if (decision.parentNodeId && decision.parentNodeId !== currentParentId) {
           const nextNode = children.find(c => c.id === decision.parentNodeId);
           if (nextNode) {
@@ -237,7 +295,6 @@ export class Fractalizer {
           }
         }
 
-        // Case B: Create new category container
         if (decision.createNodes && decision.createNodes.length > 0) {
           const categoryName = decision.createNodes[0];
           const categoryNode = await this.createOrganizationalNode(
@@ -246,14 +303,10 @@ export class Fractalizer {
             currentParent.path,
             categoryName
           );
-
-          // Place content inside this new category
           currentParentId = categoryNode.id;
           currentParent = categoryNode;
           break;
         }
-
-        // Case C: Place at current level
         break;
 
       } catch (error) {
@@ -262,7 +315,6 @@ export class Fractalizer {
       }
     }
 
-    // Final placement: create the content node
     const content = await this.contentStore.get(contentId);
     if (!content) {
       throw new Error(`Content not found: ${contentId}`);
@@ -288,11 +340,9 @@ export class Fractalizer {
     parentPath: string,
     name: string
   ): Promise<TreeNode> {
-    // Generate a clean ID from the name
     const id = `${parentId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     const path = `${parentPath}/${id}`;
 
-    // Check if it already exists
     const existing = await this.treeStore.getNodeFromTree(treeId, id);
     if (existing) {
       return existing;
@@ -342,14 +392,10 @@ export class Fractalizer {
     treeId: string,
     summaryType: 'L0' | 'L1' = 'L0'
   ): Promise<string> {
+    console.log(`\\n🔍 [The Inquisitor] Inspecting ${summaryType} for Tree: ${treeId}`);
     try {
       const tree = await this.treeStore.getTree(treeId);
-
-      // Optimization: For very large content, sample first 3000 chars
-      // L1 summaries are compared against child gists, not full content
-      const contentSample = summaryType === 'L0'
-        ? content.slice(0, 3000)
-        : content; // For L1, content is already the concatenated child gists
+      const contentSample = summaryType === 'L0' ? content.slice(0, 3000) : content;
 
       const heresyCheck = await this.llm.complete(
         this.prompts.detectHeresy,
@@ -360,15 +406,19 @@ export class Fractalizer {
         }
       );
 
-      const verdict = JSON.parse(heresyCheck);
+      let verdict;
+      try {
+         verdict = JSON.parse(heresyCheck);
+      } catch (parseError) {
+         console.error(`💥 [Inquisitor] JSON Parse Failed!`);
+         console.error(`   Raw LLM Output: "${heresyCheck}"`);
+         return proposedSummary;
+      }
 
       if (verdict.status === 'FAIL') {
-        console.warn(`[HERESY DETECTED] Tree: ${treeId}, Type: ${summaryType}`);
-        console.warn(`Reason: ${verdict.reason}`);
-
-        // If the Inquisitor provided a correction, use it
+        console.warn(`⚠️ [HERESY DETECTED] Reason: ${verdict.reason}`);
         if (verdict.correctedSummary) {
-          console.warn(`Using corrected summary`);
+          console.log(`   ✨ Applying Correction`);
           return verdict.correctedSummary;
         }
 
@@ -377,12 +427,11 @@ export class Fractalizer {
         return proposedSummary;
       }
 
-      // Passed the Inquisition
+      console.log(`   ✅ PASS`);
       return proposedSummary;
 
     } catch (error) {
-      // If the Inquisitor fails, log and pass through
-      console.error('Inquisitor malfunction:', error);
+      console.error('   ❌ Inquisitor Malfunction:', error);
       return proposedSummary;
     }
   }
@@ -410,8 +459,7 @@ export class Fractalizer {
         }
       );
 
-      // The Inquisition - audit L1 summary during bubble-up
-      const childGistsText = childGists.join('\n');
+      const childGistsText = childGists.join('\\n');
       const l1Summary = await this.sanctify(childGistsText, rawL1Summary, node.treeId, 'L1');
 
       node.l1Map = {
@@ -435,11 +483,7 @@ export class Fractalizer {
     if (!node) {
       throw new Error(`Node not found: ${nodeId}`);
     }
-
-    // Regenerate this node's L1
     await this.bubbleUp(nodeId);
-
-    // Propagate up to parent
     if (node.parentId) {
       await this.regenerateSummaries(node.parentId);
     }

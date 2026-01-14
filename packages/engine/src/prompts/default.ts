@@ -23,12 +23,14 @@ Content:
 Respond ONLY with JSON:
 {"split": boolean, "reasoning": "one sentence", "suggestedSections": ["section1", "section2"]}`,
 
+  // CHANGED: Removed JSON requirement. Using Delimiter strategy.
   split: `Split this content into distinct logical units based on the suggested sections.
 
 Guidelines:
 - Each chunk must be self-contained
 - Preserve context within each chunk
 - Maintain original formatting
+- Separate each chunk EXACTLY with the delimiter: ---===FRAKTAG_SPLIT===---
 
 Suggested sections: {{sections}}
 
@@ -37,7 +39,7 @@ Content:
 {{content}}
 ---
 
-Return ONLY a JSON array of strings: ["chunk1...", "chunk2..."]`,
+Output the full text chunks separated by the delimiter. Do not use JSON.`,
 
   generateGist: `Write a 1-sentence gist (15-25 words) for this content.
 
@@ -114,7 +116,28 @@ If the summary is accurate and faithful, respond with:
 If the summary contains heresy, respond with:
 {"status": "FAIL", "reason": "Specific explanation of the heresy", "correctedSummary": "Your corrected version"}
 
-Respond ONLY with JSON.`
+Respond ONLY with JSON.`,
+  // NEW: The Surgical Prompt
+  findSplitAnchors: `Analyze the content and identify the logical breakpoints to split it into sections.
+
+Task: Return a JSON list of "Anchors".
+An Anchor is the **EXACT** first 15-30 characters of the text that starts a new section.
+
+Guidelines:
+- Choose unique phrases (headers, distinct starting sentences).
+- Order MUST be sequential (top to bottom).
+- The first anchor should usually be the start of the document (or the first logical section).
+- Do not modify the text (no typos, no casing changes). The system uses strict string matching.
+
+Context/Suggestions: {{sections}}
+
+Content:
+---
+{{content}}
+---
+
+Respond ONLY with JSON:
+{ "anchors": ["Chapter 1: Introduction...", "The second concept is...", "### Technical Details..."] }`
 };
 
 /**
