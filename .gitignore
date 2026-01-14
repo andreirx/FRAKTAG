@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Data directory contents (keep structure, ignore runtime data)
+packages/engine/data/content/*
+packages/engine/data/trees/*
+!packages/engine/data/content/.gitkeep
+!packages/engine/data/trees/.gitkeep
+!packages/engine/data/config.example.json
