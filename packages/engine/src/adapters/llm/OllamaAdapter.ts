@@ -1,11 +1,11 @@
-// src/adapters/llm/OllamaAdapter.ts
+// packages/engine/src/adapters/llm/OllamaAdapter.ts
 
 import { ILLMAdapter } from './ILLMAdapter.js';
 import { substituteTemplate } from '../../prompts/default.js';
 
 export interface OllamaConfig {
-  endpoint: string;  // e.g., 'http://localhost:11434'
-  model: string;     // e.g., 'llama3'
+  endpoint: string;
+  model: string;
 }
 
 export class OllamaAdapter implements ILLMAdapter {
@@ -13,66 +13,57 @@ export class OllamaAdapter implements ILLMAdapter {
   private model: string;
 
   constructor(config: OllamaConfig) {
-    this.endpoint = config.endpoint.endsWith('/')
-      ? config.endpoint.slice(0, -1)
-      : config.endpoint;
+    this.endpoint = config.endpoint.endsWith('/') ? config.endpoint.slice(0, -1) : config.endpoint;
     this.model = config.model;
   }
 
   async complete(prompt: string, variables: Record<string, string | number | string[]>): Promise<string> {
-    // Substitute variables in the prompt template
-    const processedVariables: Record<string, string | number> = {};
+    const processedVars: Record<string, string | number> = {};
     for (const [key, value] of Object.entries(variables)) {
-      if (Array.isArray(value)) {
-        processedVariables[key] = value.join('\n');
-      } else {
-        processedVariables[key] = value;
-      }
+      processedVars[key] = Array.isArray(value) ? value.join('\n') : value;
     }
 
-    const finalPrompt = substituteTemplate(prompt, processedVariables);
+    const finalPrompt = substituteTemplate(prompt, processedVars);
 
     try {
       const response = await fetch(`${this.endpoint}/api/generate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: this.model,
           prompt: finalPrompt,
           stream: false,
+          options: {
+            temperature: 0.1, // Low temp for JSON stability
+            num_ctx: 32768    // Use large context
+          }
         }),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Ollama API error (${response.status}): ${errorText}`);
-      }
-
+      if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
       const data = await response.json() as { response?: string };
+      if (!data.response) throw new Error('Invalid Ollama response');
 
-      if (!data.response) {
-        throw new Error('Ollama API returned invalid response format');
-      }
-
-      return data.response.trim();
+      return this.cleanOutput(data.response);
     } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to complete prompt with Ollama: ${error.message}`);
-      }
-      throw new Error('Failed to complete prompt with Ollama: Unknown error');
+      console.error("LLM Error", error);
+      throw error;
     }
+  }
+
+  private cleanOutput(text: string): string {
+    let clean = text.trim();
+    // Remove <think> blocks from R1 models
+    clean = clean.replace(/<think>[\s\S]*?<\/think>/g, '');
+    // Remove Markdown code blocks
+    clean = clean.replace(/```json/g, '').replace(/```/g, '');
+    return clean.trim();
   }
 
   async testConnection(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.endpoint}/api/tags`, {
-        method: 'GET',
-      });
-      return response.ok;
-    } catch {
-      return false;
-    }
+      const res = await fetch(`${this.endpoint}/api/tags`);
+      return res.ok;
+    } catch { return false; }
   }
 }
