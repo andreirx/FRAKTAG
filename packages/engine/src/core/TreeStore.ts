@@ -1,27 +1,79 @@
 // src/core/TreeStore.ts
 
-import { randomUUID } from 'crypto';
 import { Tree, TreeNode, TreeConfig } from './types.js';
 import { JsonStorage } from '../adapters/storage/JsonStorage.js';
 
 /**
- * TreeStore manages trees and their nodes
+ * Monolithic file structure for a tree
+ * Contains the tree configuration and all nodes in a single JSON file
+ */
+interface TreeFile {
+  config: Tree;
+  nodes: Record<string, TreeNode>; // nodeId -> TreeNode
+}
+
+/**
+ * TreeStore manages trees using monolithic JSON files
+ * Each tree is stored as a single file: trees/{treeId}.json
+ * This makes trees portable - just copy the file!
  */
 export class TreeStore {
   private storage: JsonStorage;
+  // In-memory cache to prevent constant disk I/O during batch operations
+  private cache: Map<string, TreeFile> = new Map();
 
   constructor(storage: JsonStorage) {
     this.storage = storage;
   }
 
+  // ============ HELPER: LOAD/SAVE ============
+
   /**
-   * Create a new tree from config
+   * Load tree file from storage (with caching)
+   */
+  private async loadTreeFile(treeId: string): Promise<TreeFile> {
+    if (this.cache.has(treeId)) {
+      return this.cache.get(treeId)!;
+    }
+
+    const file = await this.storage.read<TreeFile>(`trees/${treeId}.json`);
+    if (!file) {
+      throw new Error(`Tree file not found: ${treeId}`);
+    }
+
+    this.cache.set(treeId, file);
+    return file;
+  }
+
+  /**
+   * Save tree file to storage (updates cache)
+   */
+  private async saveTreeFile(treeId: string, data: TreeFile): Promise<void> {
+    this.cache.set(treeId, data);
+    await this.storage.write(`trees/${treeId}.json`, data);
+  }
+
+  /**
+   * Clear cache for a specific tree or all trees
+   */
+  clearCache(treeId?: string): void {
+    if (treeId) {
+      this.cache.delete(treeId);
+    } else {
+      this.cache.clear();
+    }
+  }
+
+  // ============ TREE OPERATIONS ============
+
+  /**
+   * Create a new tree with root node
    */
   async createTree(config: TreeConfig): Promise<Tree> {
     const rootNodeId = `root-${config.id}`;
     const now = new Date().toISOString();
 
-    const tree: Tree = {
+    const treeMeta: Tree = {
       id: config.id,
       name: config.name,
       organizingPrinciple: config.organizingPrinciple,
@@ -30,56 +82,53 @@ export class TreeStore {
       updatedAt: now,
     };
 
-    // Create tree directory structure
-    await this.storage.ensureDir(`trees/${config.id}/nodes`);
-    await this.storage.write(`trees/${config.id}/tree.json`, tree);
-
-    // Create root node
     const rootNode: TreeNode = {
       id: rootNodeId,
       treeId: config.id,
       parentId: null,
       path: '/',
       contentId: null,
-      l0Gist: `Root of ${config.name} tree`,
+      l0Gist: `Root of ${config.name}`,
       l1Map: null,
       sortOrder: 0,
       createdAt: now,
       updatedAt: now,
     };
 
-    await this.saveNode(rootNode);
+    const treeFile: TreeFile = {
+      config: treeMeta,
+      nodes: {
+        [rootNodeId]: rootNode,
+      },
+    };
 
-    return tree;
+    await this.saveTreeFile(config.id, treeFile);
+    return treeMeta;
   }
 
   /**
-   * Get a tree by ID
+   * Get tree configuration
    */
   async getTree(treeId: string): Promise<Tree> {
-    const tree = await this.storage.read<Tree>(`trees/${treeId}/tree.json`);
-    if (!tree) {
-      throw new Error(`Tree not found: ${treeId}`);
-    }
-    return tree;
+    const file = await this.loadTreeFile(treeId);
+    return file.config;
   }
 
   /**
-   * List all trees
+   * List all trees in storage
    */
   async listTrees(): Promise<Tree[]> {
-    const treeDirs = await this.storage.list('trees');
+    const files = await this.storage.list('trees');
     const trees: Tree[] = [];
 
-    for (const treeDir of treeDirs) {
+    for (const filename of files) {
+      if (!filename.endsWith('.json')) continue;
+      const treeId = filename.replace('.json', '');
       try {
-        const tree = await this.storage.read<Tree>(`trees/${treeDir}/tree.json`);
-        if (tree) {
-          trees.push(tree);
-        }
-      } catch {
-        // Skip invalid tree directories
-        continue;
+        const file = await this.loadTreeFile(treeId);
+        trees.push(file.config);
+      } catch (error) {
+        console.error(`Failed to load tree ${treeId}:`, error);
       }
     }
 
@@ -90,71 +139,77 @@ export class TreeStore {
    * Update tree metadata
    */
   async updateTree(tree: Tree): Promise<void> {
-    tree.updatedAt = new Date().toISOString();
-    await this.storage.write(`trees/${tree.id}/tree.json`, tree);
+    const file = await this.loadTreeFile(tree.id);
+    file.config = tree;
+    file.config.updatedAt = new Date().toISOString();
+    await this.saveTreeFile(tree.id, file);
   }
 
   /**
-   * Delete a tree and all its nodes
+   * Delete a tree
    */
   async deleteTree(treeId: string): Promise<void> {
-    await this.storage.delete(`trees/${treeId}`);
+    await this.storage.delete(`trees/${treeId}.json`);
+    this.cache.delete(treeId);
   }
 
+  // ============ NODE OPERATIONS ============
+
   /**
-   * Save a tree node
+   * Save a tree node (updates the entire tree file)
    */
   async saveNode(node: TreeNode): Promise<void> {
-    await this.storage.write(`trees/${node.treeId}/nodes/${node.id}.json`, node);
+    const file = await this.loadTreeFile(node.treeId);
+    file.nodes[node.id] = node;
+
+    // Update tree metadata timestamp
+    file.config.updatedAt = new Date().toISOString();
+
+    await this.saveTreeFile(node.treeId, file);
   }
 
   /**
-   * Get a tree node by ID
+   * Get a node by ID (searches across all trees)
+   * Warning: Inefficient - prefer getNodeFromTree when treeId is known
    */
   async getNode(nodeId: string): Promise<TreeNode | null> {
-    // We need to find which tree this node belongs to
-    // This is inefficient but works for the JSON storage model
     const trees = await this.listTrees();
-
     for (const tree of trees) {
-      const node = await this.storage.read<TreeNode>(`trees/${tree.id}/nodes/${nodeId}.json`);
-      if (node) {
-        return node;
-      }
+      const node = await this.getNodeFromTree(tree.id, nodeId);
+      if (node) return node;
     }
-
     return null;
   }
 
   /**
-   * Get a node from a specific tree
+   * Get a node from a specific tree (efficient)
    */
   async getNodeFromTree(treeId: string, nodeId: string): Promise<TreeNode | null> {
-    return await this.storage.read<TreeNode>(`trees/${treeId}/nodes/${nodeId}.json`);
+    try {
+      const file = await this.loadTreeFile(treeId);
+      return file.nodes[nodeId] || null;
+    } catch {
+      return null;
+    }
   }
 
   /**
    * Get all children of a node
    */
   async getChildren(nodeId: string): Promise<TreeNode[]> {
+    // Need to find which tree this node belongs to
     const node = await this.getNode(nodeId);
-    if (!node) {
-      return [];
-    }
+    if (!node) return [];
 
-    const allNodeFiles = await this.storage.list(`trees/${node.treeId}/nodes`);
+    const file = await this.loadTreeFile(node.treeId);
     const children: TreeNode[] = [];
 
-    for (const file of allNodeFiles) {
-      if (!file.endsWith('.json')) continue;
-
-      const childNode = await this.storage.read<TreeNode>(`trees/${node.treeId}/nodes/${file}`);
-      if (childNode && childNode.parentId === nodeId) {
-        children.push(childNode);
+    for (const candidate of Object.values(file.nodes)) {
+      if (candidate.parentId === nodeId) {
+        children.push(candidate);
       }
     }
 
-    // Sort by sortOrder
     return children.sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
@@ -162,19 +217,8 @@ export class TreeStore {
    * Get all nodes in a tree
    */
   async getAllNodes(treeId: string): Promise<TreeNode[]> {
-    const nodeFiles = await this.storage.list(`trees/${treeId}/nodes`);
-    const nodes: TreeNode[] = [];
-
-    for (const file of nodeFiles) {
-      if (!file.endsWith('.json')) continue;
-
-      const node = await this.storage.read<TreeNode>(`trees/${treeId}/nodes/${file}`);
-      if (node) {
-        nodes.push(node);
-      }
-    }
-
-    return nodes;
+    const file = await this.loadTreeFile(treeId);
+    return Object.values(file.nodes);
   }
 
   /**
@@ -182,11 +226,13 @@ export class TreeStore {
    */
   async deleteNode(nodeId: string): Promise<void> {
     const node = await this.getNode(nodeId);
-    if (!node) {
-      return;
-    }
+    if (!node) return;
 
-    await this.storage.delete(`trees/${node.treeId}/nodes/${nodeId}.json`);
+    const file = await this.loadTreeFile(node.treeId);
+    delete file.nodes[nodeId];
+
+    file.config.updatedAt = new Date().toISOString();
+    await this.saveTreeFile(node.treeId, file);
   }
 
   /**
@@ -198,13 +244,11 @@ export class TreeStore {
       throw new Error(`Node not found: ${nodeId}`);
     }
 
-    const newParent = await this.getNode(newParentId);
-    if (!newParent) {
-      throw new Error(`Parent node not found: ${newParentId}`);
-    }
+    const file = await this.loadTreeFile(node.treeId);
+    const newParent = file.nodes[newParentId];
 
-    if (node.treeId !== newParent.treeId) {
-      throw new Error('Cannot move node to a different tree');
+    if (!newParent) {
+      throw new Error(`Parent node not found: ${newParentId} in tree ${node.treeId}`);
     }
 
     // Update node's parent and path
@@ -212,27 +256,61 @@ export class TreeStore {
     node.path = `${newParent.path}${node.id}/`;
     node.updatedAt = new Date().toISOString();
 
-    await this.saveNode(node);
+    file.nodes[nodeId] = node;
+    file.config.updatedAt = new Date().toISOString();
 
+    await this.saveTreeFile(node.treeId, file);
     return node;
   }
 
   /**
-   * Find nodes by content ID
+   * Find all nodes that reference a specific content ID
+   * Searches across all trees
    */
   async findNodesByContent(contentId: string): Promise<TreeNode[]> {
     const trees = await this.listTrees();
-    const matchingNodes: TreeNode[] = [];
+    const results: TreeNode[] = [];
 
     for (const tree of trees) {
-      const nodes = await this.getAllNodes(tree.id);
-      for (const node of nodes) {
+      const file = await this.loadTreeFile(tree.id);
+      for (const node of Object.values(file.nodes)) {
         if (node.contentId === contentId) {
-          matchingNodes.push(node);
+          results.push(node);
         }
       }
     }
 
-    return matchingNodes;
+    return results;
+  }
+
+  /**
+   * Get statistics for a tree
+   */
+  async getTreeStats(treeId: string): Promise<{
+    totalNodes: number;
+    contentNodes: number;
+    organizationalNodes: number;
+    maxDepth: number;
+  }> {
+    const file = await this.loadTreeFile(treeId);
+    const nodes = Object.values(file.nodes);
+
+    let contentNodes = 0;
+    let maxDepth = 0;
+
+    for (const node of nodes) {
+      if (node.contentId) contentNodes++;
+
+      // Calculate depth from path
+      const depth = node.path.split('/').filter(p => p.length > 0).length;
+      maxDepth = Math.max(maxDepth, depth);
+    }
+
+    return {
+      totalNodes: nodes.length,
+      contentNodes,
+      organizationalNodes: nodes.length - contentNodes,
+      maxDepth,
+    };
   }
 }
