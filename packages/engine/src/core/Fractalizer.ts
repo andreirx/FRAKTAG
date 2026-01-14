@@ -40,10 +40,13 @@ export class Fractalizer {
 
     // 2. Generate gist
     const tree = await this.treeStore.getTree(treeId);
-    const gist = await this.llm.complete(
+    const rawGist = await this.llm.complete(
       this.prompts.generateGist,
       { content, organizingPrinciple: tree.organizingPrinciple }
     );
+
+    // 2.5. The Inquisition - audit gist for accuracy
+    const gist = await this.sanctify(content, rawGist, treeId, 'L0');
 
     // 3. Route based on whether parent is specified
     if (parentId) {
@@ -143,7 +146,7 @@ export class Fractalizer {
 
         // Bubble-up: generate L1 from children
         const childGists = children.map(c => c.l0Gist);
-        const l1Summary = await this.llm.complete(
+        const rawL1Summary = await this.llm.complete(
           this.prompts.generateL1,
           {
             parentGist: gist,
@@ -151,6 +154,10 @@ export class Fractalizer {
             organizingPrinciple: tree.organizingPrinciple,
           }
         );
+
+        // The Inquisition - audit L1 summary
+        const childGistsText = childGists.join('\n');
+        const l1Summary = await this.sanctify(childGistsText, rawL1Summary, treeId, 'L1');
 
         node.l1Map = {
           summary: l1Summary,
@@ -325,6 +332,62 @@ export class Fractalizer {
   }
 
   /**
+   * SANCTIFY: The Inquisitor
+   * Audits a generated summary against source content to detect heresy
+   * (hallucinations, omissions, distortions, miscategorization)
+   */
+  private async sanctify(
+    content: string,
+    proposedSummary: string,
+    treeId: string,
+    summaryType: 'L0' | 'L1' = 'L0'
+  ): Promise<string> {
+    try {
+      const tree = await this.treeStore.getTree(treeId);
+
+      // Optimization: For very large content, sample first 3000 chars
+      // L1 summaries are compared against child gists, not full content
+      const contentSample = summaryType === 'L0'
+        ? content.slice(0, 3000)
+        : content; // For L1, content is already the concatenated child gists
+
+      const heresyCheck = await this.llm.complete(
+        this.prompts.detectHeresy,
+        {
+          content: contentSample,
+          summary: proposedSummary,
+          organizingPrinciple: tree.organizingPrinciple,
+        }
+      );
+
+      const verdict = JSON.parse(heresyCheck);
+
+      if (verdict.status === 'FAIL') {
+        console.warn(`[HERESY DETECTED] Tree: ${treeId}, Type: ${summaryType}`);
+        console.warn(`Reason: ${verdict.reason}`);
+
+        // If the Inquisitor provided a correction, use it
+        if (verdict.correctedSummary) {
+          console.warn(`Using corrected summary`);
+          return verdict.correctedSummary;
+        }
+
+        // Otherwise, log but allow the heresy (non-blocking for now)
+        console.warn(`No correction provided, using original summary`);
+        return proposedSummary;
+      }
+
+      // Passed the Inquisition
+      return proposedSummary;
+
+    } catch (error) {
+      // If the Inquisitor fails, log and pass through
+      console.error('Inquisitor malfunction:', error);
+      return proposedSummary;
+    }
+  }
+
+  /**
    * Bubble up: regenerate L1 summaries for a node based on its children
    */
   private async bubbleUp(nodeId: string): Promise<void> {
@@ -338,7 +401,7 @@ export class Fractalizer {
     const childGists = children.map(c => c.l0Gist);
 
     try {
-      const l1Summary = await this.llm.complete(
+      const rawL1Summary = await this.llm.complete(
         this.prompts.generateL1,
         {
           parentGist: node.l0Gist,
@@ -346,6 +409,10 @@ export class Fractalizer {
           organizingPrinciple: tree.organizingPrinciple,
         }
       );
+
+      // The Inquisition - audit L1 summary during bubble-up
+      const childGistsText = childGists.join('\n');
+      const l1Summary = await this.sanctify(childGistsText, rawL1Summary, node.treeId, 'L1');
 
       node.l1Map = {
         summary: l1Summary,
