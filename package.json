@@ -1,12 +1,11 @@
 {
   "name": "fraktag",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "workspaces": ["packages/*"],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+    "build": "npm run build --workspace=@fraktag/engine",
+    "dev": "npm run dev --workspace=@fraktag/engine",
+    "test": "npm run test --workspace=@fraktag/engine"
+  }
 }
