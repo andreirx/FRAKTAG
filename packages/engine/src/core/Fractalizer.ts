@@ -5,6 +5,7 @@ import { ContentStore } from './ContentStore.js';
 import { TreeStore } from './TreeStore.js';
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
 import { TreeNode, IngestionConfig, PromptSet, TreeConfig } from './types.js';
+import {VectorStore} from "./VectorStore.js";
 
 /**
  * Fractalizer handles content ingestion: splitting, summarizing, and bubble-up
@@ -13,6 +14,7 @@ export class Fractalizer {
   constructor(
     private contentStore: ContentStore,
     private treeStore: TreeStore,
+    private vectorStore: VectorStore,
     private llm: ILLMAdapter,
     private config: IngestionConfig,
     private prompts: PromptSet
@@ -96,6 +98,10 @@ export class Fractalizer {
     const nodeId = randomUUID();
     const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
 
+    // VECTORIZE: Index this node before recursing
+    // We index the Gist + Start of Content to make it searchable
+    await this.vectorStore.add(nodeId, `Gist: ${gist}\n${content.slice(0, 300)}`);
+
     let node: TreeNode = {
       id: nodeId,
       treeId,
@@ -117,11 +123,19 @@ export class Fractalizer {
         const anchorsJson = await this.llm.complete(
           this.prompts.findSplitAnchors,
           { content, sections: suggestedSections.join(', ') },
-          { maxTokens: 4096 } // We only need a JSON list, small output
         );
 
-        const { anchors } = JSON.parse(anchorsJson) as { anchors: string[] };
-        
+        let { anchors } = JSON.parse(anchorsJson) as { anchors: string[] };
+
+        // FAILSAFE: If LLM returns too few anchors for a large file with Markdown headers
+        if (content.length > 5000 && anchors.length < 3) {
+          const headerMatches = content.match(/^##\s+.+$/gm);
+          if (headerMatches && headerMatches.length > 5) {
+            console.log(`   ⚠️  LLM might have missed anchors. Using ${headerMatches.length} Markdown headers as fallback.`);
+            anchors = headerMatches;
+          }
+        }
+
         // EXECUTE THE CUTS
         const chunks = this.executeCuts(content, anchors);
         console.log(`   ✂️  Cut into ${chunks.length} chunks`);
@@ -150,6 +164,7 @@ export class Fractalizer {
               { content: chunk, organizingPrinciple: tree.organizingPrinciple }
           );
           const chunkGist = await this.sanctify(chunk, chunkGistRaw, treeId, 'L0');
+
 
           const child = await this.processContentWithSplitting(
             chunk,
@@ -190,6 +205,7 @@ export class Fractalizer {
     }
 
     await this.treeStore.saveNode(node);
+    await this.vectorStore.save(treeId);
 
     if (parentId) {
       await this.bubbleUp(parentId);
@@ -365,6 +381,9 @@ export class Fractalizer {
       updatedAt: new Date().toISOString(),
     };
 
+    // Vectorize organizational nodes too (so we can find "Architecture" category)
+    await this.vectorStore.add(id, `Category: ${name}`);
+
     await this.treeStore.saveNode(node);
 
     // Update parent's L1
@@ -473,6 +492,9 @@ export class Fractalizer {
       };
       node.updatedAt = new Date().toISOString();
 
+      // Update vector index for parent with new summary
+      await this.vectorStore.add(node.id, `Category: ${node.l0Gist}\nSummary: ${l1Summary}`);
+      await this.vectorStore.save(node.treeId);
       await this.treeStore.saveNode(node);
     } catch (error) {
       console.error('Failed to bubble up L1 summary:', error);

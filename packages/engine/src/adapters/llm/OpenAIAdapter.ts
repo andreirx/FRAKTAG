@@ -46,11 +46,11 @@ export class OpenAIAdapter implements ILLMAdapter {
         const estTokens = Math.ceil(finalPrompt.length / 4);
 
         // Config logic
-        const expectsJSON = prompt.includes('Respond ONLY with JSON') || prompt.includes('Return a JSON list');
+        const expectsJSON = prompt.includes('JSON');// || prompt.includes('Return a JSON list');
         const isSplitRequest = prompt.includes('Split this content');
         const isGPT5 = this.model.includes('gpt-5') || this.model.includes('o3') || this.model.includes('o4');
 
-        process.stdout.write(`\n==== DEBUG REQUEST ====${finalPrompt}`);
+//        process.stdout.write(`\n==== DEBUG REQUEST ====${finalPrompt}`);
         process.stdout.write('\n');
 
         const body: any = {
@@ -65,10 +65,6 @@ export class OpenAIAdapter implements ILLMAdapter {
 
         if (options?.maxTokens && options.maxTokens > 0) {
             body.max_completion_tokens = options.maxTokens;
-        } else if (isSplitRequest) {
-            body.max_completion_tokens = 16000;
-        } else {
-            body.max_completion_tokens = 4096;
         }
 
         if (expectsJSON && !this.model.includes('nano')) {
@@ -177,7 +173,7 @@ export class OpenAIAdapter implements ILLMAdapter {
                 if (done) break;
             }
 
-            process.stdout.write(`\n==== DEBUG RESPONSE ====${fullText}`);
+//            process.stdout.write(`\n==== DEBUG RESPONSE ====${fullText}`);
             process.stdout.write('\n');
             this.log(`   ✅ Complete. Raw Output Length: ${fullText.length} chars`);
             return fullText;

@@ -2,12 +2,13 @@
 
 import { readFile, writeFile, mkdir, readdir, rm, access } from 'fs/promises';
 import { join, dirname } from 'path';
+import { IStorage } from './IStorage.js';
 
 /**
  * JSON-based file storage adapter
  * Provides simple file-based persistence for content atoms, trees, and nodes
  */
-export class JsonStorage {
+export class JsonStorage implements IStorage {
   private basePath: string;
 
   constructor(basePath: string) {

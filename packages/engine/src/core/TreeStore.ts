@@ -157,4 +157,28 @@ export class TreeStore {
     await this.storage.delete(`trees/${treeId}.json`);
     this.cache.delete(treeId);
   }
+
+  /**
+   * Calculate statistics for the tree to help with navigation heuristics.
+   */
+  async getTreeStats(treeId: string): Promise<{ maxDepth: number; totalNodes: number }> {
+    const file = await this.loadTreeFile(treeId);
+    const nodes = Object.values(file.nodes);
+    let maxDepth = 0;
+
+    for (const node of nodes) {
+      // Path format is like: /root-id/child-id/grandchild-id
+      // Split by '/' and filter empty strings to count segments
+      const segments = node.path.split('/').filter(p => p.length > 0);
+      const depth = segments.length;
+      if (depth > maxDepth) maxDepth = depth;
+    }
+
+    // If tree is empty or just root, ensure at least 1 to prevent divide-by-zero issues elsewhere
+    return {
+      maxDepth: Math.max(1, maxDepth),
+      totalNodes: nodes.length
+    };
+  }
+
 }

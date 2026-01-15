@@ -5,44 +5,91 @@ import { TreeStore } from './TreeStore.js';
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
 import { RetrieveRequest, RetrieveResult, RetrievedNode, BrowseRequest, BrowseResult, TreeNode } from './types.js';
 import { DEFAULT_PROMPTS } from '../prompts/default.js';
+import {VectorStore} from "./VectorStore.js";
 
-/**
- * Navigator handles retrieval through zoom traversal
- */
 export class Navigator {
   constructor(
       private contentStore: ContentStore,
       private treeStore: TreeStore,
+      private vectorStore: VectorStore,
       private llm: ILLMAdapter
   ) {}
 
-  /**
-   * Query-driven retrieval using zoom traversal
-   */
+// Add VectorStore to constructor
+
   async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
     const tree = await this.treeStore.getTree(request.treeId);
-    const root = await this.treeStore.getNodeFromTree(request.treeId, tree.rootNodeId);
+    await this.vectorStore.load(request.treeId); // Load index
 
-    if (!root) throw new Error(`Root node not found for tree: ${request.treeId}`);
+    console.log(`\n🔍 Phase 1: Vector Seeding (Naive RAG)`);
+    // 1. Vector Search to find Entry Points
+    const seeds = await this.vectorStore.search(request.query, 5); // Top 5 matches
 
-    console.log(`\n🧭 Starting Hierarchical Drill in Tree: ${tree.name}`);
-    console.log(`   Quest: "${request.query}"`);
+    console.log(`   📍 Found ${seeds.length} seed nodes via embeddings.`);
+    seeds.forEach(s => console.log(`      - [${s.score.toFixed(3)}] ${s.id}`));
 
-    const navigationPath: string[] = [];
     const results: RetrievedNode[] = [];
     const visited = new Set<string>();
 
-    await this.drill(
-        root,
-        request.query,
-        request.maxDepth ?? 5,
-        request.resolution ?? 'L2',
-        results,
-        visited,
-        0
-    );
+    // 2. Graph Expansion (The "Agentic Loop")
+    // Instead of starting at Root, we start at the Seeds.
+    // BUT we also look at their PARENTS to understand context.
 
-    console.log(`\n🏁 Exploration Complete. Found ${results.length} relevant nodes.`);
+    for (const seed of seeds) {
+      if (visited.has(seed.id)) continue;
+
+      // Load the seed node
+      const node = await this.treeStore.getNode(seed.id); // Note: getNode needs to be efficient
+      if (!node) continue;
+
+      console.log(`\n🧭 Exploring Seed Neighborhood: ${node.l0Gist.slice(0, 50)}...`);
+
+      // Heuristic: If confidence is high, check this node.
+      // Then, maybe check its parent to see if siblings are relevant?
+
+      // Let's reuse the drill(), but start here.
+      await this.drill(
+          node,
+          request.query,
+          3, // Lower depth because we are already deep
+          request.resolution || 'L2',
+          results,
+          visited,
+          0, // "Local Depth"
+          0,
+          10
+      );
+
+      // OPTIONAL: Traverse UP?
+      if (node.parentId) {
+        console.log(`   ⬆️  Checking Parent Context...`);
+        const parent = await this.treeStore.getNode(node.parentId);
+        if (parent) {
+// Inside retrieve() method
+
+          // Check siblings via parent
+          if (node.parentId) {
+            console.log(`   ⬆️  Checking Parent Context...`);
+            const parent = await this.treeStore.getNode(node.parentId);
+            if (parent) {
+              // FIX: Use || 'L2' to ensure it's never undefined
+              await this.drill(
+                  parent,
+                  request.query,
+                  1,
+                  request.resolution || 'L2', // <--- FIX HERE
+                  results,
+                  visited,
+                  0,
+                  0,
+                  10
+              );
+            }
+          }
+        }
+      }
+    }
+
     return { nodes: results, navigationPath: Array.from(visited) };
   }
 
@@ -53,52 +100,66 @@ export class Navigator {
       targetResolution: 'L0' | 'L1' | 'L2',
       results: RetrievedNode[],
       visited: Set<string>,
-      depth: number
+      depth: number,
+      orientationThreshold: number,
+      totalTreeDepth: number
   ): Promise<void> {
 
     if (visited.has(node.id)) return;
     visited.add(node.id);
 
     // 1. GATHER CONTEXT
-    // Use L1 summary if available (it's richer), otherwise L0 Gist
     const nodeContext = node.l1Map?.summary || node.l0Gist;
     const children = await this.treeStore.getChildren(node.id);
     const isLeaf = children.length === 0;
 
-    // 2. EVALUATE RELEVANCE (The "Treasure Check")
-    // We check every node we visit. Is THIS node the answer?
-    // Optimization: Skip Root relevance check usually, it's too broad.
+    // 2. EVALUATE RELEVANCE
     if (depth > 0) {
       await this.checkRelevance(node, nodeContext, query, targetResolution, results);
     }
 
+    // 3. DECIDE TRAVERSAL
     // 3. DECIDE TRAVERSAL (The "Routing")
     // If leaf or max depth, stop.
     if (isLeaf || depth >= maxDepth) return;
 
-    // Prepare Children List for the Librarian
-    const candidates = children.map(c => `ID: ${c.id}\nLabel: ${c.l0Gist}`).join('\n\n');
+    // Prepare Children List
+    const candidates = children.map(c => {
+      const context = c.l1Map?.summary
+          ? `(Summary): ${c.l1Map.summary}...`
+          : `(Gist): ${c.l0Gist}`;
+      return `ID: ${c.id}\n${context}`;
+    }).join('\n\n');
+    console.log(`\n   📂 [Librarian] At "${node.l0Gist.slice(0, 30)}..." (Depth ${depth})`);
 
-    console.log(`\n   📂 [Librarian] At "${node.l0Gist.slice(0, 30)}..." with ${children.length} paths.`);
+    // DYNAMIC PHASE CONTEXT
+    const isOrientation = depth <= orientationThreshold;
+    const phaseLabel = isOrientation
+        ? "ORIENTATION Phase (Be Broad, route to general topic areas)"
+        : "TARGETING Phase (Be Specific, look for direct matches)";
+
+    const depthContext = `Current Depth: ${depth}/${totalTreeDepth}. Status: ${phaseLabel}.
+    ${isOrientation ? "Instructions: Select ANY path that might conceptually contain the answer." : "Instructions: Select ONLY paths that likely contain the answer."}`;
+
+    console.log(`\n   📂 [Librarian] At "${node.l0Gist.slice(0, 30)}..." (Depth ${depth})`);
 
     try {
       const response = await this.llm.complete(
           DEFAULT_PROMPTS.assessContainment,
           {
             query,
-            parentContext: nodeContext.slice(0, 500), // Give context to the librarian
-            childrenList: candidates
+            parentContext: nodeContext,
+            childrenList: candidates,
+            depthContext // Inject the dynamic context
           },
-          { maxTokens: 512 }
+          { maxTokens: 1024 }
       );
 
-      // Parse Line-Delimited IDs
       const targetIds = response
           .split('\n')
           .map(l => l.trim())
           .filter(l => l.length > 0 && !l.startsWith('Note:') && l !== 'NONE')
           .map(l => {
-            // Fuzzy match ID in line
             const match = children.find(c => l.includes(c.id));
             return match ? match.id : null;
           })
@@ -111,14 +172,14 @@ export class Navigator {
         for (const targetId of uniqueTargets) {
           const child = children.find(c => c.id === targetId);
           if (child) {
-            await this.drill(child, query, maxDepth, targetResolution, results, visited, depth + 1);
+            await this.drill(child, query, maxDepth, targetResolution, results, visited, depth + 1, orientationThreshold, totalTreeDepth);
           }
         }
       } else {
-        // Fallback: If only 1 child exists, just go there. Don't let the LLM be lazy.
+        // Fallback: Force entry if only 1 child exists
         if (children.length === 1) {
           console.log(`   ⚠️  Librarian returned NONE, but only 1 path exists. Forcing entry.`);
-          await this.drill(children[0], query, maxDepth, targetResolution, results, visited, depth + 1);
+          await this.drill(children[0], query, maxDepth, targetResolution, results, visited, depth + 1, orientationThreshold, totalTreeDepth);
         } else {
           console.log(`   🛑 Dead End. Librarian sees no relevant paths.`);
         }
@@ -146,10 +207,10 @@ export class Navigator {
       const match = response.match(/(\d+)\s*\|/);
       const score = match ? parseInt(match[1]) : 0;
 
-      if (score >= 6) { // Threshold: 6/10
+      // INCREASED THRESHOLD for stricter "High Fidelity"
+      if (score >= 8) {
         console.log(`   💎 Treasure Found! Score ${score}/10: "${node.l0Gist.slice(0, 40)}..."`);
 
-        // If very relevant, fetch full content
         const content = await this.resolveContent(node, resolution);
         results.push({
           nodeId: node.id,
@@ -159,9 +220,7 @@ export class Navigator {
           contentId: node.contentId ?? undefined
         });
       }
-    } catch (e) {
-      // Ignore failures here, just don't add result
-    }
+    } catch (e) { }
   }
 
   /**
@@ -169,10 +228,8 @@ export class Navigator {
    */
   private async resolveContent(node: TreeNode, resolution: 'L0' | 'L1' | 'L2'): Promise<string> {
     switch (resolution) {
-      case 'L0':
-        return node.l0Gist;
-      case 'L1':
-        return node.l1Map?.summary ?? node.l0Gist;
+      case 'L0': return node.l0Gist;
+      case 'L1': return node.l1Map?.summary ?? node.l0Gist;
       case 'L2':
         if (node.contentId) {
           const content = await this.contentStore.get(node.contentId);
@@ -189,31 +246,13 @@ export class Navigator {
     const tree = await this.treeStore.getTree(request.treeId);
     const nodeId = request.nodeId ?? tree.rootNodeId;
     const node = await this.treeStore.getNodeFromTree(request.treeId, nodeId);
-
-    if (!node) {
-      throw new Error(`Node not found: ${nodeId}`);
-    }
-
+    if (!node) throw new Error(`Node not found: ${nodeId}`);
     const children = await this.treeStore.getChildren(nodeId);
-    const parent = node.parentId
-        ? await this.treeStore.getNode(node.parentId)
-        : null;
-
+    const parent = node.parentId ? await this.treeStore.getNode(node.parentId) : null;
     return {
-      node: {
-        id: node.id,
-        path: node.path,
-        gist: node.l0Gist,
-        summary: request.resolution === 'L1' ? node.l1Map?.summary : undefined,
-      },
-      children: children.map(c => ({
-        id: c.id,
-        gist: c.l0Gist,
-      })),
-      parent: parent ? {
-        id: parent.id,
-        gist: parent.l0Gist,
-      } : undefined,
+      node: { id: node.id, path: node.path, gist: node.l0Gist, summary: request.resolution === 'L1' ? node.l1Map?.summary : undefined },
+      children: children.map(c => ({ id: c.id, gist: c.l0Gist })),
+      parent: parent ? { id: parent.id, gist: parent.l0Gist } : undefined
     };
   }
 }

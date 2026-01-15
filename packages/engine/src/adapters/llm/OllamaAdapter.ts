@@ -179,6 +179,7 @@ export class OllamaAdapter implements ILLMAdapter {
         clean = clean.replace(/```/g, '');
     }
 
+    this.log(`CLEANED TEXT: ${clean.trim()}`);
     return clean.trim();
   }
 

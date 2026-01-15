@@ -6,6 +6,7 @@ export interface FraktagConfig {
   instanceId: string;
   storagePath: string;
   llm: LLMConfig;
+  embedding?: EmbeddingConfig;
   trees: TreeConfig[];
   ingestion: IngestionConfig;
 }
@@ -16,6 +17,14 @@ export interface LLMConfig {
   endpoint?: string;                // For ollama: 'http://localhost:11434'
   apiKey?: string;                  // For cloud providers
   prompts?: Partial<PromptSet>;     // Override defaults
+}
+
+// Add EmbeddingConfig
+export interface EmbeddingConfig {
+  adapter: 'ollama' | 'openai';
+  model: string;
+  endpoint?: string;
+  apiKey?: string;
 }
 
 export interface TreeConfig {

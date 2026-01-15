@@ -123,13 +123,12 @@ Respond ONLY with JSON.`,
 Task: Return a JSON list of "Anchors".
 An Anchor is the **EXACT** first 15-30 characters of the text that starts a new section.
 
-Guidelines:
-- Choose unique phrases (headers, distinct starting sentences).
-- Order MUST be sequential (top to bottom).
-- The first anchor should usually be the start of the document (or the first logical section).
-- Do not modify the text (no typos, no casing changes). The system uses strict string matching.
+Rules:
+1. Return a JSON object with a list of strings called "anchors".
+2. Each anchor must be the **EXACT** text characters that start the section (e.g. "## Character: Coach Arden").
+3. Do NOT rewrite or summarize. Copy-paste the start of the line.
+4. If there are Markdown headers (#, ##, ###), use those lines as anchors.
 
-Context/Suggestions: {{sections}}
 
 Content:
 ---
@@ -179,16 +178,21 @@ node-a123
 node-b456`,
 
   // 1. THE COMPASS (For routing down the tree)
-  assessContainment: `You are the Librarian. You are navigating a knowledge hierarchy.
+  assessContainment: `You are the Librarian. You are navigating a knowledge hierarchy to answer a query.
 User Query: "{{query}}"
 
 Current Location Context: "{{parentContext}}"
+Navigation Phase: {{depthContext}}
 
 Below are the sub-categories (Children) available. 
-Which of these are MOST LIKELY to contain the answer?
+Which of these paths might contain the answer?
 
-- Think hierarchically. If the query is "How to configure X", and you see a child "Configuration" or "Project X", that is the correct path.
-- Select broadly. If you are unsure, explore the path.
+Guidelines:
+1. **Phase-Specific Logic:**
+   - If "Orientation Phase": Select ANY path that *could* lead to the topic. Be broad.
+   - If "Targeting Phase": Select only paths that seem highly likely.
+2. **Look for Keywords:** Scan labels for terms related to the query.
+3. **Don't Assume:** If the label is vague but the topic is right, explore it.
 
 Available Paths:
 {{childrenList}}

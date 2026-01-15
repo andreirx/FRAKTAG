@@ -9,7 +9,7 @@ import { Navigator } from './core/Navigator.js';
 import { JsonStorage } from './adapters/storage/JsonStorage.js';
 import { ILLMAdapter } from './adapters/llm/ILLMAdapter.js';
 import { OllamaAdapter } from './adapters/llm/OllamaAdapter.js';
-import {OpenAIAdapter} from "./adapters/llm/OpenAIAdapter.js";
+import { OpenAIAdapter } from "./adapters/llm/OpenAIAdapter.js";
 import { DEFAULT_PROMPTS } from './prompts/default.js';
 import {
   FraktagConfig,
@@ -22,8 +22,13 @@ import {
   ContentAtom,
   Tree,
   TreeNode,
-  VerificationResult,
+  VerificationResult, EmbeddingConfig,
 } from './core/types.js';
+import { IEmbeddingAdapter } from './adapters/embeddings/IEmbeddingAdapter.js';
+import { OllamaEmbeddingAdapter } from './adapters/embeddings/OllamaEmbeddingAdapter.js';
+import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAdapter.js';
+import { VectorStore } from './core/VectorStore.js';
+
 
 /**
  * Fraktag Engine - Multi-resolution knowledge management
@@ -36,6 +41,8 @@ export class Fraktag {
   private fractalizer: Fractalizer;
   private navigator: Navigator;
   private llm: ILLMAdapter;
+  private embedder: IEmbeddingAdapter;
+  private vectorStore: VectorStore;
 
   private constructor(config: FraktagConfig, storage: JsonStorage) {
     this.config = config;
@@ -48,6 +55,9 @@ export class Fraktag {
     this.contentStore = new ContentStore(storage);
     this.treeStore = new TreeStore(storage);
 
+    this.embedder = this.createEmbeddingAdapter(config.embedding);
+    this.vectorStore = new VectorStore(storage, this.embedder);
+
     // Merge custom prompts with defaults
     const prompts = {
       ...DEFAULT_PROMPTS,
@@ -58,6 +68,7 @@ export class Fraktag {
     this.fractalizer = new Fractalizer(
       this.contentStore,
       this.treeStore,
+      this.vectorStore,
       this.llm,
       config.ingestion,
       prompts
@@ -66,8 +77,23 @@ export class Fraktag {
     this.navigator = new Navigator(
       this.contentStore,
       this.treeStore,
+      this.vectorStore,
       this.llm
     );
+  }
+
+  private createEmbeddingAdapter(config?: EmbeddingConfig): IEmbeddingAdapter {
+    if (!config || config.adapter === 'ollama') {
+      return new OllamaEmbeddingAdapter(
+          config?.endpoint,
+          config?.model || 'nomic-embed-text'
+      );
+    }
+    if (config.adapter === 'openai') {
+      if (!config.apiKey) throw new Error("OpenAI embedding requires apiKey");
+      return new OpenAIEmbeddingAdapter(config.apiKey, config.model);
+    }
+    throw new Error(`Unknown embedding adapter: ${config.adapter}`);
   }
 
   /**
