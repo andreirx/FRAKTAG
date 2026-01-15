@@ -117,7 +117,7 @@ If the summary contains heresy, respond with:
 {"status": "FAIL", "reason": "Specific explanation of the heresy", "correctedSummary": "Your corrected version"}
 
 Respond ONLY with JSON.`,
-  // NEW: The Surgical Prompt
+
   findSplitAnchors: `Analyze the content and identify the logical breakpoints to split it into sections.
 
 Task: Return a JSON list of "Anchors".
@@ -138,6 +138,7 @@ Content:
 
 Respond ONLY with JSON:
 { "anchors": ["Chapter 1: Introduction...", "The second concept is...", "### Technical Details..."] }`,
+
   evaluateRelevance: `You are the Scout. Your job is to determine if this knowledge node is relevant to the user's quest.
 
 Quest (Query): "{{query}}"
@@ -145,13 +146,15 @@ Quest (Query): "{{query}}"
 Node Gist:
 "{{gist}}"
 
-Evaluate relevance.
-- If it seems irrelevant, return relevant: false.
-- If it might contain clues or direct answers, return relevant: true.
-- Confidence: 0.0 to 1.0.
+Task:
+1. Rate relevance from 0 (Completely Irrelevant) to 10 (Highly Relevant/Exact Match).
+2. Provide a 1-sentence reasoning.
 
-Respond ONLY with JSON:
-{"relevant": boolean, "confidence": number, "reasoning": "short explanation"}`,
+Output Format:
+SCORE | REASONING
+
+Example:
+8 | The node discusses the specific API requested.`,
 
   routeTraversal: `You are the Navigator. You are exploring a knowledge tree to answer a query.
 You are currently at a parent node. You must decide which children to visit next.
@@ -163,11 +166,53 @@ Parent Context: {{parentGist}}
 Available Paths (Children):
 {{childrenList}}
 
-Select the paths that are most likely to contain the answer. You can select multiple.
-If none are relevant, select none.
+Task:
+Select the IDs of the paths that are most likely to contain the answer. 
+You can select multiple.
 
-Respond ONLY with JSON:
-{"targetChildIds": ["id1", "id2"], "reasoning": "why these paths?"}`
+Output Format:
+Just list the Node IDs, one per line.
+If NO children are relevant, output exactly: NONE
+
+Example:
+node-a123
+node-b456`,
+
+  // 1. THE COMPASS (For routing down the tree)
+  assessContainment: `You are the Librarian. You are navigating a knowledge hierarchy.
+User Query: "{{query}}"
+
+Current Location Context: "{{parentContext}}"
+
+Below are the sub-categories (Children) available. 
+Which of these are MOST LIKELY to contain the answer?
+
+- Think hierarchically. If the query is "How to configure X", and you see a child "Configuration" or "Project X", that is the correct path.
+- Select broadly. If you are unsure, explore the path.
+
+Available Paths:
+{{childrenList}}
+
+Output Format:
+List the Node IDs of paths to explore, one per line.
+If NO paths look promising, output: NONE`,
+
+  // 2. THE MAGNET (For checking if the current node IS the answer)
+  assessRelevance: `You are the Researcher. 
+User Query: "{{query}}"
+
+Content Fragment:
+"{{content}}"
+
+Does this fragment contain high-fidelity information relevant to the query?
+- Score 0-10. 
+- 8+ means it contains a direct answer or critical context.
+- 4-7 means it is related context.
+- 0-3 means irrelevant.
+
+Output Format:
+SCORE | REASONING`
+
 };
 
 /**

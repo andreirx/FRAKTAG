@@ -131,12 +131,16 @@ export class Fractalizer {
         // 3. Process Children
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
-          
+
+          // FIX: Generate readable ID based on parent
+          const chunkId = `${contentId}-part-${i}`;
+
           // Materialize Chunk
           const chunkAtom = await this.contentStore.create({
               payload: chunk,
               mediaType: 'text/plain',
               createdBy: 'system',
+              customId: chunkId,
               metadata: { parentContentId: contentId, splitIndex: i, isDerivedChunk: true }
           });
 

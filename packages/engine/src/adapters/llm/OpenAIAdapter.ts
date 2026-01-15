@@ -7,26 +7,29 @@ export interface OpenAIConfig {
     apiKey: string;
     model: string;
     endpoint?: string;
+    maxRetries?: number;
+    timeoutMs?: number;
 }
 
 export class OpenAIAdapter implements ILLMAdapter {
     private apiKey: string;
     private model: string;
     private endpoint: string;
+    private maxRetries: number;
+    private timeoutMs: number;
 
     constructor(config: OpenAIConfig) {
         this.apiKey = config.apiKey;
         this.model = config.model;
         this.endpoint = config.endpoint || 'https://api.openai.com/v1';
+        this.maxRetries = config.maxRetries ?? 3;
+        this.timeoutMs = config.timeoutMs ?? 30_000;
     }
 
     private log(msg: string, data?: any) {
         const ts = new Date().toISOString().split('T')[1].slice(0, -1);
-        if (data) {
-            console.log(`[${ts}] ${msg}`, data);
-        } else {
-            console.log(`[${ts}] ${msg}`);
-        }
+        if (data) console.log(`[${ts}] ${msg}`, data);
+        else console.log(`[${ts}] ${msg}`);
     }
 
     async complete(
@@ -42,38 +45,75 @@ export class OpenAIAdapter implements ILLMAdapter {
         const finalPrompt = substituteTemplate(prompt, processedVars);
         const estTokens = Math.ceil(finalPrompt.length / 4);
 
-        this.log(`🚀 LLM CALL [${this.model}]`);
-        this.log(`   📝 Input: ~${estTokens} tokens`);
-
+        // Config logic
         const expectsJSON = prompt.includes('Respond ONLY with JSON') || prompt.includes('Return a JSON list');
+        const isSplitRequest = prompt.includes('Split this content');
         const isGPT5 = this.model.includes('gpt-5') || this.model.includes('o3') || this.model.includes('o4');
 
-        // Build Body
+        process.stdout.write(`\n==== DEBUG REQUEST ====${finalPrompt}`);
+        process.stdout.write('\n');
+
         const body: any = {
             model: this.model,
             messages: [{ role: 'user', content: finalPrompt }],
             stream: true,
         };
 
-        // GPT-5/O-series constraints: No temperature
         if (!isGPT5) {
             body.temperature = expectsJSON ? 0.1 : 0.3;
         }
 
-        // Dynamic Max Tokens
         if (options?.maxTokens && options.maxTokens > 0) {
-            body.max_completion_tokens = options.maxTokens; // New OpenAI API field
-        } else if (prompt.includes('Split this content')) {
-            body.max_completion_tokens = 16000; // Allow huge output for splits
+            body.max_completion_tokens = options.maxTokens;
+        } else if (isSplitRequest) {
+            body.max_completion_tokens = 16000;
         } else {
             body.max_completion_tokens = 4096;
         }
 
-        // JSON Mode (If supported)
         if (expectsJSON && !this.model.includes('nano')) {
-            // Some nano models might not support json_object, but let's assume standard ones do
             body.response_format = { type: "json_object" };
         }
+
+        // --- RETRY LOOP ---
+        let lastError: Error | null = null;
+
+        for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+            try {
+                if (attempt > 1) {
+                    const backoff = Math.pow(2, attempt) * 1000;
+                    this.log(`   ⚠️  Retry ${attempt}/${this.maxRetries} in ${backoff}ms...`);
+                    await new Promise(r => setTimeout(r, backoff));
+                }
+
+                this.log(`🚀 LLM CALL [${this.model}] (Attempt ${attempt})`);
+
+                const result = await this.performRequest(body);
+
+                // Validate Result
+                if (!result || result.trim().length === 0) {
+                    throw new Error("Received empty response from API");
+                }
+
+                if (expectsJSON) {
+                    return this.extractJSON(result);
+                }
+                return result.trim();
+
+            } catch (error: any) {
+                lastError = error;
+                const isFatal = error.message.includes('401') || error.message.includes('invalid_api_key');
+                if (isFatal) throw error;
+                this.log(`   ❌ Error (Attempt ${attempt}): ${error.message}`);
+            }
+        }
+
+        throw lastError || new Error("Failed after max retries");
+    }
+
+    private async performRequest(body: any): Promise<string> {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), this.timeoutMs);
 
         try {
             const response = await fetch(`${this.endpoint}/chat/completions`, {
@@ -83,61 +123,72 @@ export class OpenAIAdapter implements ILLMAdapter {
                     'Authorization': `Bearer ${this.apiKey}`
                 },
                 body: JSON.stringify(body),
+                signal: controller.signal
             });
+
+            clearTimeout(id);
 
             if (!response.ok) {
                 const err = await response.text();
+                if (response.status === 429) throw new Error(`Rate Limited (429): ${err}`);
                 throw new Error(`OpenAI API error (${response.status}): ${err}`);
             }
             if (!response.body) throw new Error('No response body');
 
-            // Streaming Reader
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullText = '';
-            let done = false;
-            let chunkCount = 0;
+            let buffer = '';
 
             process.stdout.write('   ⏳ Generating: ');
 
-            while (!done) {
-                const { value, done: doneReading } = await reader.read();
-                done = doneReading;
+            // Stream Reader Loop
+            while (true) {
+                const { value, done } = await reader.read();
                 if (value) {
                     const chunk = decoder.decode(value, { stream: true });
-                    const lines = chunk.split('\n');
-                    for (const line of lines) {
-                        if (line.trim() === '') continue;
-                        if (line.trim() === 'data: [DONE]') continue;
-                        if (!line.startsWith('data: ')) continue;
+                    buffer += chunk;
 
-                        try {
-                            const jsonStr = line.replace('data: ', '');
-                            const json = JSON.parse(jsonStr);
-                            const content = json.choices[0]?.delta?.content || '';
+                    let boundary = buffer.indexOf('\n');
+                    while (boundary !== -1) {
+                        const line = buffer.slice(0, boundary).trim();
+                        buffer = buffer.slice(boundary + 1);
 
-                            if (content) {
-                                fullText += content;
-                                chunkCount++;
-                                if (chunkCount % 5 === 0) process.stdout.write('.');
+                        // RELAXED PARSING: Check for 'data:' with or without space
+                        if (line && line !== 'data: [DONE]' && line.startsWith('data:')) {
+                            // Remove 'data:' and trim whitespace
+                            const jsonStr = line.slice(5).trim();
+                            if (jsonStr) {
+                                try {
+                                    const json = JSON.parse(jsonStr);
+                                    const content = json.choices[0]?.delta?.content || '';
+                                    if (content) {
+                                        fullText += content;
+                                        if (Math.random() > 0.9) process.stdout.write('.');
+                                    }
+                                } catch (e) {
+                                    // Partial JSON is common in streams, ignore
+                                }
                             }
-                        } catch (e) { }
+                        }
+                        boundary = buffer.indexOf('\n');
                     }
                 }
+                if (done) break;
             }
+
+            process.stdout.write(`\n==== DEBUG RESPONSE ====${fullText}`);
             process.stdout.write('\n');
-
             this.log(`   ✅ Complete. Raw Output Length: ${fullText.length} chars`);
+            return fullText;
 
-            if (expectsJSON) {
-                return this.extractJSON(fullText);
+        } catch (error: any) {
+            if (error.name === 'AbortError') {
+                throw new Error(`Request timed out after ${this.timeoutMs}ms`);
             }
-
-            return fullText.trim();
-
-        } catch (error) {
-            this.log(`   ❌ LLM Error: ${error instanceof Error ? error.message : String(error)}`);
             throw error;
+        } finally {
+            clearTimeout(id);
         }
     }
 

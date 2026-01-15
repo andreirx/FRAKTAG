@@ -27,8 +27,8 @@ export class ContentStore {
   /**
    * Create a new content atom
    */
-  async create(options: CreateContentOptions): Promise<ContentAtom> {
-    const id = randomUUID();
+  async create(options: CreateContentOptions & { customId?: string }): Promise<ContentAtom> {
+    const id = options.customId || randomUUID();
     const hash = this.calculateHash(options.payload);
 
     const atom: ContentAtom = {

@@ -46,6 +46,8 @@ export interface PromptSet {
   detectHeresy: string;             // Audit summaries for accuracy
   findSplitAnchors: string;
   evaluateRelevance: string;
+  assessContainment: string; // NEW: The Compass (Orientation)
+  assessRelevance: string;   // NEW: The Magnet (Treasure Hunt)
   routeTraversal: string;
 }
 
