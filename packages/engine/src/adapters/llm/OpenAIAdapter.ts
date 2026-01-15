@@ -46,7 +46,7 @@ export class OpenAIAdapter implements ILLMAdapter {
         const estTokens = Math.ceil(finalPrompt.length / 4);
 
         // Config logic
-        const expectsJSON = prompt.includes('JSON');// || prompt.includes('Return a JSON list');
+        const expectsJSON = prompt.includes('Respond ONLY with JSON');
         const isSplitRequest = prompt.includes('Split this content');
         const isGPT5 = this.model.includes('gpt-5') || this.model.includes('o3') || this.model.includes('o4');
 
@@ -173,6 +173,16 @@ export class OpenAIAdapter implements ILLMAdapter {
                 if (done) break;
             }
 
+            // Handle any remaining buffer if done
+            if (buffer.trim()) {
+                const trimmed = buffer.trim();
+                if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+                    try {
+                        const json = JSON.parse(trimmed.slice(6));
+                        fullText += json.choices[0]?.delta?.content || '';
+                    } catch (e) {}
+                }
+            }
 //            process.stdout.write(`\n==== DEBUG RESPONSE ====${fullText}`);
             process.stdout.write('\n');
             this.log(`   ✅ Complete. Raw Output Length: ${fullText.length} chars`);

@@ -81,6 +81,21 @@ async function main() {
             });
             break;
 
+        case 'ask':
+            if (!ARG1) throw new Error('Usage: ask <query> [treeId]');
+            const q = ARG1;
+            const tId = ARG2 || 'notes';
+
+            const response = await fraktag.ask(q, tId);
+
+            console.log('\n=========================================');
+            console.log('🤖 ORACLE ANSWER');
+            console.log('=========================================\n');
+            console.log(response.answer);
+            console.log('\n-----------------------------------------');
+            console.log('📚 References:', response.references.length);
+            break;
+
         case 'verify':
             const vId = ARG1 || 'default';
             const res = await fraktag.verifyTree(vId);

@@ -502,6 +502,63 @@ export class Fraktag {
         throw new Error(`Unknown LLM adapter: ${config.adapter}`);
     }
   }
+
+  /**
+   * ASK: The Synthesis Layer (RAG/KAG)
+   * Combines Retrieval with Generation to answer a user question.
+   */
+  async ask(query: string, treeId: string = 'notes'): Promise<{ answer: string; references: string[] }> {
+    console.log(`\n🧠 [Synthesis] Asking: "${query}"`);
+
+    // 1. RETRIEVE (The Explorer)
+    const retrieval = await this.retrieve({
+      query,
+      treeId,
+      maxDepth: 5,
+      resolution: 'L2' // High fidelity content needed for answers
+    });
+
+    if (retrieval.nodes.length === 0) {
+      return {
+        answer: "I explored the knowledge tree but found no relevant information to answer your question.",
+        references: []
+      };
+    }
+
+    // 2. CONTEXT PREPARATION
+    // We format the sources so the model knows where facts come from.
+    const context = retrieval.nodes.map((node, i) =>
+        `--- [SOURCE ${i+1}] (ID: ${node.nodeId}) ---\n${node.content}`
+    ).join('\n\n');
+
+    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
+    
+    Guidelines:
+    - Cite your sources using [Source X].
+    - If the context mentions specific terms (like "Polecats" or "Beads"), define them as the text does.
+    - Do not use outside knowledge. If the answer isn't in the text, say so.
+    
+    Context:
+    ${context}
+    
+    Question: ${query}
+    
+    Answer:`;
+
+    // 3. GENERATION
+    console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
+
+    const answer = await this.llm.complete(
+        prompt,
+        {},
+        { maxTokens: 4096 } // Generous limit for the final answer
+    );
+
+    return {
+      answer,
+      references: retrieval.nodes.map(n => n.path)
+    };
+  }
 }
 
 // Export all types
