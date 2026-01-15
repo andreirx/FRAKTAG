@@ -113,7 +113,7 @@ Evaluate the summary against the source.
 If the summary is accurate and faithful, respond with:
 {"status": "PASS", "reason": "Summary accurately represents source"}
 
-If the summary contains heresy, respond with:
+If the summary contains heresy, respond with (example):
 {"status": "FAIL", "reason": "Specific explanation of the heresy", "correctedSummary": "Your corrected version"}
 
 Respond ONLY with JSON.`,
@@ -125,7 +125,7 @@ An Anchor is the **EXACT** first 15-30 characters of the text that starts a new 
 
 Rules:
 1. Return a JSON object with a list of strings called "anchors".
-2. Each anchor must be the **EXACT** text characters that start the section (e.g. "## Character: Coach Arden").
+2. Each anchor must be the **EXACT** text characters that start the section.
 3. Do NOT rewrite or summarize. Copy-paste the start of the line.
 4. If there are Markdown headers (#, ##, ###), use those lines as anchors.
 
@@ -135,7 +135,7 @@ Content:
 {{content}}
 ---
 
-Respond ONLY with JSON:
+Respond ONLY with JSON - here's an example:
 { "anchors": ["Chapter 1: Introduction...", "The second concept is...", "### Technical Details..."] }`,
 
   evaluateRelevance: `You are the Scout. Your job is to determine if this knowledge node is relevant to the user's quest.
