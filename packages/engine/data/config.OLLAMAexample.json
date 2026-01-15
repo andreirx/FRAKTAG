@@ -1,0 +1,34 @@
+{
+  "instanceId": "strix-halo-evo-x2",
+  "storagePath": ".",
+  "llm": {
+    "adapter": "ollama",
+    "model": "qwen3-coder-128k",
+    "endpoint": "http://localhost:11434"
+  },
+  "trees": [
+    {
+      "id": "notes",
+      "name": "Master Notes",
+      "organizingPrinciple": "Universal Knowledge Base. Organized by Domain (Tech/Personal), Project, and Status.",
+      "autoPlace": true,
+      "placementStrategy": "Sort into 'Active Projects', 'Reference', 'Archives', or 'Journal'. Create new sub-categories if topic is novel.",
+      "dogma": {
+        "strictness": "strict",
+        "forbiddenConcepts": ["marketing fluff", "generic filler"],
+        "requiredContext": ["context", "timestamp if available"]
+      }
+    },
+    {
+      "id": "codebase",
+      "name": "Codebase Map",
+      "organizingPrinciple": "Software Architecture. Group by Module, Component, and Layer.",
+      "autoPlace": false
+    }
+  ],
+  "ingestion": {
+    "splitThreshold": 2000, 
+    "maxDepth": 5,
+    "chunkOverlap": 200
+  }
+}
