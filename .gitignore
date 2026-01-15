@@ -12,4 +12,5 @@ packages/engine/data/trees/*
 packages/engine/data/*.json
 !packages/engine/data/content/.gitkeep
 !packages/engine/data/trees/.gitkeep
-!packages/engine/data/config.example.json
+!packages/engine/data/config.OpenAIexample.json
+!packages/engine/data/config.OLLAMAexample.json

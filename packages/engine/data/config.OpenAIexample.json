@@ -1,0 +1,29 @@
+{
+  "instanceId": "openai-cloud-brain",
+  "storagePath": ".",
+  "llm": {
+    "adapter": "openai",
+    "model": "gpt-4.1-mini",
+    "apiKey": "sk-proj-...",
+    "timeoutMs": 15000
+  },
+  "embedding": {
+    "adapter": "openai",
+    "model": "text-embedding-3-small",
+    "apiKey": "sk-proj-..."
+  },
+  "trees": [
+    {
+      "id": "notes",
+      "name": "Cloud Notes",
+      "organizingPrinciple": "Universal Knowledge Base",
+      "autoPlace": true,
+      "dogma": { "strictness": "strict" }
+    }
+  ],
+  "ingestion": {
+    "splitThreshold": 2000,
+    "maxDepth": 8,
+    "chunkOverlap": 100
+  }
+}
