@@ -13,7 +13,8 @@ export interface FraktagConfig {
 
 export interface LLMConfig {
   adapter: 'ollama' | 'openai' | 'anthropic';
-  model: string;                    // 'llama3', 'gpt-4o', 'claude-sonnet-4-20250514'
+  model: string;                    // 'qwen3-coder', 'gpt-4.1-mini', 'claude-sonnet-4-20250514'
+  basicModel?: string;              // BASIC model (e.g. gpt-5-nano)
   endpoint?: string;                // For ollama: 'http://localhost:11434'
   apiKey?: string;                  // For cloud providers
   prompts?: Partial<PromptSet>;     // Override defaults

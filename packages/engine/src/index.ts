@@ -40,16 +40,26 @@ export class Fraktag {
   private treeStore: TreeStore;
   private fractalizer: Fractalizer;
   private navigator: Navigator;
-  private llm: ILLMAdapter;
   private embedder: IEmbeddingAdapter;
   private vectorStore: VectorStore;
+  private basicLlm: ILLMAdapter;
+  private smartLlm: ILLMAdapter;
 
   private constructor(config: FraktagConfig, storage: JsonStorage) {
     this.config = config;
     this.storage = storage;
 
-    // Initialize LLM adapter
-    this.llm = this.createLLMAdapter(config.llm);
+    // 1. Initialize Smart LLM (The Brain)
+    this.smartLlm = this.createLLMAdapter(config.llm);
+
+    // 2. Initialize Basic LLM (The Worker)
+    if (config.llm.basicModel) {
+      // Clone config but swap model
+      const basicConfig = { ...config.llm, model: config.llm.basicModel };
+      this.basicLlm = this.createLLMAdapter(basicConfig);
+    } else {
+      this.basicLlm = this.smartLlm; // Fallback
+    }
 
     // Initialize stores
     this.contentStore = new ContentStore(storage);
@@ -69,7 +79,8 @@ export class Fraktag {
       this.contentStore,
       this.treeStore,
       this.vectorStore,
-      this.llm,
+      this.basicLlm, // <--- Use Basic for fast tasks
+      this.smartLlm, // <--- Use Smart for hard tasks
       config.ingestion,
       prompts
     );
@@ -78,7 +89,7 @@ export class Fraktag {
       this.contentStore,
       this.treeStore,
       this.vectorStore,
-      this.llm
+      this.basicLlm // <--- Navigator uses Basic for speed
     );
   }
 
@@ -279,7 +290,7 @@ export class Fraktag {
         // Regenerate gist with new content
         const tree = await this.treeStore.getTree(node.treeId);
         try {
-          const newGist = await this.llm.complete(
+          const newGist = await this.basicLlm.complete(
             DEFAULT_PROMPTS.generateGist,
             { content: request.content, organizingPrinciple: tree.organizingPrinciple }
           );
@@ -400,7 +411,7 @@ export class Fraktag {
     }
 
     const tree = await this.treeStore.getTree(treeId);
-    const gist = await this.llm.complete(
+    const gist = await this.basicLlm.complete(
       DEFAULT_PROMPTS.generateGist,
       { content: content.payload, organizingPrinciple: tree.organizingPrinciple }
     );
@@ -548,7 +559,7 @@ export class Fraktag {
     // 3. GENERATION
     console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
 
-    const answer = await this.llm.complete(
+    const answer = await this.smartLlm.complete(
         prompt,
         {},
         { maxTokens: 4096 } // Generous limit for the final answer

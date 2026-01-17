@@ -4,6 +4,7 @@
   "llm": {
     "adapter": "ollama",
     "model": "qwen3-coder-128k",
+    "basicModel": "deepseek-coder-v2:lite",
     "endpoint": "http://localhost:11434"
   },
   "trees": [
@@ -17,6 +18,27 @@
         "strictness": "strict",
         "forbiddenConcepts": ["marketing fluff", "generic filler"],
         "requiredContext": ["context", "timestamp if available"]
+      }
+    },
+    {
+      "id": "conversations",
+      "name": "Infinite Context Log",
+      "organizingPrinciple": "Episodic Narrative. Organized Hierarchically by: 1. Epoch/Year, 2. Session/Project Thread, 3. Interaction Phase (e.g., 'Problem Statement', 'Exploration', 'Resolution').",
+      "autoPlace": true,
+      "placementStrategy": "Place chronologically under the active Session ID. If the conversation shifts topic significantly, create a new Phase node under the same Session. Do NOT merge distinct sessions.",
+      "dogma": {
+        "strictness": "fanatical",
+        "forbiddenConcepts": [
+          "generic summaries (e.g., 'discussed various options')",
+          "omitting code blocks or specific configuration values",
+          "merging distinct dissenting arguments into a single consensus",
+          "losing the chronological order of events"
+        ],
+        "requiredContext": [
+          "The specific User Intent",
+          "The Decision State (Agreed/Pending/Rejected)",
+          "Unique identifiers (File names, Error codes, Variable names)"
+        ]
       }
     },
     {

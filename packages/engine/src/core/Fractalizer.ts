@@ -15,7 +15,8 @@ export class Fractalizer {
     private contentStore: ContentStore,
     private treeStore: TreeStore,
     private vectorStore: VectorStore,
-    private llm: ILLMAdapter,
+    private basicLlm: ILLMAdapter, // FAST
+    private smartLlm: ILLMAdapter, // SMART
     private config: IngestionConfig,
     private prompts: PromptSet
   ) {}
@@ -39,7 +40,7 @@ export class Fractalizer {
     });
 
     const tree = await this.treeStore.getTree(treeId);
-    const rawGist = await this.llm.complete(
+    const rawGist = await this.basicLlm.complete(
       this.prompts.generateGist,
       { content, organizingPrinciple: tree.organizingPrinciple }
     );
@@ -65,41 +66,21 @@ export class Fractalizer {
    * Process content with splitting logic (for large documents)
    */
   private async processContentWithSplitting(
-    content: string,
-    contentId: string,
-    gist: string,
-    treeId: string,
-    parentId: string,
-    currentPath: string,
-    depth: number
+      content: string,
+      contentId: string,
+      gist: string,
+      treeId: string,
+      parentId: string,
+      currentPath: string,
+      depth: number
   ): Promise<TreeNode> {
 
     const tree = await this.treeStore.getTree(treeId);
     const wordCount = content.split(/\s+/).length;
-    let shouldSplit = false;
-    let suggestedSections: string[] = [];
-
-    // 1. Decide IF we should split
-    if (wordCount > this.config.splitThreshold && depth < this.config.maxDepth) {
-      try {
-        const decisionJson = await this.llm.complete(
-          this.prompts.shouldSplit,
-          { content, threshold: this.config.splitThreshold }
-        );
-        const parsed = JSON.parse(decisionJson);
-        shouldSplit = parsed.split;
-        suggestedSections = parsed.suggestedSections || [];
-      } catch (error) {
-        console.error('Failed to parse split decision:', error);
-        shouldSplit = false;
-      }
-    }
 
     const nodeId = randomUUID();
     const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
 
-    // VECTORIZE: Index this node before recursing
-    // We index the Gist + Start of Content to make it searchable
     await this.vectorStore.add(nodeId, `Gist: ${gist}\n${content.slice(0, 300)}`);
 
     let node: TreeNode = {
@@ -115,103 +96,140 @@ export class Fractalizer {
       updatedAt: new Date().toISOString(),
     };
 
-    // 2. Perform Surgical Split
-    if (shouldSplit) {
-      try {
-        console.log(`   🔪 Surgical Split initiated based on: ${suggestedSections.join(', ')}`);
-        
-        const anchorsJson = await this.llm.complete(
-          this.prompts.findSplitAnchors,
-          { content, sections: suggestedSections.join(', ') },
-        );
+    // === HEURISTIC SPLIT STRATEGY ===
+    if (wordCount > this.config.splitThreshold && depth < this.config.maxDepth) {
 
-        let { anchors } = JSON.parse(anchorsJson) as { anchors: string[] };
+      // 1. Try Regex Split (Markdown Headers)
+      let chunks = this.splitByRegex(content);
+      let method = 'Regex';
 
-        // FAILSAFE: If LLM returns too few anchors for a large file with Markdown headers
-        if (content.length > 5000 && anchors.length < 3) {
-          const headerMatches = content.match(/^##\s+.+$/gm);
-          if (headerMatches && headerMatches.length > 5) {
-            console.log(`   ⚠️  LLM might have missed anchors. Using ${headerMatches.length} Markdown headers as fallback.`);
-            anchors = headerMatches;
-          }
-        }
+      // 2. If Regex failed (1 chunk), try AI Split
+      if (chunks.length <= 1) {
+        chunks = await this.splitByAI(content);
+        method = 'AI';
+      }
 
-        // EXECUTE THE CUTS
-        const chunks = this.executeCuts(content, anchors);
-        console.log(`   ✂️  Cut into ${chunks.length} chunks`);
+      // 3. If AI failed, Hard Split
+      if (chunks.length <= 1) {
+        chunks = this.splitByLength(content, this.config.splitThreshold * 5); // ~characters
+        method = 'Hard';
+      }
+
+      if (chunks.length > 1) {
+        console.log(`   🔪 Splitting via ${method}: ${chunks.length} chunks`);
 
         const children: TreeNode[] = [];
-        
-        // 3. Process Children
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
-
-          // FIX: Generate readable ID based on parent
           const chunkId = `${contentId}-part-${i}`;
 
-          // Materialize Chunk
-          const chunkAtom = await this.contentStore.create({
-              payload: chunk,
-              mediaType: 'text/plain',
-              createdBy: 'system',
-              customId: chunkId,
-              metadata: { parentContentId: contentId, splitIndex: i, isDerivedChunk: true }
+          await this.contentStore.create({
+            payload: chunk,
+            mediaType: 'text/plain',
+            createdBy: 'system',
+            customId: chunkId,
+            metadata: { parentContentId: contentId, splitIndex: i, isDerivedChunk: true }
           });
 
-          // Generate Unique Gist for Chunk
-          const chunkGistRaw = await this.llm.complete(
+          // Basic LLM for speed
+          const chunkGistRaw = await this.basicLlm.complete(
               this.prompts.generateGist,
               { content: chunk, organizingPrinciple: tree.organizingPrinciple }
           );
+          // Smart LLM for quality check
           const chunkGist = await this.sanctify(chunk, chunkGistRaw, treeId, 'L0');
 
-
           const child = await this.processContentWithSplitting(
-            chunk,
-            chunkAtom.id,
-            chunkGist,
-            treeId,
-            nodeId,
-            path,
-            depth + 1
+              chunk, chunkId, chunkGist, treeId, nodeId, path, depth + 1
           );
           child.sortOrder = i;
           await this.treeStore.saveNode(child);
           children.push(child);
         }
 
-        // 4. Generate L1 Map
+        // Generate Map with Basic LLM
         const childGists = children.map(c => c.l0Gist);
-        const rawL1Summary = await this.llm.complete(
-          this.prompts.generateL1,
-          {
-            parentGist: gist,
-            childGists: childGists,
-            organizingPrinciple: tree.organizingPrinciple,
-          }
+        const rawL1Summary = await this.basicLlm.complete(
+            this.prompts.generateL1,
+            { parentGist: gist, childGists: childGists, organizingPrinciple: tree.organizingPrinciple }
         );
-
-        const childGistsText = childGists.join('\n');
-        const l1Summary = await this.sanctify(childGistsText, rawL1Summary, treeId, 'L1');
+        // Inquisit Map with Smart LLM
+        const l1Summary = await this.sanctify(childGists.join('\n'), rawL1Summary, treeId, 'L1');
 
         node.l1Map = {
           summary: l1Summary,
           childInventory: children.map(c => ({ nodeId: c.id, gist: c.l0Gist })),
           outboundRefs: [],
         };
-      } catch (error) {
-        console.error('Failed to perform surgical split:', error);
       }
     }
 
     await this.treeStore.saveNode(node);
     await this.vectorStore.save(treeId);
 
-    if (parentId) {
-      await this.bubbleUp(parentId);
+    if (parentId) await this.bubbleUp(parentId);
+    return node;
+  }
+
+  // --- SPLIT HELPERS ---
+
+  private splitByRegex(content: string): string[] {
+    // Matches Markdown headers (#, ##, ###)
+    const regex = /^(#{1,3})\s+(.+)$/gm;
+    const matches = [...content.matchAll(regex)];
+    if (matches.length < 2) return [content];
+
+    const chunks: string[] = [];
+
+    // Capture preamble (text before first header)
+    if (matches[0].index! > 0) {
+      chunks.push(content.slice(0, matches[0].index).trim());
     }
 
-    return node;
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index!;
+      const end = matches[i+1] ? matches[i+1].index! : content.length;
+      const text = content.slice(start, end).trim();
+      if (text.length > 0) chunks.push(text);
+    }
+    return chunks;
+  }
+
+  private async splitByAI(content: string): Promise<string[]> {
+    // Only ask AI if content is manageable (< 50k chars)
+    if (content.length > 50000) return [content];
+
+    try {
+      console.log(`      ... Attempting AI semantic split ...`);
+
+      // First get suggestions (Basic LLM is enough for analyzing structure)
+      const decisionJson = await this.basicLlm.complete(
+          this.prompts.shouldSplit,
+          { content, threshold: this.config.splitThreshold }
+      );
+      const { suggestedSections } = JSON.parse(decisionJson);
+
+      if (!suggestedSections || suggestedSections.length < 2) return [content];
+
+      // Ask for Anchors (smart LLM is necessary for generating JSON)
+      const anchorsJson = await this.smartLlm.complete(
+          this.prompts.findSplitAnchors,
+          { content, sections: suggestedSections.join(', ') },
+      );
+      const { anchors } = JSON.parse(anchorsJson);
+
+      return this.executeCuts(content, anchors);
+    } catch (e) {
+      return [content];
+    }
+  }
+
+  private splitByLength(content: string, size: number): string[] {
+    const chunks = [];
+    for (let i = 0; i < content.length; i += size) {
+      chunks.push(content.slice(i, i + size));
+    }
+    return chunks;
   }
 
   // Helper: The Knife
@@ -222,15 +240,15 @@ export class Fractalizer {
     // Sort anchors by position in text to ensure sequential cutting
     // Note: We scan from lastIndex to avoid duplicate phrases appearing earlier causing loops
     const sortedCutPoints: number[] = [];
-    
+
     let searchCursor = 0;
     for (const anchor of anchors) {
         const idx = content.indexOf(anchor, searchCursor);
         if (idx !== -1) {
             sortedCutPoints.push(idx);
-            // Move cursor forward, but allow some overlap if anchors are close? 
+            // Move cursor forward, but allow some overlap if anchors are close?
             // Better to strictly move past the anchor.
-            searchCursor = idx + 1; 
+            searchCursor = idx + 1;
         } else {
             console.warn(`   ⚠️  Anchor not found: "${anchor.slice(0, 20)}..."`);
         }
@@ -241,14 +259,14 @@ export class Fractalizer {
         // Option A: Treat 0->FirstAnchor as a chunk
         // Option B: Assume the first anchor was supposed to be the start
         // Let's go with Option A to be safe against data loss
-        sortedCutPoints.unshift(0); 
+        sortedCutPoints.unshift(0);
     }
 
     // Slice and Dice
     for (let i = 0; i < sortedCutPoints.length; i++) {
         const start = sortedCutPoints[i];
         const end = sortedCutPoints[i + 1] ?? content.length; // Defaults to end of string
-        
+
         const text = content.slice(start, end).trim();
         if (text.length > 0) {
             chunks.push(text);
@@ -293,7 +311,7 @@ export class Fractalizer {
       const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\\n');
 
       try {
-        const placementJson = await this.llm.complete(
+        const placementJson = await this.basicLlm.complete(
           this.prompts.placeInTree,
           {
             organizingPrinciple: tree.organizingPrinciple,
@@ -420,7 +438,7 @@ export class Fractalizer {
       const tree = await this.treeStore.getTree(treeId);
       const contentSample = summaryType === 'L0' ? content.slice(0, 3000) : content;
 
-      const heresyCheck = await this.llm.complete(
+      const heresyCheck = await this.smartLlm.complete(
         this.prompts.detectHeresy,
         {
           content: contentSample,
@@ -473,7 +491,7 @@ export class Fractalizer {
     const childGists = children.map(c => c.l0Gist);
 
     try {
-      const rawL1Summary = await this.llm.complete(
+      const rawL1Summary = await this.basicLlm.complete(
         this.prompts.generateL1,
         {
           parentGist: node.l0Gist,
