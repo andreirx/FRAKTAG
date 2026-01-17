@@ -1,8 +1,7 @@
-// packages/engine/src/cli.ts
-
+#!/usr/bin/env node
 import { Fraktag } from './index.js';
-import { readFile, readdir, stat } from 'fs/promises';
-import { join } from 'path';
+import {readFile, readdir, stat, access, writeFile, mkdir} from 'fs/promises';
+import {join, resolve} from 'path';
 
 const COMMAND = process.argv[2];
 const ARG1 = process.argv[3];
@@ -17,6 +16,55 @@ async function main() {
             console.log('Initializing Trees...');
             // Just loading the config initializes the trees defined in it
             console.log('Done.');
+            break;
+
+        case 'init':
+            const targetDir = resolve(process.cwd(), '.fraktag');
+
+            // 1. Create Structure
+            await mkdir(join(targetDir, 'content'), { recursive: true });
+            await mkdir(join(targetDir, 'trees'), { recursive: true });
+            await mkdir(join(targetDir, 'indexes'), { recursive: true });
+
+            // 2. Create Default Config (Safe for Git)
+            const defaultConfig = {
+                instanceId: "local-repo",
+                storagePath: ".", // Relative to config.json, so it points to .fraktag/
+                llm: {
+                    adapter: "openai", // or ollama
+                    model: "gpt-4o",
+                    basicModel: "gpt-4o-mini",
+                    // NO API KEY HERE - Use Env Vars
+                },
+                trees: [
+                    {
+                        id: "project",
+                        name: "Project Knowledge",
+                        organizingPrinciple: "Organize by Module, Feature, and Architecture Layer.",
+                        autoPlace: true,
+                        dogma: { strictness: "strict" }
+                    }
+                ],
+                ingestion: {
+                    splitThreshold: 1500,
+                    maxDepth: 5,
+                    chunkOverlap: 100
+                }
+            };
+
+            const configPath = join(targetDir, 'config.json');
+
+            // Check if exists
+            try {
+                await access(configPath);
+                console.log('⚠️  .fraktag/config.json already exists. Skipping overwrite.');
+            } catch {
+                await writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
+                console.log('✅ Created .fraktag/config.json');
+            }
+
+            console.log('\nFractal Brain initialized in .fraktag/');
+            console.log('👉 Tip: Add .env to .gitignore and put FRAKTAG_OPENAI_KEY=... there.');
             break;
 
         case 'ingest-file':
@@ -103,7 +151,7 @@ async function main() {
             break;
 
         default:
-            console.log('Commands: setup, ingest-file <file>, ingest-dir <dir>, browse <treeId>, verify <treeId>');
+            console.log('Commands: setup, init,  ingest-file <file>, ingest-dir <dir>, browse <treeId>, retrieve "topic", ask "question", verify <treeId>');
     }
 }
 

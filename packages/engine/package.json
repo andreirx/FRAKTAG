@@ -2,6 +2,9 @@
   "name": "@fraktag/engine",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "fkt": "./dist/cli.js"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

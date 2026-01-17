@@ -499,14 +499,11 @@ export class Fraktag {
           model: config.model,
         });
       case 'openai':
-        if (!config.apiKey) {
-          throw new Error('OpenAI adapter requires an apiKey in config');
+        const apiKey = config.apiKey || process.env.FRAKTAG_OPENAI_KEY || process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+          throw new Error('OpenAI adapter requires apiKey (config or FRAKTAG_OPENAI_KEY env var)');
         }
-        return new OpenAIAdapter({
-          apiKey: config.apiKey,
-          model: config.model,
-          endpoint: config.endpoint // Optional override
-        });
+        return new OpenAIAdapter({ ...config, apiKey });
       case 'anthropic':
         throw new Error('Anthropic adapter not yet implemented');
       default:
