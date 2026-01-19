@@ -2,6 +2,7 @@
 import { Fraktag } from './index.js';
 import {readFile, readdir, stat, access, writeFile, mkdir} from 'fs/promises';
 import {join, resolve} from 'path';
+import { FileProcessor } from './utils/FileProcessor.js'; // Import the new processor
 
 const COMMAND = process.argv[2];
 const ARG1 = process.argv[3];
@@ -10,6 +11,7 @@ const ARG2 = process.argv[4];
 async function main() {
     // Load Config
     const fraktag = await Fraktag.fromConfigFile('./data/config.json');
+    const processor = new FileProcessor();
 
     switch (COMMAND) {
         case 'setup':
@@ -69,15 +71,7 @@ async function main() {
 
         case 'ingest-file':
             if (!ARG1) throw new Error('Usage: ingest-file <path> [treeId]');
-            const content = await readFile(ARG1, 'utf-8');
-            console.log(`Ingesting ${ARG1}...`);
-            const result = await fraktag.upsert({
-                content,
-                externalId: ARG1, // Use filepath as ID
-                sourceUri: ARG1,
-                targetTrees: ARG2 ? [ARG2] : undefined
-            });
-            console.log('Placements:', JSON.stringify(result.placements, null, 2));
+            await handleIngest(fraktag, processor, ARG1, ARG2);
             break;
 
         case 'ingest-dir':
@@ -88,14 +82,7 @@ async function main() {
                 const path = join(ARG1, f);
                 if ((await stat(path)).isDirectory()) continue;
 
-                console.log(`Processing ${f}...`);
-                const txt = await readFile(path, 'utf-8');
-                await fraktag.upsert({
-                    content: txt,
-                    externalId: path,
-                    sourceUri: path,
-                    targetTrees: ARG2 ? [ARG2] : undefined
-                });
+                await handleIngest(fraktag, processor, path, ARG2);
             }
             console.log('Batch ingestion complete.');
             break;
@@ -152,6 +139,41 @@ async function main() {
 
         default:
             console.log('Commands: setup, init,  ingest-file <file>, ingest-dir <dir>, browse <treeId>, retrieve "topic", ask "question", verify <treeId>');
+    }
+}
+
+// Helper to DRY up file/dir ingestion logic
+async function handleIngest(fraktag: Fraktag, processor: FileProcessor, filePath: string, treeId?: string) {
+    try {
+        console.log(`Processing ${filePath}...`);
+
+        // 1. Read as Binary Buffer
+        const buffer = await readFile(filePath);
+
+        // 2. Convert to Text (or null if binary/unsupported)
+        const text = await processor.process(filePath, buffer);
+
+        if (!text) {
+            console.log(`   ⏭️  Skipped (Binary or Unsupported)`);
+            return;
+        }
+
+        if (text.trim().length === 0) {
+            console.log(`   ⏭️  Skipped (Empty)`);
+            return;
+        }
+
+        // 3. Ingest Text
+        const result = await fraktag.upsert({
+            content: text,
+            externalId: filePath,
+            sourceUri: filePath,
+            targetTrees: treeId ? [treeId] : undefined
+        });
+
+        console.log(`   ✅ Ingested. Placements: ${result.placements.length}`);
+    } catch (e) {
+        console.error(`   ❌ Failed to ingest ${filePath}:`, e);
     }
 }
 
