@@ -58,6 +58,7 @@ export interface PromptSet {
   evaluateRelevance: string;
   assessContainment: string; // NEW: The Compass (Orientation)
   assessRelevance: string;   // NEW: The Magnet (Treasure Hunt)
+  checkSimilarity: string;
   routeTraversal: string;
 }
 

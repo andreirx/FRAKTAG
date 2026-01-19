@@ -215,7 +215,20 @@ Does this fragment contain high-fidelity information relevant to the query?
 - 0-3 means irrelevant.
 
 Output Format:
-SCORE | REASONING`
+SCORE | REASONING`,
+
+  checkSimilarity: `You are the Librarian. Determine if the "New Content" is effectively a duplicate, update, or subset of the "Existing Node".
+
+New Content Gist: "{{newGist}}"
+
+Existing Node Gist: "{{existingGist}}"
+
+Task:
+- Return MATCH if they cover the same core topic/concept.
+- Return DISTINCT if they are different topics.
+
+Respond ONLY with JSON:
+{"status": "MATCH" | "DISTINCT", "reason": "..."}`
 
 };
 

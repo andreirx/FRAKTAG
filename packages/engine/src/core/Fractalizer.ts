@@ -306,14 +306,42 @@ export class Fractalizer {
     let currentParent = await this.treeStore.getNodeFromTree(treeId, currentParentId);
     if (!currentParent) throw new Error(`Root node not found for tree: ${treeId}`);
 
-    const maxPlacementDepth = 3;
+
     let depth = 0;
+    const maxDepth = 4;
 
-    while (depth < maxPlacementDepth) {
-      const children = await this.treeStore.getChildren(currentParentId);
-      if (children.length === 0) break;
+    while (depth < maxDepth) {
+      const children = await this.treeStore.getChildren(currentParent.id);
 
-      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\\n');
+      // --- NEW STEP: SEMANTIC DEDUPLICATION ---
+      // Before asking where to route, check if we are already staring at the node we want.
+      // This prevents "Gas Town" (New) being created next to "Gas Town" (Old).
+      
+      let merged = false;
+      for (const child of children) {
+          const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
+          if (isMatch) {
+              console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0,30)}..." matches new content.`);
+              // We found the node! 
+              // Instead of creating a new one, we should probably "Merge" into this one.
+              // For this architecture, "Merging" means we treat THIS child as the target 
+              // and recurse into it to see if we can be more specific, 
+              // OR we append the content here.
+              
+              currentParent = child;
+              depth++;
+              merged = true;
+              break; // Break child loop, continue depth loop
+          }
+      }
+      
+      if (merged) continue; // Continue to next depth level with the matched child as parent
+
+      // --- END NEW STEP ---
+
+      // If no direct match, proceed with standard routing (The existing logic)
+      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
+      
       try {
         const placementJson = await this.basicLlm.complete(
             this.prompts.placeInTree,
@@ -354,6 +382,22 @@ export class Fractalizer {
     return this.processContentWithSplitting(content.payload, contentId, gist, treeId, currentParentId, currentParent.path, 0);
   }
 
+  private async checkSemanticMatch(newGist: string, existingGist: string): Promise<boolean> {
+    // Optimization: Fast string check first
+    if (newGist === existingGist) return true;
+
+    try {
+        const response = await this.basicLlm.complete(
+            this.prompts.checkSimilarity,
+            { newGist, existingGist }
+        );
+        const json = JSON.parse(response);
+        return json.status === 'MATCH';
+    } catch (e) {
+        return false;
+    }
+  }
+  
   private async createOrganizationalNode(treeId: string, parentId: string, parentPath: string, name: string): Promise<TreeNode> {
     const id = `${parentId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     const path = `${parentPath}/${id}`;
