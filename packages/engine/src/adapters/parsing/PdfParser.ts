@@ -1,6 +1,11 @@
 import { IFileParser } from './IFileParser.js';
-// @ts-ignore - Fixes TS1192. Runtime works because Node handles CJS default exports.
-import pdf from 'pdf-parse';
+import { createRequire } from 'module';
+
+// Initialize a require function for this ESM module
+const require = createRequire(import.meta.url);
+
+// Use require() to load the CJS library cleanly
+const pdf = require('pdf-parse');
 
 export class PdfParser implements IFileParser {
     canHandle(fileName: string): boolean {
