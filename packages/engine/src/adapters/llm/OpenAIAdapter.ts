@@ -94,7 +94,7 @@ export class OpenAIAdapter implements ILLMAdapter {
                 if (expectsJSON) {
                     return this.extractJSON(result);
                 }
-                return result.trim();
+                return this.cleanOutput(result);
 
             } catch (error: any) {
                 lastError = error;
@@ -196,6 +196,15 @@ export class OpenAIAdapter implements ILLMAdapter {
         } finally {
             clearTimeout(id);
         }
+    }
+
+    private cleanOutput(text: string): string {
+        let clean = text.trim();
+        // Remove XML Thinking tags (DeepSeek style)
+        clean = clean.replace(/<(think|thought|reasoning)>[\s\S]*?<\/\1>/gi, '');
+        // Remove Markdown Code Fences
+        clean = clean.replace(/```(?:json)?/g, '').replace(/```/g, '');
+        return clean.trim();
     }
 
     private extractJSON(text: string): string {

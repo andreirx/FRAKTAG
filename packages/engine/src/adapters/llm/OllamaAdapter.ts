@@ -52,20 +52,27 @@ export class OllamaAdapter implements ILLMAdapter {
     // Check if we expect JSON (heuristic based on prompt content)
     const expectsJSON = prompt.includes('Respond ONLY with JSON') || prompt.includes('Return a JSON list');
 
+    const body: any = { // Change to 'any' to allow dynamic props
+      model: this.model,
+      prompt: finalPrompt,
+      stream: true,
+      options: {
+        temperature: 0.1,
+        num_ctx: 131072,
+        num_predict: predictLimit
+      }
+    };
+
+    // ENABLE NATIVE OLLAMA JSON MODE
+    if (expectsJSON) {
+      body.format = 'json';
+    }
+
     try {
       const response = await fetch(`${this.endpoint}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          prompt: finalPrompt,
-          stream: true,
-          options: {
-            temperature: 0.1,
-            num_ctx: 131072,
-            num_predict: predictLimit // Use dynamic limit
-          }
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
