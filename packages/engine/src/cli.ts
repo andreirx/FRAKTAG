@@ -137,8 +137,33 @@ async function main() {
             console.log(res);
             break;
 
+        case 'tree':
+            const tIdTree = ARG1 || 'notes';
+            console.log(await fraktag.printTree(tIdTree));
+            break;
+
+        case 'audit':
+            const tIdAudit = ARG1 || 'notes';
+            const report = await fraktag.audit(tIdAudit);
+
+            console.log('\n=========================================');
+            console.log('🌿 GARDENER REPORT');
+            console.log('=========================================\n');
+
+            if (report.issues && report.issues.length > 0) {
+                report.issues.forEach((issue: any) => {
+                    const icon = issue.severity === 'HIGH' ? '🔴' : '🟡';
+                    console.log(`${icon} [${issue.type}] ${issue.description}`);
+                    console.log(`   Nodes: ${issue.nodeIds.join(', ')}`);
+                    console.log(`   💡 Fix: ${issue.suggestion}\n`);
+                });
+            } else {
+                console.log("✅ The tree looks healthy.");
+            }
+            break;
+
         default:
-            console.log('Commands: setup, init,  ingest-file <file>, ingest-dir <dir>, browse <treeId>, retrieve "topic", ask "question", verify <treeId>');
+            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId>');
     }
 }
 

@@ -5,6 +5,7 @@
     "adapter": "openai",
     "model": "gpt-4.1-mini",
     "basicModel": "gpt-4.1-nano",
+    "expertModel": "gpt-5",
     "apiKey": "sk-proj-...",
     "timeoutMs": 15000
   },

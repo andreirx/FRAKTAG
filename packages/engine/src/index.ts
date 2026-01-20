@@ -42,8 +42,10 @@ export class Fraktag {
   private navigator: Navigator;
   private embedder: IEmbeddingAdapter;
   private vectorStore: VectorStore;
+
   private basicLlm: ILLMAdapter;
   private smartLlm: ILLMAdapter;
+  private expertLlm: ILLMAdapter;
 
   private constructor(config: FraktagConfig, storage: JsonStorage) {
     this.config = config;
@@ -59,6 +61,14 @@ export class Fraktag {
       this.basicLlm = this.createLLMAdapter(basicConfig);
     } else {
       this.basicLlm = this.smartLlm; // Fallback
+    }
+
+    // 3. Initialize Expert (Sage) - NEW
+    if (config.llm.expertModel) {
+      const expertConfig = { ...config.llm, model: config.llm.expertModel };
+      this.expertLlm = this.createLLMAdapter(expertConfig);
+    } else {
+      this.expertLlm = this.smartLlm; // Fallback to standard if no expert defined
     }
 
     // Initialize stores
@@ -492,6 +502,46 @@ export class Fraktag {
     }
   }
 
+  /**
+   * Renders the tree as a visual string (Bash-like)
+   */
+  async printTree(treeId: string): Promise<string> {
+    return await this.treeStore.generateVisualTree(treeId);
+  }
+
+  /**
+   * Uses AI to audit the tree structure for issues
+   * NOW USES EXPERT MODEL
+   */
+  async audit(treeId: string): Promise<any> {
+    console.log(`\n🕵️  The Gardener (Expert) is inspecting tree: ${treeId}...`);
+
+    const treeMap = await this.treeStore.generateTreeMap(treeId);
+    const treeConfig = await this.treeStore.getTree(treeId);
+
+    const dogma = (treeConfig as any).dogma
+        ? JSON.stringify((treeConfig as any).dogma)
+        : "None";
+
+    // USE EXPERT LLM HERE
+    const resultJson = await this.expertLlm.complete(
+        DEFAULT_PROMPTS.analyzeTreeStructure,
+        {
+          treeMap,
+          organizingPrinciple: treeConfig.organizingPrinciple,
+          dogma
+        },
+        { maxTokens: 8192 } // Give the Expert plenty of room to think
+    );
+
+    try {
+      return JSON.parse(resultJson);
+    } catch (e) {
+      console.error("Gardener returned invalid JSON", e);
+      return { issues: [], raw: resultJson };
+    }
+  }
+  
   /**
    * ASK: The Synthesis Layer (RAG/KAG)
    * Combines Retrieval with Generation to answer a user question.

@@ -289,7 +289,37 @@ Rules:
 4. **DUPLICATE**: If they are effectively identical information, return "DUPLICATE".
 
 Respond ONLY with JSON:
-{ "relationship": "SUPERSEDES" | "SUPERSEDED_BY" | "COMPLEMENTARY" | "DUPLICATE", "reasoning": "..." }`
+{ "relationship": "SUPERSEDES" | "SUPERSEDED_BY" | "COMPLEMENTARY" | "DUPLICATE", "reasoning": "..." }`,
+
+  analyzeTreeStructure: `You are the Gardener. You are auditing a Knowledge Graph for structural health.
+
+
+Tree Constitution:
+- **Organizing Principle:** {{organizingPrinciple}}
+- **Dogma/Constraints:** {{dogma}}
+
+Goals:
+1. **Deduplication:** Find nodes that cover the exact same topic.
+2. **Balance:** Find branches that are too deep or too flat.
+3. **Alignment:** Identify nodes that violate the Organizing Principle (e.g., a "Recipe" in a "Tech" tree, or "Tech" in a "Business" branch).
+
+Tree Structure (ID - Gist):
+{{treeMap}}
+
+Respond ONLY with JSON:
+Format:
+{
+  "issues": [
+    {
+      "type": "DUPLICATE" | "IMBALANCE" | "MISPLACED",
+      "severity": "HIGH" | "LOW",
+      "nodeIds": ["id-1", "id-2"],
+      "description": "Why is this an issue?",
+      "suggestion": "What should be done?"
+    }
+  ]
+}
+If the tree looks healthy, return { "issues": [] }.`
 
 };
 

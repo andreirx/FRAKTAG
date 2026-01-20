@@ -215,4 +215,52 @@ export class TreeStore {
 
     return output;
   }
+
+  /**
+   * Generates a Bash-style visual tree string
+   */
+  async generateVisualTree(treeId: string): Promise<string> {
+    const file = await this.loadTreeFile(treeId);
+    const root = file.nodes[file.config.rootNodeId];
+    if (!root) return "Empty Tree";
+
+    let output = `${root.l0Gist} (${root.id})\n`;
+
+    const children = await this.getChildren(root.id);
+    output += await this.drawChildren(file.nodes, children, "");
+
+    return output;
+  }
+
+  private async drawChildren(
+      allNodes: Record<string, TreeNode>,
+      nodes: TreeNode[],
+      prefix: string
+  ): Promise<string> {
+    let output = "";
+
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const isLast = i === nodes.length - 1;
+      const connector = isLast ? "└── " : "├── ";
+
+      const typeIcon = node.contentId ? "📄" : "📂";
+      // Truncate gist for cleaner CLI view
+      const cleanGist = node.l0Gist.replace(/\n/g, ' ').slice(0, 60);
+      const suffix = node.l0Gist.length > 60 ? "..." : "";
+
+      output += `${prefix}${connector}${typeIcon} ${cleanGist}${suffix} [${node.id}]\n`;
+
+      // Get children (recurse)
+      const children = Object.values(allNodes)
+          .filter(n => n.parentId === node.id)
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+
+      if (children.length > 0) {
+        const childPrefix = prefix + (isLast ? "    " : "│   ");
+        output += await this.drawChildren(allNodes, children, childPrefix);
+      }
+    }
+    return output;
+  }
 }
