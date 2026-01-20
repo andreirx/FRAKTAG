@@ -177,7 +177,7 @@ Example:
 node-a123
 node-b456`,
 
-  // 1. THE COMPASS (For routing down the tree)
+// 1. THE COMPASS (For routing down the tree)
   assessContainment: `You are the Librarian. You are navigating a knowledge hierarchy to answer a query.
 User Query: "{{query}}"
 
@@ -185,14 +185,14 @@ Current Location Context: "{{parentContext}}"
 Navigation Phase: {{depthContext}}
 
 Below are the sub-categories (Children) available. 
-Which of these paths might contain the answer?
+Which of these paths might contain the answer to ANY PART of the query?
 
 Guidelines:
-1. **Phase-Specific Logic:**
+1. **Compound Queries:** If the user asks "X and Y", navigate to paths for X *AND* paths for Y.
+2. **Phase-Specific Logic:**
    - If "Orientation Phase": Select ANY path that *could* lead to the topic. Be broad.
    - If "Targeting Phase": Select only paths that seem highly likely.
-2. **Look for Keywords:** Scan labels for terms related to the query.
-3. **Don't Assume:** If the label is vague but the topic is right, explore it.
+3. **Look for Keywords:** Scan labels for terms related to the query.
 
 Available Paths:
 {{childrenList}}
@@ -201,18 +201,24 @@ Output Format:
 List the Node IDs of paths to explore, one per line.
 If NO paths look promising, output: NONE`,
 
-  // 2. THE MAGNET (For checking if the current node IS the answer)
+// 2. THE MAGNET (For checking if the current node IS the answer)
   assessRelevance: `You are the Researcher. 
 User Query: "{{query}}"
 
 Content Fragment:
 "{{content}}"
 
-Does this fragment contain high-fidelity information relevant to the query?
-- Score 0-10. 
-- 8+ means it contains a direct answer or critical context.
-- 4-7 means it is related context.
-- 0-3 means irrelevant.
+Task: Determine if this fragment contains information relevant to ANY PART of the query.
+
+Guidelines:
+- If the query asks about "X and Y", and this content only talks about "X", it is HIGHLY RELEVANT (Score 8+).
+- Do not penalize content for only answering half of a complex question.
+- Look for definitions, relationships, or context matches.
+
+Scoring:
+- 8-10: Direct answer to *any part* of the query.
+- 5-7: Related context or tangential mention.
+- 0-4: Irrelevant.
 
 Output Format:
 SCORE | REASONING`,

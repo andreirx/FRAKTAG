@@ -33,6 +33,63 @@ export class Fractalizer {
       currentPath: string,
       depth: number = 0
   ): Promise<TreeNode> {
+    const wordCount = content.split(/\s+/).length;
+
+    // === ATOMIC PATH (For Small Content) ===
+    // If content is small (< 150 words), treat as Atomic Leaf.
+    // No splitting, no L1 Map generation (it is its own map).
+    if (wordCount < 150) {
+      console.log(`   ⚛️  Atomic Content detected (${wordCount} words). Skipping split logic.`);
+
+      // 1. Create Atom
+      const contentAtom = await this.contentStore.create({
+        payload: content,
+        mediaType: 'text/plain',
+        createdBy: 'system',
+      });
+
+      // 2. Gist = Content (or First Sentence if slightly longer)
+      // Optimization: Use content directly if very short, or basic LLM if > 50 words
+      let gist = content;
+      if (wordCount > 50) {
+        gist = await this.basicLlm.complete(
+            this.prompts.generateGist,
+            { content, organizingPrinciple: (await this.treeStore.getTree(treeId)).organizingPrinciple }
+        );
+      }
+
+      // 3. Routing (Auto-Place or Direct)
+      if (parentId) {
+        // Direct placement (Manual override)
+        const nodeId = randomUUID();
+        const node: TreeNode = {
+          id: nodeId,
+          treeId,
+          parentId,
+          path: `${currentPath}/${nodeId}`,
+          contentId: contentAtom.id,
+          l0Gist: gist,
+          l1Map: null, // Atomic nodes have no children map
+          sortOrder: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        // Index & Save
+        await this.vectorStore.add(nodeId, `Atomic: ${content}`);
+        await this.treeStore.saveNode(node);
+        await this.vectorStore.save(treeId);
+
+        // Update Parent
+        await this.bubbleUp(parentId);
+        return node;
+      } else {
+        // Auto-Place (Routing)
+        return this.autoPlace(contentAtom.id, gist, treeId, true); // Pass 'isAtomic' flag
+      }
+    }
+
+    // === STANDARD PATH (Large Content) ===
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
@@ -58,7 +115,7 @@ export class Fractalizer {
           depth
       );
     } else {
-      return this.autoPlace(contentAtom.id, gist, treeId);
+      return this.autoPlace(contentAtom.id, gist, treeId, false);
     }
   }
 
@@ -297,51 +354,28 @@ export class Fractalizer {
    * Uses LLM to recursively find the right spot in the tree hierarchy
    */
   async autoPlace(
-    contentId: string,
-    gist: string,
-    treeId: string
+      contentId: string,
+      gist: string,
+      treeId: string,
+      isAtomic: boolean = false // New flag
   ): Promise<TreeNode> {
     const tree = await this.treeStore.getTree(treeId);
     let currentParentId = tree.rootNodeId;
     let currentParent = await this.treeStore.getNodeFromTree(treeId, currentParentId);
+
     if (!currentParent) throw new Error(`Root node not found for tree: ${treeId}`);
 
-
+    const maxPlacementDepth = 3;
     let depth = 0;
-    const maxDepth = 4;
 
-    while (depth < maxDepth) {
-      const children = await this.treeStore.getChildren(currentParent.id);
+    // Routing Loop (Same as before)
+    while (depth < maxPlacementDepth) {
+      const children = await this.treeStore.getChildren(currentParentId);
 
-      // --- NEW STEP: SEMANTIC DEDUPLICATION ---
-      // Before asking where to route, check if we are already staring at the node we want.
-      // This prevents "Gas Town" (New) being created next to "Gas Town" (Old).
-      
-      let merged = false;
-      for (const child of children) {
-          const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
-          if (isMatch) {
-              console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0,30)}..." matches new content.`);
-              // We found the node! 
-              // Instead of creating a new one, we should probably "Merge" into this one.
-              // For this architecture, "Merging" means we treat THIS child as the target 
-              // and recurse into it to see if we can be more specific, 
-              // OR we append the content here.
-              
-              currentParent = child;
-              depth++;
-              merged = true;
-              break; // Break child loop, continue depth loop
-          }
-      }
-      
-      if (merged) continue; // Continue to next depth level with the matched child as parent
+      if (children.length === 0) break;
 
-      // --- END NEW STEP ---
+      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\\n');
 
-      // If no direct match, proceed with standard routing (The existing logic)
-      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
-      
       try {
         const placementJson = await this.basicLlm.complete(
             this.prompts.placeInTree,
@@ -352,6 +386,7 @@ export class Fractalizer {
               availableNodes: candidates || 'No existing categories',
             }
         );
+
         const decision = JSON.parse(placementJson);
 
         if (decision.parentNodeId && decision.parentNodeId !== currentParentId) {
@@ -363,23 +398,65 @@ export class Fractalizer {
             continue;
           }
         }
+
         if (decision.createNodes && decision.createNodes.length > 0) {
           const categoryName = decision.createNodes[0];
-          const categoryNode = await this.createOrganizationalNode(treeId, currentParentId, currentParent.path, categoryName);
+          const categoryNode = await this.createOrganizationalNode(
+              treeId,
+              currentParentId,
+              currentParent.path,
+              categoryName
+          );
           currentParentId = categoryNode.id;
           currentParent = categoryNode;
           break;
         }
         break;
+
       } catch (error) {
         console.error('Placement routing error:', error);
         break;
       }
     }
+
+    // FINAL PLACEMENT LOGIC
     const content = await this.contentStore.get(contentId);
     if (!content) throw new Error(`Content not found: ${contentId}`);
 
-    return this.processContentWithSplitting(content.payload, contentId, gist, treeId, currentParentId, currentParent.path, 0);
+    if (isAtomic) {
+      // ATOMIC FINALIZATION
+      const nodeId = randomUUID();
+      const node: TreeNode = {
+        id: nodeId,
+        treeId,
+        parentId: currentParentId,
+        path: `${currentParent.path}${nodeId}`,
+        contentId,
+        l0Gist: gist,
+        l1Map: null, // Atomic = Leaf
+        sortOrder: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await this.vectorStore.add(nodeId, `Atomic: ${content.payload}`);
+      await this.treeStore.saveNode(node);
+      await this.vectorStore.save(treeId);
+
+      await this.bubbleUp(currentParentId);
+      return node;
+    } else {
+      // STANDARD FINALIZATION (Splitting)
+      return this.processContentWithSplitting(
+          content.payload,
+          contentId,
+          gist,
+          treeId,
+          currentParentId,
+          currentParent.path,
+          0
+      );
+    }
   }
 
   private async checkSemanticMatch(newGist: string, existingGist: string): Promise<boolean> {
