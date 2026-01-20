@@ -158,6 +158,29 @@ export class TreeStore {
     this.cache.delete(treeId);
   }
 
+  async deleteNode(nodeId: string): Promise<void> {
+    const node = await this.getNode(nodeId);
+    if (!node) return; // Already gone
+
+    const file = await this.loadTreeFile(node.treeId);
+
+    // Check for children first?
+    // Ideally we should delete children recursively or move them.
+    // For a clean delete, let's delete children too (Cascading Delete).
+    const children = Object.values(file.nodes).filter(n => n.parentId === nodeId);
+    for (const child of children) {
+      await this.deleteNode(child.id);
+    }
+
+    delete file.nodes[nodeId];
+    file.config.updatedAt = new Date().toISOString();
+
+    await this.saveTreeFile(node.treeId, file);
+    // Note: We leave the ContentAtom in ContentStore.
+    // It might be used by other trees.
+    // Garbage collection of orphaned content is a separate maintenance task.
+  }
+
   /**
    * Calculate statistics for the tree to help with navigation heuristics.
    */

@@ -23,7 +23,10 @@ export class OpenAIAdapter implements ILLMAdapter {
         this.model = config.model;
         this.endpoint = config.endpoint || 'https://api.openai.com/v1';
         this.maxRetries = config.maxRetries ?? 3;
-        this.timeoutMs = config.timeoutMs ?? 30_000;
+        // FIX 1: Dynamic Timeout based on model class
+        // GPT-5/O-Series need way more time to think.
+        const isReasoning = this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3');
+        this.timeoutMs = config.timeoutMs ?? (isReasoning ? 120_000 : 30_000); // 2 minutes for experts
     }
 
     private log(msg: string, data?: any) {
@@ -110,6 +113,7 @@ export class OpenAIAdapter implements ILLMAdapter {
     private async performRequest(body: any): Promise<string> {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), this.timeoutMs);
+        const start = Date.now();
 
         try {
             const response = await fetch(`${this.endpoint}/chat/completions`, {
@@ -122,7 +126,7 @@ export class OpenAIAdapter implements ILLMAdapter {
                 signal: controller.signal
             });
 
-            clearTimeout(id);
+            clearTimeout(id); // Clear initial timeout, we have headers
 
             if (!response.ok) {
                 const err = await response.text();
@@ -135,45 +139,56 @@ export class OpenAIAdapter implements ILLMAdapter {
             const decoder = new TextDecoder();
             let fullText = '';
             let buffer = '';
+            let firstTokenReceived = false;
 
             process.stdout.write('   ⏳ Generating: ');
 
-            // Stream Reader Loop
             while (true) {
                 const { value, done } = await reader.read();
                 if (value) {
-                    const chunk = decoder.decode(value, { stream: true });
-                    buffer += chunk;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = done ? '' : lines.pop() || '';
 
-                    let boundary = buffer.indexOf('\n');
-                    while (boundary !== -1) {
-                        const line = buffer.slice(0, boundary).trim();
-                        buffer = buffer.slice(boundary + 1);
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed || trimmed === 'data: [DONE]') continue;
+                        if (trimmed.startsWith('data: ')) {
+                            try {
+                                const json = JSON.parse(trimmed.slice(6));
+                                const delta = json.choices[0]?.delta;
 
-                        // RELAXED PARSING: Check for 'data:' with or without space
-                        if (line && line !== 'data: [DONE]' && line.startsWith('data:')) {
-                            // Remove 'data:' and trim whitespace
-                            const jsonStr = line.slice(5).trim();
-                            if (jsonStr) {
-                                try {
-                                    const json = JSON.parse(jsonStr);
-                                    const content = json.choices[0]?.delta?.content || '';
-                                    if (content) {
-                                        fullText += content;
-                                        if (Math.random() > 0.9) process.stdout.write('.');
+                                // FIX 2: Handle Reasoning Content (The "Thinking" phase)
+                                // Some models emit this before 'content'
+                                if (delta?.reasoning_content) {
+                                    if (!firstTokenReceived) {
+                                        process.stdout.write(' (Thinking) ');
+                                        firstTokenReceived = true;
                                     }
-                                } catch (e) {
-                                    // Partial JSON is common in streams, ignore
+                                    // Optionally log reasoning dots
+                                    if (Math.random() > 0.9) process.stdout.write('°');
                                 }
-                            }
+
+                                // Handle Actual Content
+                                const content = delta?.content || '';
+                                if (content) {
+                                    if (!firstTokenReceived) {
+                                        const latency = Date.now() - start;
+                                        // Clear thinking indicator if present
+                                        process.stdout.write(` [TTFT: ${latency}ms] `);
+                                        firstTokenReceived = true;
+                                    }
+                                    fullText += content;
+                                    if (Math.random() > 0.8) process.stdout.write('.');
+                                }
+                            } catch (e) { }
                         }
-                        boundary = buffer.indexOf('\n');
                     }
                 }
                 if (done) break;
             }
 
-            // Handle any remaining buffer if done
+            // ... (keep buffer flush logic) ...
             if (buffer.trim()) {
                 const trimmed = buffer.trim();
                 if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
@@ -183,7 +198,7 @@ export class OpenAIAdapter implements ILLMAdapter {
                     } catch (e) {}
                 }
             }
-//            process.stdout.write(`\n==== DEBUG RESPONSE ====${fullText}`);
+
             process.stdout.write('\n');
             this.log(`   ✅ Complete. Raw Output Length: ${fullText.length} chars`);
             return fullText;

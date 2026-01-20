@@ -291,35 +291,59 @@ Rules:
 Respond ONLY with JSON:
 { "relationship": "SUPERSEDES" | "SUPERSEDED_BY" | "COMPLEMENTARY" | "DUPLICATE", "reasoning": "..." }`,
 
-  analyzeTreeStructure: `You are the Gardener. You are auditing a Knowledge Graph for structural health.
-
+  analyzeTreeStructure: `You are the Arborist. You are maintaining a Knowledge Tree - keeping its structural health.
 
 Tree Constitution:
 - **Organizing Principle:** {{organizingPrinciple}}
 - **Dogma/Constraints:** {{dogma}}
 
-Goals:
-1. **Deduplication:** Find nodes that cover the exact same topic.
-2. **Balance:** Find branches that are too deep or too flat.
-3. **Alignment:** Identify nodes that violate the Organizing Principle (e.g., a "Recipe" in a "Tech" tree, or "Tech" in a "Business" branch).
+Supported Operations:
+1. **CLUSTER**: found 2+ nodes that are semantic duplicates or highly related. Create a new Parent Node to house them.
+2. **PRUNE**: found a node that is empty, redundant, or explicitly "garbage". Delete it.
+3. **RENAME**: found a node with a vague or misleading gist. Rename it.
+4. **MOVE**: Found a node that is in the wrong category based on the Organizing Principle. Move it to a better existing parent.
 
 Tree Structure (ID - Gist):
 {{treeMap}}
 
 Respond ONLY with JSON:
-Format:
 {
   "issues": [
     {
-      "type": "DUPLICATE" | "IMBALANCE" | "MISPLACED",
-      "severity": "HIGH" | "LOW",
-      "nodeIds": ["id-1", "id-2"],
-      "description": "Why is this an issue?",
-      "suggestion": "What should be done?"
+      "type": "DUPLICATE",
+      "severity": "HIGH",
+      "description": "Nodes A and B are identical",
+      "operation": {
+        "action": "CLUSTER",
+        "targetNodeIds": ["id-a", "id-b"],
+        "newParentName": "Consolidated Gas Town Overview" 
+      }
+    },
+    {
+      "type": "BAD_NAME",
+      "severity": "LOW",
+      "description": "Gist is too vague",
+      "operation": {
+        "action": "RENAME",
+        "targetNodeId": "id-c",
+        "newName": "Specific Technical Details of Beads"
+      }
+    },
+        {
+      "type": "MISALIGNED",
+      "severity": "MEDIUM",
+      "description": "Node 'Server Config' is under 'HR Policy'",
+      "operation": {
+        "action": "MOVE",
+        "targetNodeId": "node-123",
+        "newParentId": "node-456", // ID of 'Engineering'
+        "reason": "Technical configuration belongs in Engineering domain"
+      }
     }
+
   ]
 }
-If the tree looks healthy, return { "issues": [] }.`
+If no changes needed, return { "issues": [] }`
 
 };
 

@@ -28,6 +28,7 @@ import { IEmbeddingAdapter } from './adapters/embeddings/IEmbeddingAdapter.js';
 import { OllamaEmbeddingAdapter } from './adapters/embeddings/OllamaEmbeddingAdapter.js';
 import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAdapter.js';
 import { VectorStore } from './core/VectorStore.js';
+import { Arborist, TreeOperation } from './core/Arborist.js';
 
 
 /**
@@ -42,6 +43,7 @@ export class Fraktag {
   private navigator: Navigator;
   private embedder: IEmbeddingAdapter;
   private vectorStore: VectorStore;
+  private arborist: Arborist;
 
   private basicLlm: ILLMAdapter;
   private smartLlm: ILLMAdapter;
@@ -77,6 +79,8 @@ export class Fraktag {
 
     this.embedder = this.createEmbeddingAdapter(config.embedding);
     this.vectorStore = new VectorStore(storage, this.embedder);
+
+    this.arborist = new Arborist(this.treeStore, this.vectorStore);
 
     // Merge custom prompts with defaults
     const prompts = {
@@ -530,8 +534,7 @@ export class Fraktag {
           treeMap,
           organizingPrinciple: treeConfig.organizingPrinciple,
           dogma
-        },
-        { maxTokens: 8192 } // Give the Expert plenty of room to think
+        }
     );
 
     try {
@@ -541,7 +544,7 @@ export class Fraktag {
       return { issues: [], raw: resultJson };
     }
   }
-  
+
   /**
    * ASK: The Synthesis Layer (RAG/KAG)
    * Combines Retrieval with Generation to answer a user question.
@@ -610,8 +613,7 @@ export class Fraktag {
 
     const answer = await this.smartLlm.complete(
         prompt,
-        {},
-        { maxTokens: 16384 } // Generous limit for the final answer
+        {}
     );
 
     return {
@@ -619,6 +621,14 @@ export class Fraktag {
       references: retrieval.nodes.map(n => n.path)
     };
   }
+
+  /**
+   * Execute a specific fix operation
+   */
+  async applyFix(treeId: string, operation: TreeOperation): Promise<string> {
+    return await this.arborist.execute(treeId, operation);
+  }
+
 }
 
 // Export all types

@@ -144,26 +144,53 @@ async function main() {
 
         case 'audit':
             const tIdAudit = ARG1 || 'notes';
+            const applyFlag = process.argv.includes('--apply');
+
+            console.log('Running Audit...');
             const report = await fraktag.audit(tIdAudit);
 
+            if (!report.issues || report.issues.length === 0) {
+                console.log("✅ The tree looks healthy.");
+                break;
+            }
+
             console.log('\n=========================================');
-            console.log('🌿 GARDENER REPORT');
+            console.log(`🌿 GARDENER FOUND ${report.issues.length} ISSUES`);
             console.log('=========================================\n');
 
-            if (report.issues && report.issues.length > 0) {
-                report.issues.forEach((issue: any) => {
-                    const icon = issue.severity === 'HIGH' ? '🔴' : '🟡';
-                    console.log(`${icon} [${issue.type}] ${issue.description}`);
-                    console.log(`   Nodes: ${issue.nodeIds.join(', ')}`);
-                    console.log(`   💡 Fix: ${issue.suggestion}\n`);
-                });
+            const operations: any[] = [];
+
+            report.issues.forEach((issue: any, index: number) => {
+                const icon = issue.severity === 'HIGH' ? '🔴' : '🟡';
+                console.log(`${index + 1}. ${icon} [${issue.type}] ${issue.description}`);
+                if (issue.operation) {
+                    console.log(`   🛠️  Proposed Action: ${issue.operation.action}`);
+                    if (issue.operation.newParentName) console.log(`       -> Create Parent: "${issue.operation.newParentName}"`);
+                    if (issue.operation.newName) console.log(`       -> Rename to: "${issue.operation.newName}"`);
+                    if (issue.operation.newParentId) console.log(`       -> Move to Parent ID: "${issue.operation.newParentId}"`);
+
+                    operations.push(issue.operation);
+                }
+                console.log('');
+            });
+
+            if (operations.length === 0) break;
+
+            if (applyFlag) {
+                console.log('🚀 Auto-applying fixes (--apply)...');
+                for (const op of operations) {
+                    const res = await fraktag.applyFix(tIdAudit, op);
+                    console.log(`   ✅ ${res}`);
+                }
             } else {
-                console.log("✅ The tree looks healthy.");
+                console.log('\nTo apply these fixes, run:');
+                console.log(`fkt audit ${tIdAudit} --apply`);
+                // Alternatively, implement interactive readline here if you prefer
             }
             break;
 
         default:
-            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId>');
+            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId> [--apply]');
     }
 }
 
