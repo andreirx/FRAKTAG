@@ -46,6 +46,27 @@
           "Unique identifiers (File names, Error codes, Variable names)"
         ]
       }
+    },
+    {
+      "id": "governance",
+      "name": "Enterprise Governance & Standards",
+      "organizingPrinciple": "The Compliance Pyramid. Organized first by Functional Domain (e.g., Engineering, InfoSec, Operations), then by Authority Level: 1. Policies (Mandates), 2. Procedures (SOPs/Workflows), 3. Standards (Coding Rules, Tooling), 4. Records/Reference.",
+      "autoPlace": true,
+      "placementStrategy": "First, identify the Functional Domain (Who owns this?). Second, classify by document type: Is it a rule (Policy), a how-to (Procedure), a technical constraint (Standard), or a definition (Role/Tool)? Group Standards by specific technology or practice area.",
+      "dogma": {
+        "strictness": "fanatical",
+        "forbiddenConcepts": [
+          "interpreting ambiguity as permission",
+          "informal suggestions presented as mandates",
+          "omitting constraints or safety warnings",
+          "hallucinating approvals or authors"
+        ],
+        "requiredContext": [
+          "Compliance Level (MUST vs SHOULD)",
+          "Scope (Who/What this applies to)",
+          "Effective Date or Version Identifier"
+        ]
+      }
     }
   ],
   "ingestion": {
