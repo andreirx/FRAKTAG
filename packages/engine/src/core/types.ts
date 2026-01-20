@@ -53,14 +53,15 @@ export interface PromptSet {
   generateGist: string;
   generateL1: string;
   placeInTree: string;
-  detectHeresy: string;             // Audit summaries for accuracy
+  detectHeresy: string;
   findSplitAnchors: string;
   evaluateRelevance: string;
-  assessContainment: string; // NEW: The Compass (Orientation)
-  assessRelevance: string;   // NEW: The Magnet (Treasure Hunt)
+  assessContainment: string;
+  assessRelevance: string;
   checkSimilarity: string;
   routeTraversal: string;
   globalMapScan: string;
+  assessVectorCandidates: string;
 }
 
 // ============ CONTENT LAYER ============

@@ -26,11 +26,60 @@ export class Navigator {
     const visited = new Set<string>();
     const candidates = new Set<string>(); // IDs to drill into
 
-    // === PHASE 1: VECTOR SEEDING (The Math) ===
-    console.log(`\n🔍 [Phase 1] Vector Seeding`);
+    // =========================================================
+    // 🔍 PHASE 1: VECTOR BATCH RECONNAISSANCE (Smart)
+    // =========================================================
+    console.log(`\n🔍 [Phase 1] Vector Neighborhood Scan`);
     const seeds = await this.vectorStore.search(request.query, 5);
-    seeds.filter(s => s.score > 0.25).forEach(s => candidates.add(s.id));
-    console.log(`   📍 Vectors found ${candidates.size} candidates.`);
+    const validSeeds = seeds.filter(s => s.score > 0.25);
+
+    if (validSeeds.length > 0) {
+      const neighborhoodText = await this.buildNeighborhoodContext(validSeeds);
+
+      try {
+        const decisionJson = await this.llm.complete(
+            DEFAULT_PROMPTS.assessVectorCandidates,
+            { query: request.query, neighborhoods: neighborhoodText },
+            { maxTokens: 1024 }
+        );
+
+        const decision = JSON.parse(decisionJson);
+        const targetIds = decision.relevantNodeIds || [];
+
+        console.log(`   ⚡ Scout selected ${targetIds.length} nodes from vectors.`);
+
+        for (const id of targetIds) {
+          if (visited.has(id)) continue;
+
+          const node = await this.treeStore.getNode(id);
+          if (node) {
+            visited.add(id);
+
+            // SMART CHECK: Leaf or Folder?
+            if (node.contentId) {
+              // IT'S A LEAF: Grab it now (Fastest)
+              console.log(`      💎 Captured Leaf: "${node.l0Gist.slice(0, 50)}..."`);
+              const content = await this.resolveContent(node, request.resolution || 'L2');
+              results.push({
+                nodeId: node.id,
+                path: node.path,
+                resolution: request.resolution || 'L2',
+                content,
+                contentId: node.contentId
+              });
+            } else {
+              // IT'S A FOLDER: Queue for Drilling (Deep)
+              // We remove it from visited so drill() can process it properly
+              visited.delete(id);
+              candidates.add(id);
+              console.log(`      📂 Queueing Folder: "${node.l0Gist.slice(0, 50)}..."`);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("   ❌ Vector Batch Scan failed:", e);
+      }
+    }
 
     // === PHASE 2: GLOBAL MAP SCAN (The "First Glance") ===
     console.log(`\n🔍 [Phase 2] Global Map Scan`);
@@ -112,6 +161,42 @@ export class Navigator {
     const uniqueResults = Array.from(new Map(results.map(item => [item.nodeId, item])).values());
     console.log(`\n🏁 Exploration Complete. Found ${uniqueResults.length} relevant nodes.`);
     return { nodes: uniqueResults, navigationPath: Array.from(visited) };
+  }
+
+  // --- HELPER: Build the Neighborhood Text ---
+  private async buildNeighborhoodContext(seeds: { id: string; score: number }[]): Promise<string> {
+    let output = "";
+
+    for (const seed of seeds) {
+      const node = await this.treeStore.getNode(seed.id);
+      if (!node) continue;
+
+      output += `\n=== NEIGHBORHOOD (Score: ${seed.score.toFixed(2)}) ===\n`;
+
+      // 1. Parent Context
+      if (node.parentId) {
+        const parent = await this.treeStore.getNode(node.parentId);
+        if (parent) {
+          output += `PARENT [${parent.id}]: ${parent.l0Gist}\n`;
+        }
+      }
+
+      // 2. The Node Itself
+      output += `>> FOCUS NODE [${node.id}]: ${node.l0Gist}\n`;
+      if (node.l1Map?.summary) {
+        output += `   Summary: ${node.l1Map.summary.slice(0, 200)}...\n`;
+      }
+
+      // 3. Children
+      const children = await this.treeStore.getChildren(node.id);
+      if (children.length > 0) {
+        output += `   CHILDREN:\n`;
+        children.forEach(c => {
+          output += `   - [${c.id}]: ${c.l0Gist}\n`;
+        });
+      }
+    }
+    return output;
   }
 
   /**

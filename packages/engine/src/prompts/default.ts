@@ -252,7 +252,28 @@ Instructions:
 4. Select up to 5 most promising targets.
 
 Respond ONLY with JSON:
-{ "targetIds": ["id-1", "id-2"], "reasoning": "..." }`
+{ "targetIds": ["id-1", "id-2"], "reasoning": "..." }`,
+
+  // NEW: Batch Vector Analysis
+  assessVectorCandidates: `You are the Scout. We have performed a semantic search and found several "Neighborhoods" in the knowledge graph that might contain the answer.
+
+Quest: "{{query}}"
+
+Your Goal: Select the specific Node IDs that definitely contain relevant information.
+- Look at the Match Node (the vector hit).
+- Look at its Parent (context).
+- Look at its Children (details).
+
+Neighborhoods:
+{{neighborhoods}}
+
+Instructions:
+1. Be strict. Only select nodes that seem useful for the Quest.
+2. If a Parent provides necessary context, select it.
+3. If a Child contains the specific detail needed, select it.
+
+Respond ONLY with JSON:
+{ "relevantNodeIds": ["id-1", "id-2"] }`
 
 };
 
