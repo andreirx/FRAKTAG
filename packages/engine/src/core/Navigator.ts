@@ -34,28 +34,50 @@ export class Navigator {
 
     // === PHASE 2: GLOBAL MAP SCAN (The "First Glance") ===
     console.log(`\n🔍 [Phase 2] Global Map Scan`);
-    const treeMap = await this.treeStore.generateTreeMap(request.treeId);
+    const fullTreeMap = await this.treeStore.generateTreeMap(request.treeId);
 
-    // Safety Check: If tree is massive (>100k chars), maybe truncate?
-    // For 20-50 files, it's fine.
+    // Configurable limit: 200,000 chars (~50k tokens) is safe for 128k models
+    // leaving plenty of room for system prompt + output.
+    const CHUNK_SIZE = 200000;
+    const OVERLAP = 1000;
 
-    try {
-      const scanJson = await this.llm.complete(
-          DEFAULT_PROMPTS.globalMapScan,
-          { query: request.query, treeMap },
-          { maxTokens: 1024 }
-      );
-      const scan = JSON.parse(scanJson);
-      const mapTargets = scan.targetIds || [];
+    const mapChunks = this.chunkText(fullTreeMap, CHUNK_SIZE, OVERLAP);
 
-      console.log(`   🗺️  Strategist identified ${mapTargets.length} targets.`);
-      mapTargets.forEach((id: string) => candidates.add(id));
-
-    } catch (e) {
-      console.error("   ❌ Map Scan failed:", e);
-      // Fallback: Add Root to candidates to force a top-down crawl if map fails?
-      // candidates.add(tree.rootNodeId);
+    if (mapChunks.length > 1) {
+      console.log(`   🗺️  Map too large (${fullTreeMap.length} chars). Split into ${mapChunks.length} chunks for analysis.`);
     }
+
+    // Process chunks (Parallel requests for speed)
+    const scanPromises = mapChunks.map(async (chunk, index) => {
+      try {
+        // Add context header to help LLM understand this is a partial view
+        const partialContext = mapChunks.length > 1
+            ? `(Part ${index + 1} of ${mapChunks.length})`
+            : "";
+
+        const scanJson = await this.llm.complete(
+            DEFAULT_PROMPTS.globalMapScan,
+            {
+              query: request.query,
+              treeMap: `[Map Segment ${partialContext}]\n${chunk}`
+            },
+            { maxTokens: 1024 }
+        );
+
+        const scan = JSON.parse(scanJson);
+        return scan.targetIds || [];
+      } catch (e) {
+        console.error(`   ❌ Map Scan failed for chunk ${index + 1}:`, e);
+        return [];
+      }
+    });
+
+    const allTargets = (await Promise.all(scanPromises)).flat();
+
+    // Deduplicate and Add
+    const uniqueTargets = [...new Set(allTargets)];
+    console.log(`   🗺️  Strategist identified ${uniqueTargets.length} targets from map scan.`);
+    uniqueTargets.forEach((id: string) => candidates.add(id));
 
     // === PHASE 3: PRECISION DRILLING ===
     console.log(`\n🔍 [Phase 3] Investigating ${candidates.size} Candidates`);
@@ -91,6 +113,39 @@ export class Navigator {
     console.log(`\n🏁 Exploration Complete. Found ${uniqueResults.length} relevant nodes.`);
     return { nodes: uniqueResults, navigationPath: Array.from(visited) };
   }
+
+  /**
+   * Helper to split text into chunks with overlap, breaking on newlines
+   */
+  private chunkText(text: string, size: number, overlap: number): string[] {
+    if (text.length <= size) return [text];
+
+    const chunks: string[] = [];
+    let start = 0;
+
+    while (start < text.length) {
+      let end = start + size;
+
+      if (end < text.length) {
+        // Try to find a newline to break cleanly
+        const lastNewline = text.lastIndexOf('\n', end);
+        if (lastNewline > start) {
+          end = lastNewline;
+        }
+      }
+
+      chunks.push(text.slice(start, end));
+
+      // Move start forward, subtracting overlap
+      start = end - overlap;
+
+      // Safety break if overlap prevents forward movement (shouldn't happen with valid inputs)
+      if (start >= end) start = end;
+    }
+
+    return chunks;
+  }
+
 
   private async drill(
       node: TreeNode,
