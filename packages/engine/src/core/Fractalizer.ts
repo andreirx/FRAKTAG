@@ -348,6 +348,44 @@ export class Fractalizer {
     return chunks;
   }
 
+  /**
+   * MUTATION: Updates an existing node with new content (Version Control / Edit)
+   */
+  async updateNode(
+      nodeId: string,
+      newContentAtomId: string,
+      newContentText: string
+  ): Promise<void> {
+    console.log(`   📝 Updating Node: ${nodeId}`);
+
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) throw new Error(`Node ${nodeId} not found`);
+
+    // 1. Update Links
+    node.contentId = newContentAtomId;
+    node.updatedAt = new Date().toISOString();
+
+    // 2. Regenerate Gist (The identity might change)
+    const tree = await this.treeStore.getTree(node.treeId);
+    const rawGist = await this.basicLlm.complete(
+        this.prompts.generateGist,
+        { content: newContentText, organizingPrinciple: tree.organizingPrinciple }
+    );
+    node.l0Gist = await this.sanctify(newContentText, rawGist, node.treeId, 'L0');
+
+    // 3. Update Vector Index (Remove old, Add new)
+    await this.vectorStore.remove(node.id);
+    await this.vectorStore.add(node.id, `Gist: ${node.l0Gist}\n${newContentText.slice(0, 300)}`);
+
+    // 4. Save
+    await this.treeStore.saveNode(node);
+    await this.vectorStore.save(node.treeId);
+
+    // 5. Ripple Effect (Bubble Up changes to parents)
+    if (node.parentId) {
+      await this.bubbleUp(node.parentId);
+    }
+  }
 
   /**
    * INTELLIGENT AUTO-PLACEMENT
@@ -357,7 +395,7 @@ export class Fractalizer {
       contentId: string,
       gist: string,
       treeId: string,
-      isAtomic: boolean = false // New flag
+      isAtomic: boolean = false
   ): Promise<TreeNode> {
     const tree = await this.treeStore.getTree(treeId);
     let currentParentId = tree.rootNodeId;
@@ -368,9 +406,65 @@ export class Fractalizer {
     const maxPlacementDepth = 3;
     let depth = 0;
 
-    // Routing Loop (Same as before)
+    // Routing Loop
     while (depth < maxPlacementDepth) {
       const children = await this.treeStore.getChildren(currentParentId);
+
+      // --- START SEMANTIC DEDUPLICATION / EXPANSION LOGIC ---
+      let merged = false;
+      for (const child of children) {
+        // Check if the new content is semantically identical or an expansion of this child
+        const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
+
+        if (isMatch) {
+          console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0,30)}..." matches new content.`);
+
+          // EXPANSION STRATEGY: Cluster
+          // If the child is a Leaf (has content), we convert it to a Folder
+          if (child.contentId) {
+            console.log(`      📂 Converting Leaf "${child.l0Gist}" to Category Cluster`);
+
+            // 1. Move old content to a new sub-node
+            const oldContentNodeId = randomUUID();
+            const oldContentNode: TreeNode = {
+              ...child, // Clone props
+              id: oldContentNodeId,
+              parentId: child.id,
+              path: `${child.path}/${oldContentNodeId}`,
+              l0Gist: `${child.l0Gist} (Original)`,
+              sortOrder: 0,
+              l1Map: null // Reset map on the leaf
+            };
+
+            // 2. Convert 'child' to a Folder
+            child.contentId = null;
+            child.l1Map = null; // Will regenerate as parent
+
+            // 3. Save
+            await this.treeStore.saveNode(oldContentNode);
+            await this.treeStore.saveNode(child);
+            await this.vectorStore.add(oldContentNode.id, `Gist: ${oldContentNode.l0Gist}`);
+
+            // 4. Target this new folder
+            currentParent = child;
+            currentParentId = child.id;
+            depth++;
+            merged = true;
+            break; // Break child loop, continue depth loop
+          } else {
+            // It's already a folder, just dive in
+            currentParent = child;
+            currentParentId = child.id;
+            depth++;
+            merged = true;
+            break;
+          }
+        }
+      }
+
+      if (merged) continue; // Skip LLM routing for this level
+      // --- END SEMANTIC DEDUPLICATION ---
+
 
       if (children.length === 0) break;
 
@@ -419,12 +513,11 @@ export class Fractalizer {
       }
     }
 
-    // FINAL PLACEMENT LOGIC
+    // FINAL PLACEMENT LOGIC (Atomic or Split)
     const content = await this.contentStore.get(contentId);
     if (!content) throw new Error(`Content not found: ${contentId}`);
 
     if (isAtomic) {
-      // ATOMIC FINALIZATION
       const nodeId = randomUUID();
       const node: TreeNode = {
         id: nodeId,
@@ -433,7 +526,7 @@ export class Fractalizer {
         path: `${currentParent.path}${nodeId}`,
         contentId,
         l0Gist: gist,
-        l1Map: null, // Atomic = Leaf
+        l1Map: null,
         sortOrder: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -446,7 +539,6 @@ export class Fractalizer {
       await this.bubbleUp(currentParentId);
       return node;
     } else {
-      // STANDARD FINALIZATION (Splitting)
       return this.processContentWithSplitting(
           content.payload,
           contentId,
@@ -459,19 +551,29 @@ export class Fractalizer {
     }
   }
 
+  // Check Similarity Implementation
   private async checkSemanticMatch(newGist: string, existingGist: string): Promise<boolean> {
     // Optimization: Fast string check first
     if (newGist === existingGist) return true;
 
     try {
-        const response = await this.basicLlm.complete(
-            this.prompts.checkSimilarity,
-            { newGist, existingGist }
-        );
-        const json = JSON.parse(response);
-        return json.status === 'MATCH';
+      // You need to ensure 'checkSimilarity' is defined in DEFAULT_PROMPTS
+      // If not, use a simple prompt here:
+      const prompt = this.prompts.checkSimilarity || `
+        Compare these two summaries. Are they describing the EXACT SAME topic or entity?
+        Summary A: "{{newGist}}"
+        Summary B: "{{existingGist}}"
+        Respond ONLY with JSON: {"status": "MATCH" | "DIFFERENT"}
+        `;
+
+      const response = await this.basicLlm.complete(
+          prompt,
+          { newGist, existingGist }
+      );
+      const json = JSON.parse(response);
+      return json.status === 'MATCH';
     } catch (e) {
-        return false;
+      return false;
     }
   }
   

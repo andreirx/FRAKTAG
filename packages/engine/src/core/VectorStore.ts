@@ -61,6 +61,15 @@ export class VectorStore {
             .slice(0, topK);
     }
 
+    async remove(id: string): Promise<void> {
+        const initialLength = this.index.length;
+        this.index = this.index.filter(e => e.id !== id);
+
+        if (this.index.length !== initialLength) {
+            this.dirty = true;
+        }
+    }
+
     private cosineSimilarity(vecA: number[], vecB: number[]): number {
         // Safety check for dimension mismatch
         if (vecA.length !== vecB.length) return 0;

@@ -256,11 +256,11 @@ export class Fraktag {
     }
 
     if (existingAtom) {
-      // Check if content has changed
       const newHash = this.contentStore.calculateHash(request.content);
 
       if (existingAtom.hash === newHash) {
-        // No change - return existing placements
+        console.log(`   ⏭️  Content unchanged. Skipping.`);
+        // Return existing placement
         const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
         return {
           contentId: existingAtom.id,
@@ -268,50 +268,31 @@ export class Fraktag {
         };
       }
 
-      // Content has changed - create new version
+      console.log(`   🔄 Content changed! Creating Version ${new Date().toISOString()}`);
+
+      // 1. Create New Atom (Versioned)
       const newAtom = await this.contentStore.create({
         payload: request.content,
         mediaType: request.mediaType || existingAtom.mediaType,
         sourceUri: uri,
         createdBy: existingAtom.createdBy,
-        supersedes: existingAtom.id,
+        supersedes: existingAtom.id, // Linked list of history
         metadata: { ...existingAtom.metadata, ...request.metadata },
       });
 
-      // Update all tree nodes that reference this content
+      // 2. Find all nodes using the OLD content
       const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
       const placements: IngestResult['placements'] = [];
 
+      // 3. Mutate the Nodes (In-Place Update)
       for (const node of nodes) {
-        // Update content reference
-        node.contentId = newAtom.id;
-        node.updatedAt = new Date().toISOString();
-
-        // Regenerate gist with new content
-        const tree = await this.treeStore.getTree(node.treeId);
-        try {
-          const newGist = await this.basicLlm.complete(
-            DEFAULT_PROMPTS.generateGist,
-            { content: request.content, organizingPrinciple: tree.organizingPrinciple }
-          );
-          node.l0Gist = newGist;
-        } catch (error) {
-          console.error('Failed to regenerate gist:', error);
-        }
-
-        await this.treeStore.saveNode(node);
-
-        // Bubble up changes to ancestors
-        try {
-          await this.fractalizer.regenerateSummaries(node.id);
-        } catch (error) {
-          console.error('Failed to regenerate summaries:', error);
-        }
+        // Use the Fractalizer to handle the heavy lifting (Gist regen, Vector update, Bubble Up)
+        await this.fractalizer.updateNode(node.id, newAtom.id, request.content);
 
         placements.push({
           treeId: node.treeId,
           nodeId: node.id,
-          path: node.path,
+          path: node.path
         });
       }
 

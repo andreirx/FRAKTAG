@@ -234,7 +234,7 @@ Task:
 - Return DISTINCT if they are different topics.
 
 Respond ONLY with JSON:
-{"status": "MATCH" | "DISTINCT", "reason": "..."}`
+{"status": "MATCH" | "DIFFERENT"}`
 
 };
 
