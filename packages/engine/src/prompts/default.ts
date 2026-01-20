@@ -234,7 +234,25 @@ Task:
 - Return DISTINCT if they are different topics.
 
 Respond ONLY with JSON:
-{"status": "MATCH" | "DIFFERENT"}`
+{"status": "MATCH" | "DIFFERENT"}`,
+
+  // NEW: The "First Glance" Prompt
+  globalMapScan: `You are the Strategist. You have the entire "Table of Contents" for a knowledge base.
+Your goal is to identify specific nodes that are highly likely to contain the answer to the user's quest.
+
+Quest: "{{query}}"
+
+Global Knowledge Map:
+{{treeMap}}
+
+Instructions:
+1. Scan the map for relevant topics.
+2. Select specific Node IDs that seem relevant.
+3. Prefer deeper nodes (leaves/sub-categories) over generic root nodes if possible.
+4. Select up to 5 most promising targets.
+
+Respond ONLY with JSON:
+{ "targetIds": ["id-1", "id-2"], "reasoning": "..." }`
 
 };
 

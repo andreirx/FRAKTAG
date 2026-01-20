@@ -60,6 +60,7 @@ export interface PromptSet {
   assessRelevance: string;   // NEW: The Magnet (Treasure Hunt)
   checkSimilarity: string;
   routeTraversal: string;
+  globalMapScan: string;
 }
 
 // ============ CONTENT LAYER ============

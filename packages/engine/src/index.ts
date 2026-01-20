@@ -515,16 +515,37 @@ export class Fraktag {
     }
 
     // 2. CONTEXT PREPARATION
-    // We format the sources so the model knows where facts come from.
-    const context = retrieval.nodes.map((node, i) =>
-        `--- [SOURCE ${i+1}] (ID: ${node.nodeId}) ---\n${node.content}`
-    ).join('\n\n');
+    const contextPromises = retrieval.nodes.map(async (node, i) => {
+      // Fetch the Tree Node to get its Gist/Name
+      const treeNode = await this.treeStore.getNode(node.nodeId);
+      const title = treeNode?.l0Gist || "Untitled Segment";
+
+      // Also fetch metadata from Content Atom if possible?
+      // Actually, node.contentId is on the RetrievedNode.
+      let sourceInfo = "";
+      if (node.contentId) {
+        const atom = await this.contentStore.get(node.contentId);
+        if (atom?.sourceUri) {
+          const filename = atom.sourceUri.split('/').pop();
+          sourceInfo = `(File: ${filename})`;
+        }
+      }
+
+      // PRINT TO CONSOLE (The "First Glance" for the user)
+      console.log(`   📄 [${i+1}] ${title.slice(0, 80)}${title.length > 80 ? '...' : ''} ${sourceInfo}`);
+
+      return `--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`;
+    });
+
+    const contextBlocks = await Promise.all(contextPromises);
+    const context = contextBlocks.join('\n\n');
 
     const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
     
     Guidelines:
-    - Cite your sources using [Source X].
-    - If the context mentions specific terms (like "Polecats" or "Beads"), define them as the text does.
+    - Cite your sources using the source as [number], AND also mention the Title for example "according to the Reference Manual [1]".
+    - Use the Titles provided in the context to explain where information comes from.
+    - If the context mentions specific terms, define them as the text does.
     - Do not use outside knowledge. If the answer isn't in the text, say so.
     
     Context:
@@ -540,7 +561,7 @@ export class Fraktag {
     const answer = await this.smartLlm.complete(
         prompt,
         {},
-        { maxTokens: 4096 } // Generous limit for the final answer
+        { maxTokens: 8192 } // Generous limit for the final answer
     );
 
     return {

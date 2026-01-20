@@ -181,4 +181,38 @@ export class TreeStore {
     };
   }
 
+  /**
+   * Generates a token-efficient ASCII tree map for the "First Glance" capability.
+   * Format:
+   * [id] Root Gist
+   *   [child_id] Child Gist
+   */
+  async generateTreeMap(treeId: string): Promise<string> {
+    const file = await this.loadTreeFile(treeId);
+    const root = file.nodes[file.config.rootNodeId];
+    if (!root) return "Tree is empty.";
+
+    return this.buildMapRecursive(file.nodes, root, 0);
+  }
+
+  private buildMapRecursive(
+      allNodes: Record<string, TreeNode>,
+      currentNode: TreeNode,
+      depth: number
+  ): string {
+    const indent = '  '.repeat(depth);
+    // Format: "  [node-id] The Gist text..."
+    let output = `${indent}[${currentNode.id}] ${currentNode.l0Gist}\n`;
+
+    // Find children manually (since we have the full record loaded)
+    const children = Object.values(allNodes)
+        .filter(n => n.parentId === currentNode.id)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+
+    for (const child of children) {
+      output += this.buildMapRecursive(allNodes, child, depth + 1);
+    }
+
+    return output;
+  }
 }

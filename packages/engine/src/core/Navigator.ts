@@ -17,77 +17,77 @@ export class Navigator {
 
   async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
     const tree = await this.treeStore.getTree(request.treeId);
-    const root = await this.treeStore.getNodeFromTree(request.treeId, tree.rootNodeId);
-
-    // Ensure Vector Store is loaded
     await this.vectorStore.load(request.treeId);
 
-    if (!root) throw new Error(`Root node not found for tree: ${request.treeId}`);
-
-    const stats = await this.treeStore.getTreeStats(request.treeId);
-    const orientationThreshold = Math.max(1, Math.ceil(stats.maxDepth / 2));
-
-    console.log(`\n🧭 Starting Ensemble Exploration in Tree: ${tree.name}`);
+    console.log(`\n🧭 Starting Retrieval: ${tree.name}`);
     console.log(`   Quest: "${request.query}"`);
 
     const results: RetrievedNode[] = [];
     const visited = new Set<string>();
+    const candidates = new Set<string>(); // IDs to drill into
 
-    // === EXPEDITION 1: VECTOR PARATROOPERS ===
+    // === PHASE 1: VECTOR SEEDING (The Math) ===
     console.log(`\n🔍 [Phase 1] Vector Seeding`);
     const seeds = await this.vectorStore.search(request.query, 5);
+    seeds.filter(s => s.score > 0.25).forEach(s => candidates.add(s.id));
+    console.log(`   📍 Vectors found ${candidates.size} candidates.`);
 
-    // Filter seeds: Only use decent matches (>0.25 is a loose floor, but lets strict scout filter later)
-    const validSeeds = seeds.filter(s => s.score > 0.25);
-    console.log(`   📍 Found ${validSeeds.length} seeds (from ${seeds.length} candidates)`);
+    // === PHASE 2: GLOBAL MAP SCAN (The "First Glance") ===
+    console.log(`\n🔍 [Phase 2] Global Map Scan`);
+    const treeMap = await this.treeStore.generateTreeMap(request.treeId);
 
-    for (const seed of validSeeds) {
-      const node = await this.treeStore.getNode(seed.id);
-      if (!node || visited.has(node.id)) continue;
+    // Safety Check: If tree is massive (>100k chars), maybe truncate?
+    // For 20-50 files, it's fine.
 
-      console.log(`   🪂 Dropping into Seed: ${node.l0Gist.slice(0, 40)}... (${seed.score.toFixed(3)})`);
+    try {
+      const scanJson = await this.llm.complete(
+          DEFAULT_PROMPTS.globalMapScan,
+          { query: request.query, treeMap },
+          { maxTokens: 1024 }
+      );
+      const scan = JSON.parse(scanJson);
+      const mapTargets = scan.targetIds || [];
 
-      // Drill the seed (Depth 0 relative to seed, but we force relevance check)
+      console.log(`   🗺️  Strategist identified ${mapTargets.length} targets.`);
+      mapTargets.forEach((id: string) => candidates.add(id));
+
+    } catch (e) {
+      console.error("   ❌ Map Scan failed:", e);
+      // Fallback: Add Root to candidates to force a top-down crawl if map fails?
+      // candidates.add(tree.rootNodeId);
+    }
+
+    // === PHASE 3: PRECISION DRILLING ===
+    console.log(`\n🔍 [Phase 3] Investigating ${candidates.size} Candidates`);
+
+    for (const id of candidates) {
+      if (visited.has(id)) continue;
+      const node = await this.treeStore.getNode(id);
+      if (!node) continue;
+
+      console.log(`   🪂 Dive: ${node.l0Gist.slice(0, 50)}...`);
+
+      // We check the candidate itself
       await this.drill(
-          node, request.query, 3, request.resolution || 'L2',
+          node, request.query,
+          2, // Low depth recursion (we assume the Map/Vector got us close)
+          request.resolution || 'L2',
           results, visited,
-          0, // Local Depth
-          orientationThreshold, stats.maxDepth,
-          true // FORCE RELEVANCE CHECK (The Fix)
+          0, 0, 10,
+          true // Force Relevance Check
       );
 
-      // Check Parent Context (The "Look Up" heuristic)
+      // Optional: Check Parent Context for candidates
       if (node.parentId) {
         const parent = await this.treeStore.getNode(node.parentId);
         if (parent && !visited.has(parent.id)) {
-          console.log(`      ⬆️  Checking Parent Context...`);
-          await this.drill(
-              parent, request.query, 2, request.resolution || 'L2',
-              results, visited, 0, orientationThreshold, stats.maxDepth, true
-          );
+          // Quick check on parent to see if siblings are relevant
+          await this.drill(parent, request.query, 1, request.resolution || 'L2', results, visited, 0, 0, 10, false);
         }
       }
     }
 
-    // === EXPEDITION 2: THE SURVEYOR (Top-Down) ===
-    // Always run this unless we found overwhelming evidence already?
-    // No, always run it. It catches high-level context the vectors might miss.
-    console.log(`\n🔍 [Phase 2] Structural Survey (Top-Down)`);
-    if (!visited.has(root.id)) {
-      await this.drill(
-          root, request.query, request.maxDepth ?? 5, request.resolution || 'L2',
-          results, visited,
-          0, // Absolute Depth
-          orientationThreshold, stats.maxDepth,
-          false // Don't need to force check Root usually, but drill logic handles it
-      );
-    } else {
-      console.log(`   root already visited via seeds.`);
-    }
-
-    // Deduplicate results just in case
     const uniqueResults = Array.from(new Map(results.map(item => [item.nodeId, item])).values());
-
     console.log(`\n🏁 Exploration Complete. Found ${uniqueResults.length} relevant nodes.`);
     return { nodes: uniqueResults, navigationPath: Array.from(visited) };
   }
