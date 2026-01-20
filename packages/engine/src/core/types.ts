@@ -56,12 +56,13 @@ export interface PromptSet {
   detectHeresy: string;
   findSplitAnchors: string;
   evaluateRelevance: string;
-  assessContainment: string;
+  assessNeighborhood: string;
   assessRelevance: string;
   checkSimilarity: string;
   routeTraversal: string;
   globalMapScan: string;
   assessVectorCandidates: string;
+  checkRelationship: string;
 }
 
 // ============ CONTENT LAYER ============

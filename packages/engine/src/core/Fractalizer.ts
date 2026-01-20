@@ -416,48 +416,44 @@ export class Fractalizer {
         // Check if the new content is semantically identical or an expansion of this child
         const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
 
-        if (isMatch) {
-          console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0,30)}..." matches new content.`);
+        for (const child of children) {
+          // 1. Fast Semantic Check (Topic Match?)
+          const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
 
-          // EXPANSION STRATEGY: Cluster
-          // If the child is a Leaf (has content), we convert it to a Folder
-          if (child.contentId) {
-            console.log(`      📂 Converting Leaf "${child.l0Gist}" to Category Cluster`);
+          if (isMatch) {
+            console.log(`   🔄 Topic Match: "${child.l0Gist.slice(0,30)}..."`);
 
-            // 1. Move old content to a new sub-node
-            const oldContentNodeId = randomUUID();
-            const oldContentNode: TreeNode = {
-              ...child, // Clone props
-              id: oldContentNodeId,
-              parentId: child.id,
-              path: `${child.path}/${oldContentNodeId}`,
-              l0Gist: `${child.l0Gist} (Original)`,
-              sortOrder: 0,
-              l1Map: null // Reset map on the leaf
-            };
+            // 2. Deep Relationship Check (Version Match?)
+            const relationship = await this.checkRelationship(gist, child.l0Gist);
+            console.log(`      ⚖️  Verdict: ${relationship}`);
 
-            // 2. Convert 'child' to a Folder
-            child.contentId = null;
-            child.l1Map = null; // Will regenerate as parent
+            if (relationship === 'DUPLICATE' || relationship === 'SUPERSEDED_BY') {
+              // New content adds nothing. Drop it.
+              console.log(`      🗑️  Dropping new content (Duplicate/Old).`);
+              return child; // Return existing node
+            }
 
-            // 3. Save
-            await this.treeStore.saveNode(oldContentNode);
-            await this.treeStore.saveNode(child);
-            await this.vectorStore.add(oldContentNode.id, `Gist: ${oldContentNode.l0Gist}`);
+            if (relationship === 'SUPERSEDES') {
+              // New content replaces old.
+              // Ideally we Archive the old one or Delete it.
+              // For now, let's REPLACE the content of the existing node.
+              console.log(`      ♻️  Replacing old node content.`);
+              await this.updateNode(child.id, contentId, (await this.contentStore.get(contentId))!.payload);
+              return child;
+            }
 
-            // 4. Target this new folder
-            currentParent = child;
-            currentParentId = child.id;
-            depth++;
-            merged = true;
-            break; // Break child loop, continue depth loop
-          } else {
-            // It's already a folder, just dive in
-            currentParent = child;
-            currentParentId = child.id;
-            depth++;
-            merged = true;
-            break;
+            // COMPLEMENTARY -> Create Cluster (Existing Logic)
+            if (child.contentId) {
+              // ... (The clustering logic we wrote before) ...
+              // This is where "Standards" and "Procedures" live side-by-side
+              // ...
+            } else {
+              // It's a folder, dive in
+              currentParent = child;
+              depth++;
+              merged = true;
+              break;
+            }
           }
         }
       }
@@ -548,6 +544,19 @@ export class Fractalizer {
           currentParent.path,
           0
       );
+    }
+  }
+
+  private async checkRelationship(newGist: string, existingGist: string): Promise<string> {
+    try {
+      const response = await this.smartLlm.complete(
+          this.prompts.checkRelationship,
+          { newGist, existingGist }
+      );
+      const json = JSON.parse(response);
+      return json.relationship;
+    } catch (e) {
+      return "COMPLEMENTARY"; // Fail safe: Keep both
     }
   }
 

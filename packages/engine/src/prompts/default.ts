@@ -178,28 +178,28 @@ node-a123
 node-b456`,
 
 // 1. THE COMPASS (For routing down the tree)
-  assessContainment: `You are the Librarian. You are navigating a knowledge hierarchy to answer a query.
-User Query: "{{query}}"
+  assessNeighborhood: `You are the Scout. You are exploring a knowledge graph to answer a query.
+Quest: "{{query}}"
 
-Current Location Context: "{{parentContext}}"
-Navigation Phase: {{depthContext}}
+Current Location: "{{parentContext}}"
+Phase: {{depthContext}}
 
-Below are the sub-categories (Children) available. 
-Which of these paths might contain the answer to ANY PART of the query?
+Analyze the "Neighborhood" below (The current node and its children).
+Select the Node IDs that are relevant.
 
 Guidelines:
-1. **Compound Queries:** If the user asks "X and Y", navigate to paths for X *AND* paths for Y.
-2. **Phase-Specific Logic:**
-   - If "Orientation Phase": Select ANY path that *could* lead to the topic. Be broad.
-   - If "Targeting Phase": Select only paths that seem highly likely.
-3. **Look for Keywords:** Scan labels for terms related to the query.
+1. **Direct Hits:** If a child seems to contain the answer (based on Gist), select it.
+2. **Leads:** If a child is a category that *might* contain the answer, select it.
+3. **Compound Queries:** If query asks "X and Y", select paths for X *AND* paths for Y.
+4. **Strictness:**
+   - If "Orientation Phase": Be broad. Follow leads.
+   - If "Targeting Phase": Be strict. Only pick high-probability targets.
 
-Available Paths:
+Neighborhood:
 {{childrenList}}
 
-Output Format:
-List the Node IDs of paths to explore, one per line.
-If NO paths look promising, output: NONE`,
+Respond ONLY with JSON:
+{ "relevantIds": ["id-1", "id-2"] }`,
 
 // 2. THE MAGNET (For checking if the current node IS the answer)
   assessRelevance: `You are the Researcher. 
@@ -236,7 +236,7 @@ Task:
 Respond ONLY with JSON:
 {"status": "MATCH" | "DIFFERENT"}`,
 
-  // NEW: The "First Glance" Prompt
+  // The "First Glance" Prompt
   globalMapScan: `You are the Strategist. You have the entire "Table of Contents" for a knowledge base.
 Your goal is to identify specific nodes that are highly likely to contain the answer to the user's quest.
 
@@ -254,7 +254,7 @@ Instructions:
 Respond ONLY with JSON:
 { "targetIds": ["id-1", "id-2"], "reasoning": "..." }`,
 
-  // NEW: Batch Vector Analysis
+  // Batch Vector Analysis
   assessVectorCandidates: `You are the Scout. We have performed a semantic search and found several "Neighborhoods" in the knowledge graph that might contain the answer.
 
 Quest: "{{query}}"
@@ -273,7 +273,23 @@ Instructions:
 3. If a Child contains the specific detail needed, select it.
 
 Respond ONLY with JSON:
-{ "relevantNodeIds": ["id-1", "id-2"] }`
+{ "relevantNodeIds": ["id-1", "id-2"] }`,
+
+  // Determines if A replaces B, B replaces A, or they are siblings.
+  checkRelationship: `You are the Archivist. You are comparing two pieces of content that cover the same topic.
+Determine their relationship.
+
+Existing Node: "{{existingGist}}"
+New Content: "{{newGist}}"
+
+Rules:
+1. **SUPERSEDES**: If the New Content is clearly a newer version (v2 vs v1, 2026 vs 2025) of the Existing Node, return "SUPERSEDES".
+2. **SUPERSEDED_BY**: If the Existing Node is newer, return "SUPERSEDED_BY".
+3. **COMPLEMENTARY**: If they cover different aspects (e.g. Policy vs Procedure), return "COMPLEMENTARY".
+4. **DUPLICATE**: If they are effectively identical information, return "DUPLICATE".
+
+Respond ONLY with JSON:
+{ "relationship": "SUPERSEDES" | "SUPERSEDED_BY" | "COMPLEMENTARY" | "DUPLICATE", "reasoning": "..." }`
 
 };
 

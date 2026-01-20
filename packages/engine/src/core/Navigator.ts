@@ -248,87 +248,100 @@ export class Navigator {
     if (visited.has(node.id)) return;
     visited.add(node.id);
 
-    // 1. GATHER CONTEXT
-    const nodeContext = node.l1Map?.summary || node.l0Gist;
-    const children = await this.treeStore.getChildren(node.id);
-    const isLeaf = children.length === 0;
-
-    // 2. EVALUATE RELEVANCE (THE MAGNET)
-    // FIX: Check if forceCheck is true OR if depth > 0 OR if it's a Leaf
-    // We usually skip the absolute Root (depth 0) unless forced (Seed)
-    if (depth > 0 || forceCheck || isLeaf) {
-      await this.checkRelevance(node, nodeContext, query, targetResolution, results);
+    // 1. CHECK SELF CONTENT
+    // If this node itself has content (it's a hybrid or we were routed here via vector/map), grab it.
+    if (node.contentId) {
+      const content = await this.resolveContent(node, targetResolution);
+      results.push({
+        nodeId: node.id,
+        path: node.path,
+        resolution: targetResolution,
+        content,
+        contentId: node.contentId
+      });
+      console.log(`      💎 Captured Node Content: "${node.l0Gist.slice(0, 30)}..."`);
     }
 
-    // 3. DECIDE TRAVERSAL (THE ROUTER)
-    if (isLeaf || depth >= maxDepth) return;
+    const children = await this.treeStore.getChildren(node.id);
+    if (children.length === 0 || depth >= maxDepth) return;
 
-    // Prepare Children List
+    // 2. BATCH SCOUTING (The Optimization)
+    // Construct the neighborhood view for the LLM
     const candidates = children.map(c => {
-      const context = c.l1Map?.summary
-          ? `(Summary): ${c.l1Map.summary.slice(0, 150)}...`
-          : `(Gist): ${c.l0Gist}`;
-      return `ID: ${c.id}\n${context}`;
+      const type = c.contentId ? '📄' : '📂';
+      // Use L1 summary if available for richer context, otherwise L0 gist
+      const context = c.l1Map?.summary ? c.l1Map.summary.slice(0, 200) : c.l0Gist;
+      return `ID: ${c.id}\nType: ${type} ${context}`;
     }).join('\n\n');
 
-    // DYNAMIC PHASE CONTEXT
+    // Determine Phase
     const isOrientation = depth <= orientationThreshold;
-    const phaseLabel = isOrientation
-        ? "ORIENTATION Phase (Be Broad, route to general topic areas)"
-        : "TARGETING Phase (Be Specific, look for direct matches)";
+    const depthContext = isOrientation ? "Orientation (Broad Search)" : "Targeting (Specific Search)";
+    const parentContext = node.l1Map?.summary || node.l0Gist;
 
-    const depthContext = `Current Depth: ${depth}/${totalTreeDepth}. Status: ${phaseLabel}.`;
-
-    console.log(`   📂 [Librarian] At "${node.l0Gist.slice(0, 30)}..." (Depth ${depth})`);
+    console.log(`   📂 [Scout] Scanning ${children.length} children at "${node.l0Gist.slice(0, 30)}..." (${depthContext})`);
 
     try {
-      const response = await this.llm.complete(
-          DEFAULT_PROMPTS.assessContainment,
-          {
-            query,
-            parentContext: nodeContext,
-            childrenList: candidates,
-            depthContext
-          },
+      // ONE LLM CALL for all children
+      const decisionJson = await this.llm.complete(
+          DEFAULT_PROMPTS.assessNeighborhood,
+          { query, parentContext, childrenList: candidates, depthContext },
           { maxTokens: 1024 }
       );
 
-      const targetIds = response
-          .split('\n')
-          .map(l => l.trim())
-          .filter(l => l.length > 0 && !l.startsWith('Note:') && l !== 'NONE')
-          .map(l => {
-            // Fuzzy match ID in case LLM hallucinates whitespace/quotes
-            const match = children.find(c => l.includes(c.id));
-            return match ? match.id : null;
-          })
-          .filter((id): id is string => id !== null);
+      let decision;
+      try {
+        decision = JSON.parse(decisionJson);
+      } catch (e) {
+        console.warn("   ⚠️ Scout returned invalid JSON, skipping branch.");
+        return;
+      }
 
-      const uniqueTargets = [...new Set(targetIds)];
+      const targetIds = decision.relevantIds || [];
 
-      if (uniqueTargets.length > 0) {
-        console.log(`      👉 Selected ${uniqueTargets.length} paths.`);
-        for (const targetId of uniqueTargets) {
+      if (targetIds.length > 0) {
+        console.log(`      👉 Scout picked ${targetIds.length} paths.`);
+
+        for (const targetId of targetIds) {
           const child = children.find(c => c.id === targetId);
-          if (child) {
+          if (!child) continue;
+
+          if (child.contentId) {
+            // FAST PATH: It's a leaf. We trust the Scout. Grab it immediately.
+            // No recursive drill() call needed for this leaf.
+            if (!visited.has(child.id)) {
+              visited.add(child.id);
+              const content = await this.resolveContent(child, targetResolution);
+              results.push({
+                nodeId: child.id,
+                path: child.path,
+                resolution: targetResolution,
+                content,
+                contentId: child.contentId
+              });
+              console.log(`      💎 Captured Leaf: "${child.l0Gist.slice(0, 30)}..."`);
+            }
+          } else {
+            // DEEP PATH: It's a folder. We must recurse to see what's inside.
             await this.drill(
                 child, query, maxDepth, targetResolution,
-                results, visited, depth + 1, orientationThreshold, totalTreeDepth, false
+                results, visited, depth + 1, orientationThreshold, totalTreeDepth,
+                false
             );
           }
         }
       } else {
-        // Dead End Logic
-        if (children.length === 1 && !isOrientation) {
-          // If there's only one way forward and we aren't in broad mode, take it.
-          await this.drill(children[0], query, maxDepth, targetResolution, results, visited, depth + 1, orientationThreshold, totalTreeDepth, false);
-        }
+        // Dead End / Fallback
+        // If we are in "Orientation" phase and found nothing, maybe the LLM was too strict?
+        // For now, we respect the "None" decision.
+        console.log("      🛑 Dead End. Scout sees no leads.");
       }
 
     } catch (e) {
-      console.error("   ❌ Routing Error", e);
+      console.error("   ❌ Scout Error", e);
     }
   }
+
 
   private async checkRelevance(
       node: TreeNode,

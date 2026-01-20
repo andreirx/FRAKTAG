@@ -543,7 +543,7 @@ export class Fraktag {
     const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
     
     Guidelines:
-    - Cite your sources using the source as [number], AND also mention the Title for example "according to the Reference Manual [1]".
+    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
     - Use the Titles provided in the context to explain where information comes from.
     - If the context mentions specific terms, define them as the text does.
     - Do not use outside knowledge. If the answer isn't in the text, say so.
@@ -561,7 +561,7 @@ export class Fraktag {
     const answer = await this.smartLlm.complete(
         prompt,
         {},
-        { maxTokens: 8192 } // Generous limit for the final answer
+        { maxTokens: 16384 } // Generous limit for the final answer
     );
 
     return {
