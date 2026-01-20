@@ -208,7 +208,7 @@ export class Navigator {
       const score = match ? parseInt(match[1]) : 0;
 
       if (score >= 7) { // Tuned: 7+ is relevant. 8+ was too strict for summaries.
-        console.log(`      💎 Treasure Found! Score ${score}/10: "${node.l0Gist.slice(0, 40)}..."`);
+        console.log(`      💎 Treasure Found! Score ${score}/10: "${node.l0Gist.slice(0, 100)}..."`);
 
         const content = await this.resolveContent(node, resolution);
         results.push({

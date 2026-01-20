@@ -532,7 +532,7 @@ export class Fraktag {
       }
 
       // PRINT TO CONSOLE (The "First Glance" for the user)
-      console.log(`   📄 [${i+1}] ${title.slice(0, 80)}${title.length > 80 ? '...' : ''} ${sourceInfo}`);
+      console.log(`   📄 [${i+1}] ${title.slice(0, 160)}${title.length > 160 ? '...' : ''} ${sourceInfo}`);
 
       return `--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`;
     });
