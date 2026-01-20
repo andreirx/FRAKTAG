@@ -1,6 +1,6 @@
 // src/adapters/storage/JsonStorage.ts
 
-import { readFile, writeFile, mkdir, readdir, rm, access } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, rm, access, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { IStorage } from './IStorage.js';
 
@@ -21,15 +21,40 @@ export class JsonStorage implements IStorage {
   async read<T>(filePath: string): Promise<T | null> {
     try {
       const fullPath = join(this.basePath, filePath);
+      
+      // Safety Check: Empty file?
+      try {
+          const stats = await stat(fullPath); // Need to import { stat } from 'fs/promises'
+          if (stats.size === 0) {
+              console.warn(`⚠️  Found empty file: ${filePath}. Treating as missing.`);
+              return null;
+          }
+      } catch (e) {
+          // File doesn't exist, which is fine
+          return null; 
+      }
+
       const content = await readFile(fullPath, 'utf-8');
       return JSON.parse(content) as T;
+
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      if (error instanceof Error && 'code' in error && (error as any).code === 'ENOENT') {
         return null;
       }
+      
+      // CORRUPTION RECOVERY
       if (error instanceof SyntaxError) {
-        throw new Error(`Failed to parse JSON from ${filePath}: ${error.message}`);
+        console.error(`💥 CORRUPTION DETECTED in ${filePath}: ${error.message}`);
+        console.warn(`   🗑️  Deleting corrupted file to allow regeneration.`);
+        
+        try {
+            await this.delete(filePath);
+        } catch (delError) {
+            console.error(`   ❌ Failed to delete corrupted file:`, delError);
+        }
+        return null; // Return null so the system regenerates it
       }
+      
       throw new Error(`Failed to read file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }

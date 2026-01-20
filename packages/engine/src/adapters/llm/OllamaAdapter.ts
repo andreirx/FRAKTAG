@@ -40,8 +40,8 @@ export class OllamaAdapter implements ILLMAdapter {
     const estTokens = Math.ceil(finalPrompt.length / 4);
 
     this.log(`🚀 LLM CALL [${this.model}]`);
-    this.log(`   📝 Input: ~${estTokens} tokens`);
-    this.log(`   ❓ Prompt Preview: ${finalPrompt.slice(0, 100).replace(/\n/g, ' ')}...`);
+//    this.log(`   📝 Input: ~${estTokens} tokens`);
+//    this.log(`   ❓ Prompt Preview: ${finalPrompt.slice(0, 100).replace(/\n/g, ' ')}...`);
 
     // Heuristic: If prompt contains "Split this content", we need MASSIVE output capacity.
     const isSplitRequest = prompt.includes('Split this content');
@@ -119,20 +119,20 @@ export class OllamaAdapter implements ILLMAdapter {
 
       // if it's supposed to be JSON, then make it JSON
       if (expectsJSON) {
-        this.log(`   JSON Output: ${json}`);
+//        this.log(`   JSON Output: ${json}`);
         return json;
       }
 
       // LOG RAW IF CLEAN IS EMPTY
       if (cleaned.length === 0 && fullText.length > 0) {
           console.warn("   ⚠️  WARNING: Output cleaned to empty string!");
-          console.warn("   RAW START: ", fullText.slice(0, 500));
+          console.warn("   RAW START: ", fullText.slice(0, 100));
       }      
       // Log truncation for debug
       if (cleaned.length < 500) {
-        this.log(`   🧹 Cleaned Output: ${cleaned}`);
+//        this.log(`   🧹 Cleaned Output: ${cleaned}`);
       } else {
-        this.log(`   🧹 Cleaned Output (First 500): ${cleaned.slice(0, 500)}...`);
+//        this.log(`   🧹 Cleaned Output (First 500): ${cleaned.slice(0, 500)}...`);
       }
 
       return cleaned;
@@ -186,7 +186,7 @@ export class OllamaAdapter implements ILLMAdapter {
         clean = clean.replace(/```/g, '');
     }
 
-    this.log(`CLEANED TEXT: ${clean.trim()}`);
+//    this.log(`CLEANED TEXT: ${clean.trim()}`);
     return clean.trim();
   }
 
