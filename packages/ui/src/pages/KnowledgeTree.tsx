@@ -6,17 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, Search, RefreshCw, Database, FileText, ChevronDown } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"; // npx shadcn@latest add dropdown-menu
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
-    const [trees, setTrees] = useState<any[]>([]); // List of available trees
-    const [activeTreeId, setActiveTreeId] = useState<string>(""); // Currently selected tree
+    const [trees, setTrees] = useState<any[]>([]); 
+    const [activeTreeId, setActiveTreeId] = useState<string>(""); 
     const [rawData, setRawData] = useState<any>(null);
     const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
     const [searchTerm, setSearchTerm] = useState("");
 
+    // NEW: Content Viewer State
     const [contentPayload, setContentPayload] = useState<string | null>(null);
+    const [contentLoading, setContentLoading] = useState(false);
 
     // 1. Initial Load: Get List of Trees
     useEffect(() => {
@@ -25,7 +27,6 @@ export default function KnowledgeTree() {
                 const res = await axios.get('/api/trees');
                 setTrees(res.data);
                 if (res.data.length > 0) {
-                    // Default to the first tree found
                     setActiveTreeId(res.data[0].id);
                 }
             } catch (e) {
@@ -42,16 +43,37 @@ export default function KnowledgeTree() {
         }
     }, [activeTreeId]);
 
+    // 3. CRITICAL FIX: Reset content when selection changes
+    useEffect(() => {
+        setContentPayload(null);
+        setContentLoading(false);
+    }, [selectedNode]);
+
     async function loadTreeStructure(id: string) {
         setLoading(true);
         try {
             const res = await axios.get(`/api/trees/${id}/structure`);
             setRawData(res.data);
-            setSelectedNode(null); // Reset selection on tree switch
+            setSelectedNode(null); 
         } catch (e) {
             console.error(e);
         } finally {
             setLoading(false);
+        }
+    }
+
+    async function fetchContent() {
+        if (!selectedNode?.contentId) return;
+        setContentLoading(true);
+        try {
+            // Encode the ID because it might contain special chars (though UUIDs usually don't)
+            const res = await axios.get(`/api/content/${encodeURIComponent(selectedNode.contentId)}`);
+            setContentPayload(res.data.payload);
+        } catch (e) {
+            console.error("Failed to fetch content", e);
+            setContentPayload("Error loading content. Check API logs.");
+        } finally {
+            setContentLoading(false);
         }
     }
 
@@ -66,10 +88,6 @@ export default function KnowledgeTree() {
         const nodes = Object.values(rawData.nodes) as TreeNode[];
         const map: Record<string, TreeNode[]> = {};
         let root = null;
-
-        // Simple Search Filtering
-        // For visualizer, we just grey out non-matches or filter? 
-        // Let's stick to full tree for structure, highlighting is complex without context.
 
         nodes.forEach(node => {
             if (!node.parentId) root = node;
@@ -86,8 +104,7 @@ export default function KnowledgeTree() {
         return { rootNode: root, childrenMap: map };
     }, [rawData]);
 
-    if (!activeTreeId && !loading && trees.length === 0) return <div className="p-8 text-red-500">No trees found in engine.</div>;
-
+    if (!activeTreeId && !loading && trees.length === 0) return <div className="p-8 text-red-500">No trees found.</div>;
     const activeTreeName = trees.find(t => t.id === activeTreeId)?.name || "Unknown Tree";
 
     return (
@@ -95,7 +112,6 @@ export default function KnowledgeTree() {
             {/* Sidebar */}
             <div className="w-[400px] border-r bg-white flex flex-col shadow-sm z-10">
                 <div className="p-4 border-b space-y-4">
-                    {/* Tree Switcher */}
                     <div className="flex items-center justify-between">
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -120,27 +136,26 @@ export default function KnowledgeTree() {
                             <RefreshCw className="h-4 w-4"/>
                         </Button>
                     </div>
-
                     <div className="relative">
                         <Search className="absolute left-2 top-2.5 h-4 w-4 text-zinc-400" />
-                        <Input
-                            placeholder="Filter nodes..."
-                            className="pl-8"
+                        <Input 
+                            placeholder="Filter nodes..." 
+                            className="pl-8" 
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
                         />
                     </div>
                 </div>
-
+                
                 <ScrollArea className="flex-1">
                     <div className="p-2">
                         {loading ? (
-                            <div className="flex justify-center p-8"><Loader2 className="animate-spin text-zinc-300" /></div>
+                             <div className="flex justify-center p-8"><Loader2 className="animate-spin text-zinc-300" /></div>
                         ) : rootNode ? (
-                            <TreeItem
-                                node={rootNode}
-                                childrenMap={childrenMap}
-                                onSelect={setSelectedNode}
+                            <TreeItem 
+                                node={rootNode} 
+                                childrenMap={childrenMap} 
+                                onSelect={setSelectedNode} 
                                 selectedId={selectedNode?.id}
                             />
                         ) : (
@@ -177,38 +192,35 @@ export default function KnowledgeTree() {
                                         Executive Summary
                                     </CardTitle>
                                 </CardHeader>
-                                <CardContent className="pt-6 prose prose-zinc max-w-none text-sm leading-relaxed text-zinc-700">
+                                <CardContent className="pt-6 prose prose-zinc max-w-none text-sm leading-relaxed text-zinc-700 whitespace-pre-wrap">
                                     {selectedNode.l1Map.summary}
                                 </CardContent>
                             </Card>
                         )}
 
                         {selectedNode.contentId && (
-                            <div className="p-8 border rounded-xl bg-white shadow-sm text-center space-y-4">
-                                <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto text-blue-600">
-                                    <FileText className="w-8 h-8" />
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                                        <FileText className="w-5 h-5 text-blue-600" /> Raw Content
+                                    </h3>
+                                    <span className="text-xs font-mono text-muted-foreground">{selectedNode.contentId}</span>
                                 </div>
-                                <div>
-                                    <h3 className="font-semibold text-lg">Raw Content Available</h3>
-                                    <p className="text-sm text-zinc-500 max-w-sm mx-auto mt-1">
-                                        This node is linked to an immutable content atom.
-                                        <br/>
-                                        <span className="font-mono text-xs">{selectedNode.contentId}</span>
-                                    </p>
-                                </div>
+                                
                                 {contentPayload ? (
-                                    <div className="text-left bg-zinc-50 p-4 rounded border text-xs font-mono whitespace-pre-wrap max-h-96 overflow-auto">
-                                        {contentPayload}
+                                    <div className="bg-zinc-50 border rounded-lg p-6 overflow-auto max-h-[600px] shadow-inner">
+                                        <pre className="text-xs font-mono text-zinc-700 whitespace-pre-wrap leading-relaxed">
+                                            {contentPayload}
+                                        </pre>
                                     </div>
                                 ) : (
-                                    <Button variant="outline" onClick={async () => {
-                                        try {
-                                            const res = await axios.get(`/api/content/${selectedNode.contentId}`);
-                                            setContentPayload(res.data.payload);
-                                        } catch(e) { console.error(e); }
-                                    }}>
-                                        Fetch Content Payload
-                                    </Button>
+                                    <div className="p-8 border rounded-xl bg-white shadow-sm text-center">
+                                        <p className="text-sm text-zinc-500 mb-4">Content is stored as an immutable atom.</p>
+                                        <Button onClick={fetchContent} disabled={contentLoading} variant="outline">
+                                            {contentLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : null}
+                                            Load Payload
+                                        </Button>
+                                    </div>
                                 )}
                             </div>
                         )}
