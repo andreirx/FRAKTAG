@@ -9,7 +9,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
@@ -18,6 +18,8 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@fraktag/engine": "file:../engine"
+    "@fraktag/engine": "file:../engine",
+    "cors": "^2.8.5",
+    "express": "^5.2.1"
   }
 }

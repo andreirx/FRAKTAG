@@ -158,6 +158,14 @@ export class TreeStore {
     this.cache.delete(treeId);
   }
 
+  /**
+   * Public accessor for the raw tree file (for UI/Visualization)
+   */
+  async getTreeFile(treeId: string): Promise<TreeFile> {
+    return await this.loadTreeFile(treeId);
+  }
+
+
   async deleteNode(nodeId: string): Promise<void> {
     const node = await this.getNode(nodeId);
     if (!node) return; // Already gone

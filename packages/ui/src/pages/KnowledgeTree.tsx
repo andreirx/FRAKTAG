@@ -1,25 +1,53 @@
-// packages/ui/src/pages/KnowledgeTree.tsx
-
 import { useEffect, useState, useMemo } from "react";
 import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, ChevronDown } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"; // npx shadcn@latest add dropdown-menu
 
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
+    const [trees, setTrees] = useState<any[]>([]); // List of available trees
+    const [activeTreeId, setActiveTreeId] = useState<string>(""); // Currently selected tree
     const [rawData, setRawData] = useState<any>(null);
     const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
     const [searchTerm, setSearchTerm] = useState("");
 
-    async function load() {
+    const [contentPayload, setContentPayload] = useState<string | null>(null);
+
+    // 1. Initial Load: Get List of Trees
+    useEffect(() => {
+        async function fetchTrees() {
+            try {
+                const res = await axios.get('/api/trees');
+                setTrees(res.data);
+                if (res.data.length > 0) {
+                    // Default to the first tree found
+                    setActiveTreeId(res.data[0].id);
+                }
+            } catch (e) {
+                console.error("Failed to list trees", e);
+            }
+        }
+        fetchTrees();
+    }, []);
+
+    // 2. Load Structure when Active Tree Changes
+    useEffect(() => {
+        if (activeTreeId) {
+            loadTreeStructure(activeTreeId);
+        }
+    }, [activeTreeId]);
+
+    async function loadTreeStructure(id: string) {
         setLoading(true);
         try {
-            const res = await axios.get('/api/trees/notes/structure');
+            const res = await axios.get(`/api/trees/${id}/structure`);
             setRawData(res.data);
+            setSelectedNode(null); // Reset selection on tree switch
         } catch (e) {
             console.error(e);
         } finally {
@@ -27,15 +55,21 @@ export default function KnowledgeTree() {
         }
     }
 
-    useEffect(() => { load(); }, []);
+    const refresh = () => {
+        if (activeTreeId) loadTreeStructure(activeTreeId);
+    };
 
     // Transform Flat Map -> Hierarchical Lookup
-    const { rootNode, childrenMap, flatList } = useMemo(() => {
-        if (!rawData || !rawData.nodes) return { rootNode: null, childrenMap: {}, flatList: [] };
+    const { rootNode, childrenMap } = useMemo(() => {
+        if (!rawData || !rawData.nodes) return { rootNode: null, childrenMap: {} };
 
         const nodes = Object.values(rawData.nodes) as TreeNode[];
         const map: Record<string, TreeNode[]> = {};
         let root = null;
+
+        // Simple Search Filtering
+        // For visualizer, we just grey out non-matches or filter? 
+        // Let's stick to full tree for structure, highlighting is complex without context.
 
         nodes.forEach(node => {
             if (!node.parentId) root = node;
@@ -45,36 +79,48 @@ export default function KnowledgeTree() {
             }
         });
 
-        // Sort children
         Object.keys(map).forEach(key => {
-            map[key].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+            map[key].sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
         });
 
-        return { rootNode: root, childrenMap: map, flatList: nodes };
+        return { rootNode: root, childrenMap: map };
     }, [rawData]);
 
-    // FILTER LOGIC
-    const filteredNodes = useMemo(() => {
-        if (!searchTerm) return null;
-        return flatList.filter(n => n.l0Gist.toLowerCase().includes(searchTerm.toLowerCase()));
-    }, [searchTerm, flatList]);
+    if (!activeTreeId && !loading && trees.length === 0) return <div className="p-8 text-red-500">No trees found in engine.</div>;
 
-
-    if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin text-zinc-400" /></div>;
-    if (!rootNode) return <div className="p-8 text-red-500">Failed to load tree. Is the API running?</div>;
+    const activeTreeName = trees.find(t => t.id === activeTreeId)?.name || "Unknown Tree";
 
     return (
-        <div className="flex h-screen bg-zinc-50">
+        <div className="flex h-screen bg-zinc-50 text-zinc-900">
             {/* Sidebar */}
-            <div className="w-[400px] border-r bg-white flex flex-col">
-                <div className="p-4 border-b space-y-3">
+            <div className="w-[400px] border-r bg-white flex flex-col shadow-sm z-10">
+                <div className="p-4 border-b space-y-4">
+                    {/* Tree Switcher */}
                     <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 font-bold text-lg text-zinc-800">
-                            <Database className="w-5 h-5" />
-                            FRAKTAG
-                        </div>
-                        <Button variant="ghost" size="icon" onClick={load}><RefreshCw className="h-4 w-4"/></Button>
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="outline" className="w-full justify-between font-bold text-lg h-12">
+                                    <div className="flex items-center gap-2">
+                                        <Database className="w-5 h-5 text-purple-600" />
+                                        {activeTreeName}
+                                    </div>
+                                    <ChevronDown className="w-4 h-4 opacity-50" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="w-[360px]">
+                                {trees.map(t => (
+                                    <DropdownMenuItem key={t.id} onClick={() => setActiveTreeId(t.id)}>
+                                        <span className="font-bold mr-2">{t.name}</span>
+                                        <span className="text-xs text-muted-foreground">({t.id})</span>
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                        <Button variant="ghost" size="icon" onClick={refresh} title="Reload Tree">
+                            <RefreshCw className="h-4 w-4"/>
+                        </Button>
                     </div>
+
                     <div className="relative">
                         <Search className="absolute left-2 top-2.5 h-4 w-4 text-zinc-400" />
                         <Input
@@ -88,36 +134,23 @@ export default function KnowledgeTree() {
 
                 <ScrollArea className="flex-1">
                     <div className="p-2">
-                        {/* CONDITIONAL RENDERING: Search vs Tree */}
-                        {searchTerm ? (
-                            <div className="space-y-1">
-                                {filteredNodes?.map(node => (
-                                    <div
-                                        key={node.id}
-                                        onClick={() => setSelectedNode(node)}
-                                        className="p-2 text-sm hover:bg-zinc-100 cursor-pointer rounded flex items-center gap-2 truncate"
-                                    >
-                                        <FileText className="w-4 h-4 text-zinc-400 shrink-0" />
-                                        <span className="truncate">{node.l0Gist}</span>
-                                    </div>
-                                ))}
-                                {filteredNodes?.length === 0 && (
-                                    <div className="text-center text-sm text-zinc-400 p-4">No results found.</div>
-                                )}
-                            </div>
-                        ) : (
+                        {loading ? (
+                            <div className="flex justify-center p-8"><Loader2 className="animate-spin text-zinc-300" /></div>
+                        ) : rootNode ? (
                             <TreeItem
                                 node={rootNode}
                                 childrenMap={childrenMap}
                                 onSelect={setSelectedNode}
                                 selectedId={selectedNode?.id}
                             />
+                        ) : (
+                            <div className="p-4 text-sm text-zinc-400 text-center">Empty Tree</div>
                         )}
                     </div>
                 </ScrollArea>
             </div>
 
-            {/* Main Content (Unchanged) */}
+            {/* Main Content Details */}
             <div className="flex-1 overflow-y-auto p-8">
                 {selectedNode ? (
                     <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in duration-300">
@@ -127,12 +160,12 @@ export default function KnowledgeTree() {
                                     {selectedNode.id}
                                 </span>
                                 {selectedNode.contentId && (
-                                    <span className="text-xs font-mono bg-blue-50 px-2 py-0.5 rounded text-blue-600 border border-blue-100">
-                                        LEAF
+                                    <span className="text-xs font-mono bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-200">
+                                        CONTENT ATOM
                                     </span>
                                 )}
                             </div>
-                            <h1 className="text-3xl font-bold text-zinc-900 leading-tight">
+                            <h1 className="text-3xl font-bold leading-tight text-zinc-900">
                                 {selectedNode.l0Gist}
                             </h1>
                         </div>
@@ -141,32 +174,49 @@ export default function KnowledgeTree() {
                             <Card>
                                 <CardHeader className="bg-zinc-50/50 border-b pb-3">
                                     <CardTitle className="text-sm font-bold uppercase tracking-wider text-zinc-500">
-                                        Executive Summary (L1)
+                                        Executive Summary
                                     </CardTitle>
                                 </CardHeader>
-                                <CardContent className="pt-6 prose prose-zinc max-w-none text-sm leading-relaxed">
+                                <CardContent className="pt-6 prose prose-zinc max-w-none text-sm leading-relaxed text-zinc-700">
                                     {selectedNode.l1Map.summary}
                                 </CardContent>
                             </Card>
                         )}
 
                         {selectedNode.contentId && (
-                            <div className="p-8 border rounded-xl bg-white shadow-sm text-center space-y-3">
-                                <div className="w-12 h-12 bg-blue-50 rounded-full flex items-center justify-center mx-auto text-blue-600">
-                                    <FileText className="w-6 h-6" />
+                            <div className="p-8 border rounded-xl bg-white shadow-sm text-center space-y-4">
+                                <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto text-blue-600">
+                                    <FileText className="w-8 h-8" />
                                 </div>
-                                <h3 className="font-semibold">Raw Content Available</h3>
-                                <p className="text-sm text-zinc-500 max-w-xs mx-auto">
-                                    This node contains raw text data (ID: {selectedNode.contentId.slice(0,8)}...).
-                                </p>
-                                <Button variant="outline">Fetch Content Payload</Button>
+                                <div>
+                                    <h3 className="font-semibold text-lg">Raw Content Available</h3>
+                                    <p className="text-sm text-zinc-500 max-w-sm mx-auto mt-1">
+                                        This node is linked to an immutable content atom.
+                                        <br/>
+                                        <span className="font-mono text-xs">{selectedNode.contentId}</span>
+                                    </p>
+                                </div>
+                                {contentPayload ? (
+                                    <div className="text-left bg-zinc-50 p-4 rounded border text-xs font-mono whitespace-pre-wrap max-h-96 overflow-auto">
+                                        {contentPayload}
+                                    </div>
+                                ) : (
+                                    <Button variant="outline" onClick={async () => {
+                                        try {
+                                            const res = await axios.get(`/api/content/${selectedNode.contentId}`);
+                                            setContentPayload(res.data.payload);
+                                        } catch(e) { console.error(e); }
+                                    }}>
+                                        Fetch Content Payload
+                                    </Button>
+                                )}
                             </div>
                         )}
                     </div>
                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-4">
-                        <Database className="w-12 h-12 opacity-20" />
-                        <p>Select a node to inspect details.</p>
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-300 space-y-4">
+                        <Database className="w-16 h-16 opacity-10" />
+                        <p className="text-lg font-medium">Select a node to inspect details.</p>
                     </div>
                 )}
             </div>

@@ -629,6 +629,18 @@ export class Fraktag {
     return await this.arborist.execute(treeId, operation);
   }
 
+  /**
+   * Export the full tree structure (Config + All Nodes)
+   * Used for UI Visualization.
+   */
+  async getFullTree(treeId: string): Promise<{ config: any, nodes: Record<string, any> }> {
+    // We need to access the private treeStore.
+    // Since we are inside the class, we can use a helper on TreeStore
+    // or just assume we add a public method to TreeStore.
+
+    // Let's add the method to TreeStore first (see Step 1b below), then call it here.
+    return await this.treeStore.getTreeFile(treeId);
+  }
 }
 
 // Export all types
