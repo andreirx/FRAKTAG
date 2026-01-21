@@ -1,5 +1,3 @@
-// packages/engine/src/core/Fractalizer.ts
-
 import { randomUUID } from 'crypto';
 import { ContentStore } from './ContentStore.js';
 import { TreeStore } from './TreeStore.js';
@@ -7,25 +5,18 @@ import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
 import { TreeNode, IngestionConfig, PromptSet, TreeConfig } from './types.js';
 import { VectorStore } from './VectorStore.js';
 
-/**
- * Fractalizer handles content ingestion: splitting, summarizing, and bubble-up
- */
 export class Fractalizer {
   constructor(
       private contentStore: ContentStore,
       private treeStore: TreeStore,
       private vectorStore: VectorStore,
-      private basicLlm: ILLMAdapter, // FAST
-      private smartLlm: ILLMAdapter, // SMART
+      private basicLlm: ILLMAdapter,
+      private smartLlm: ILLMAdapter,
       private config: IngestionConfig,
       private prompts: PromptSet
-  ) {}
+  ) {
+  }
 
-  /**
-   * Ingest content into a tree
-   * If parentId is provided -> Direct placement (splitting use case)
-   * If parentId is null -> Auto-placement (sorting use case)
-   */
   async ingest(
       content: string,
       treeId: string,
@@ -35,32 +26,26 @@ export class Fractalizer {
   ): Promise<TreeNode> {
     const wordCount = content.split(/\s+/).length;
 
-    // === ATOMIC PATH (For Small Content) ===
-    // If content is small (< 150 words), treat as Atomic Leaf.
-    // No splitting, no L1 Map generation (it is its own map).
+    // === ATOMIC PATH (< 150 words) ===
     if (wordCount < 150) {
       console.log(`   ⚛️  Atomic Content detected (${wordCount} words). Skipping split logic.`);
 
-      // 1. Create Atom
       const contentAtom = await this.contentStore.create({
         payload: content,
         mediaType: 'text/plain',
         createdBy: 'system',
       });
 
-      // 2. Gist = Content (or First Sentence if slightly longer)
-      // Optimization: Use content directly if very short, or basic LLM if > 50 words
       let gist = content;
       if (wordCount > 50) {
+        const tree = await this.treeStore.getTree(treeId);
         gist = await this.basicLlm.complete(
             this.prompts.generateGist,
-            { content, organizingPrinciple: (await this.treeStore.getTree(treeId)).organizingPrinciple }
+            {content, organizingPrinciple: tree.organizingPrinciple}
         );
       }
 
-      // 3. Routing (Auto-Place or Direct)
       if (parentId) {
-        // Direct placement (Manual override)
         const nodeId = randomUUID();
         const node: TreeNode = {
           id: nodeId,
@@ -69,27 +54,23 @@ export class Fractalizer {
           path: `${currentPath}/${nodeId}`,
           contentId: contentAtom.id,
           l0Gist: gist,
-          l1Map: null, // Atomic nodes have no children map
+          l1Map: null,
           sortOrder: 0,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
 
-        // Index & Save
         await this.vectorStore.add(nodeId, `Atomic: ${content}`);
         await this.treeStore.saveNode(node);
         await this.vectorStore.save(treeId);
-
-        // Update Parent
         await this.bubbleUp(parentId);
         return node;
       } else {
-        // Auto-Place (Routing)
-        return this.autoPlace(contentAtom.id, gist, treeId, true); // Pass 'isAtomic' flag
+        return this.autoPlace(contentAtom.id, gist, treeId, true);
       }
     }
 
-    // === STANDARD PATH (Large Content) ===
+    // === STANDARD PATH ===
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
@@ -99,33 +80,20 @@ export class Fractalizer {
     const tree = await this.treeStore.getTree(treeId);
     const rawGist = await this.basicLlm.complete(
         this.prompts.generateGist,
-        { content, organizingPrinciple: tree.organizingPrinciple }
+        {content, organizingPrinciple: tree.organizingPrinciple}
     );
-
     const gist = await this.sanctify(content, rawGist, treeId, 'L0');
 
     if (parentId) {
-      return this.processContentWithSplitting(
-          content,
-          contentAtom.id,
-          gist,
-          treeId,
-          parentId,
-          currentPath,
-          depth
-      );
+      return this.processContentWithSplitting(content, contentAtom.id, gist, treeId, parentId, currentPath, depth);
     } else {
       return this.autoPlace(contentAtom.id, gist, treeId, false);
     }
   }
 
-  /**
-   * Process content with splitting logic
-   * Priority: Markers -> Regex -> AI -> Length
-   */
   private async processContentWithSplitting(
       content: string,
-      contentId: string,
+      contentId: string | null,
       gist: string,
       treeId: string,
       parentId: string,
@@ -133,13 +101,10 @@ export class Fractalizer {
       depth: number
   ): Promise<TreeNode> {
 
-    const tree = await this.treeStore.getTree(treeId);
-    const wordCount = content.split(/\s+/).length;
-
     const nodeId = randomUUID();
     const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
 
-    await this.vectorStore.add(nodeId, `Gist: ${gist}\n${content.slice(0, 300)}`);
+    await this.vectorStore.add(nodeId, `Gist: ${gist}\n${content.slice(0, 500)}`);
 
     let node: TreeNode = {
       id: nodeId,
@@ -154,243 +119,143 @@ export class Fractalizer {
       updatedAt: new Date().toISOString(),
     };
 
-    // === CASCADE SPLIT STRATEGY ===
-    if (wordCount > this.config.splitThreshold && depth < this.config.maxDepth) {
+    // Stop recursion if too deep
+    if (depth >= this.config.maxDepth) {
+      await this.treeStore.saveNode(node);
+      return node;
+    }
 
-      let chunks: string[] = [];
-      let method = '';
+    // === CENSUS & SPLIT STRATEGY ===
+    const strategy = this.determineSplitStrategy(content);
 
-      // 1. Try Explicit Markers (PDF Pages, Injected Breaks) - CHEAPEST
-      chunks = this.splitByMarkers(content);
-      if (chunks.length > 1) {
-        method = 'Explicit Markers';
-      }
+    if (strategy.method !== 'NONE') {
+      console.log(`   🔪 Level ${depth}: Splitting via [${strategy.method}] into ${strategy.chunks.length} chunks.`);
 
-      // 2. If no markers, try Regex (Markdown Headers) - CHEAP
-      if (chunks.length <= 1) {
-        chunks = this.splitByRegex(content);
-        if (chunks.length > 1) method = 'Regex Headers';
-      }
+      // 1. CONVERT TO FOLDER
+      node.contentId = null;
 
-      // 3. If Regex failed, try AI Split (Semantic Analysis) - EXPENSIVE
-      if (chunks.length <= 1) {
-        chunks = await this.splitByAI(content);
-        if (chunks.length > 1) method = 'AI Semantic';
-      }
+      const children: TreeNode[] = [];
+      const tree = await this.treeStore.getTree(treeId);
 
-      // 4. If AI failed (or content too huge), Hard Split (Character Count) - FALLBACK
-      if (chunks.length <= 1) {
-        chunks = this.splitByLength(content, this.config.splitThreshold * 5);
-        if (chunks.length > 1) method = 'Hard Limit';
-      }
+      for (let i = 0; i < strategy.chunks.length; i++) {
+        const chunk = strategy.chunks[i];
 
-      if (chunks.length > 1) {
-        console.log(`   🔪 Splitting via ${method}: ${chunks.length} chunks`);
+        const chunkAtom = await this.contentStore.create({
+          payload: chunk,
+          mediaType: 'text/plain',
+          createdBy: 'system',
+          metadata: {parentOriginalId: contentId, splitIndex: i, method: strategy.method}
+        });
 
-        const children: TreeNode[] = [];
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
-          const chunkId = `${contentId}-part-${i}`;
-
-          await this.contentStore.create({
-            payload: chunk,
-            mediaType: 'text/plain',
-            createdBy: 'system',
-            customId: chunkId,
-            metadata: { parentContentId: contentId, splitIndex: i, isDerivedChunk: true }
-          });
-
-          // Basic LLM for speed on Gist
-          const chunkGistRaw = await this.basicLlm.complete(
+        // Optimization: If chunk is tiny, skip LLM gist
+        let chunkGist = "";
+        if (chunk.length < 200) {
+          chunkGist = chunk.slice(0, 100).replace(/\n/g, ' ');
+        } else {
+          const raw = await this.basicLlm.complete(
               this.prompts.generateGist,
-              { content: chunk, organizingPrinciple: tree.organizingPrinciple }
+              {content: chunk.slice(0, 3000), organizingPrinciple: tree.organizingPrinciple}
           );
-          // Smart LLM for quality check
-          const chunkGist = await this.sanctify(chunk, chunkGistRaw, treeId, 'L0');
-
-          const child = await this.processContentWithSplitting(
-              chunk, chunkId, chunkGist, treeId, nodeId, path, depth + 1
-          );
-          child.sortOrder = i;
-          await this.treeStore.saveNode(child);
-          children.push(child);
+          chunkGist = await this.sanctify(chunk, raw, treeId, 'L0');
         }
 
-        // Generate Map
-        const childGists = children.map(c => c.l0Gist);
-        const rawL1Summary = await this.basicLlm.complete(
-            this.prompts.generateL1,
-            { parentGist: gist, childGists: childGists, organizingPrinciple: tree.organizingPrinciple }
+        const child = await this.processContentWithSplitting(
+            chunk,
+            chunkAtom.id,
+            chunkGist,
+            treeId,
+            nodeId,
+            path,
+            depth + 1
         );
-        const l1Summary = await this.sanctify(childGists.join('\n'), rawL1Summary, treeId, 'L1');
+        child.sortOrder = i;
 
-        node.l1Map = {
-          summary: l1Summary,
-          childInventory: children.map(c => ({ nodeId: c.id, gist: c.l0Gist })),
-          outboundRefs: [],
-        };
+        await this.treeStore.saveNode(child);
+        children.push(child);
       }
+
+      // 2. DETERMINISTIC L1 MAP
+      const summaryList = children.map(c => `- ${c.l0Gist}`).join('\n');
+
+      node.l1Map = {
+        summary: `Contains ${children.length} items:\n${summaryList.slice(0, 1000)}`,
+        childInventory: children.map(c => ({nodeId: c.id, gist: c.l0Gist})), // Kept for API compat if needed
+        outboundRefs: []
+      };
     }
 
     await this.treeStore.saveNode(node);
     await this.vectorStore.save(treeId);
 
     if (parentId) await this.bubbleUp(parentId);
+
     return node;
   }
 
-  // --- SPLIT HELPERS ---
+  private determineSplitStrategy(content: string): { method: string, chunks: string[] } {
+    const len = content.length;
+    if (len < 500) return {method: 'NONE', chunks: []};
 
-  /**
-   * Split by Explicit Markers inserted by Parsers or Humans
-   */
-  private splitByMarkers(content: string): string[] {
-    // Looks for:
-    // 1. ---=== PAGE X ===---
-    // 2. ---=== VERTICAL BREAK ===---
-    // 3. ---===FRAKTAG_SPLIT===--- (Manual)
-    const splitter = /(\n\n---=== (?:PAGE \d+|VERTICAL BREAK.*?) ===---\n\n|---===FRAKTAG_SPLIT===---)/;
+    const patterns = {
+      'PDF_PAGE': /(\n\n---=== PAGE \d+ ===---\n\n)/,
+      'MARKER_HR': /(^\s*---\s*$)/m,
+      'H1': /^#\s+(.+)$/gm,
+      'H2': /^##\s+(.+)$/gm,
+      'H3': /^###\s+(.+)$/gm
+    };
 
-    const rawParts = content.split(splitter);
+    // 1. Explicit Markers (PDF)
+    const pageChunks = this.splitByRegexDelimiter(content, patterns.PDF_PAGE);
+    if (pageChunks.length > 1) return {method: 'PDF_PAGE', chunks: pageChunks};
 
-    // Filter out the delimiters themselves and empty strings
-    // But maybe we want to Keep the delimiter attached to the next chunk for context?
-    // For now, let's discard the delimiter line to keep content clean,
-    // assuming the Page Number metadata isn't critical text.
+    // 2. Headers
+    const MAX_CHUNKS = 60;
+    const MIN_AVG_LEN = 200;
 
-    return rawParts
-        .map(p => p.trim())
-        .filter(p => p.length > 0 && !p.startsWith('---==='));
+    const h1Chunks = this.splitByHeader(content, patterns.H1);
+    if (this.isValidSplit(h1Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H1', chunks: h1Chunks};
+
+    const h2Chunks = this.splitByHeader(content, patterns.H2);
+    if (this.isValidSplit(h2Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H2', chunks: h2Chunks};
+
+    const h3Chunks = this.splitByHeader(content, patterns.H3);
+    if (this.isValidSplit(h3Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H3', chunks: h3Chunks};
+
+    // 3. HR Markers
+    const hrChunks = this.splitByRegexDelimiter(content, patterns.MARKER_HR);
+    if (this.isValidSplit(hrChunks, 100, 100)) return {method: 'HR', chunks: hrChunks};
+
+    return {method: 'NONE', chunks: []};
   }
 
-  private splitByRegex(content: string): string[] {
-    // Matches Markdown headers (#, ##, ###)
-    const regex = /^(#{1,3})\s+(.+)$/gm;
+  private isValidSplit(chunks: string[], maxCount: number, minAvgLen: number): boolean {
+    if (chunks.length < 2) return false;
+    if (chunks.length > maxCount) return false;
+    const avg = chunks.reduce((sum, c) => sum + c.length, 0) / chunks.length;
+    return avg >= minAvgLen;
+  }
+
+  private splitByRegexDelimiter(content: string, regex: RegExp): string[] {
+    return content.split(regex)
+        .map(p => p.trim())
+        .filter(p => p.length > 0 && !regex.test(p) && !p.startsWith('---==='));
+  }
+
+  private splitByHeader(content: string, regex: RegExp): string[] {
     const matches = [...content.matchAll(regex)];
-    if (matches.length < 2) return [content];
+    if (matches.length < 2) return [];
 
     const chunks: string[] = [];
-
-    // Capture preamble
-    if (matches[0].index! > 0) {
-      chunks.push(content.slice(0, matches[0].index).trim());
-    }
+    if (matches[0].index! > 0) chunks.push(content.slice(0, matches[0].index).trim());
 
     for (let i = 0; i < matches.length; i++) {
       const start = matches[i].index!;
-      const end = matches[i+1] ? matches[i+1].index! : content.length;
-      const text = content.slice(start, end).trim();
-      if (text.length > 0) chunks.push(text);
+      const end = matches[i + 1] ? matches[i + 1].index! : content.length;
+      chunks.push(content.slice(start, end).trim());
     }
     return chunks;
   }
 
-  private async splitByAI(content: string): Promise<string[]> {
-    // Only ask AI if content is manageable (< 50k chars)
-    if (content.length > 50000) return [content];
-
-    try {
-      console.log(`      ... Attempting AI semantic split ...`);
-      const decisionJson = await this.basicLlm.complete(
-          this.prompts.shouldSplit,
-          { content, threshold: this.config.splitThreshold }
-      );
-      const { suggestedSections } = JSON.parse(decisionJson);
-
-      if (!suggestedSections || suggestedSections.length < 2) return [content];
-
-      const anchorsJson = await this.smartLlm.complete(
-          this.prompts.findSplitAnchors,
-          { content, sections: suggestedSections.join(', ') },
-      );
-      const { anchors } = JSON.parse(anchorsJson);
-
-      return this.executeCuts(content, anchors);
-    } catch (e) {
-      return [content];
-    }
-  }
-
-  private splitByLength(content: string, size: number): string[] {
-    const chunks = [];
-    for (let i = 0; i < content.length; i += size) {
-      chunks.push(content.slice(i, i + size));
-    }
-    return chunks;
-  }
-
-  // Helper: The Knife
-  private executeCuts(content: string, anchors: string[]): string[] {
-    const chunks: string[] = [];
-    let searchCursor = 0;
-    const sortedCutPoints: number[] = [];
-
-    for (const anchor of anchors) {
-      const idx = content.indexOf(anchor, searchCursor);
-      if (idx !== -1) {
-        sortedCutPoints.push(idx);
-        searchCursor = idx + 1;
-      }
-    }
-
-    if (sortedCutPoints.length > 0 && sortedCutPoints[0] > 0) {
-      sortedCutPoints.unshift(0);
-    }
-
-    for (let i = 0; i < sortedCutPoints.length; i++) {
-      const start = sortedCutPoints[i];
-      const end = sortedCutPoints[i + 1] ?? content.length;
-      const text = content.slice(start, end).trim();
-      if (text.length > 0) chunks.push(text);
-    }
-
-    if (chunks.length === 0) return [content];
-    return chunks;
-  }
-
-  /**
-   * MUTATION: Updates an existing node with new content (Version Control / Edit)
-   */
-  async updateNode(
-      nodeId: string,
-      newContentAtomId: string,
-      newContentText: string
-  ): Promise<void> {
-    console.log(`   📝 Updating Node: ${nodeId}`);
-
-    const node = await this.treeStore.getNode(nodeId);
-    if (!node) throw new Error(`Node ${nodeId} not found`);
-
-    // 1. Update Links
-    node.contentId = newContentAtomId;
-    node.updatedAt = new Date().toISOString();
-
-    // 2. Regenerate Gist (The identity might change)
-    const tree = await this.treeStore.getTree(node.treeId);
-    const rawGist = await this.basicLlm.complete(
-        this.prompts.generateGist,
-        { content: newContentText, organizingPrinciple: tree.organizingPrinciple }
-    );
-    node.l0Gist = await this.sanctify(newContentText, rawGist, node.treeId, 'L0');
-
-    // 3. Update Vector Index (Remove old, Add new)
-    await this.vectorStore.remove(node.id);
-    await this.vectorStore.add(node.id, `Gist: ${node.l0Gist}\n${newContentText.slice(0, 300)}`);
-
-    // 4. Save
-    await this.treeStore.saveNode(node);
-    await this.vectorStore.save(node.treeId);
-
-    // 5. Ripple Effect (Bubble Up changes to parents)
-    if (node.parentId) {
-      await this.bubbleUp(node.parentId);
-    }
-  }
-
-  /**
-   * INTELLIGENT AUTO-PLACEMENT
-   * Uses LLM to recursively find the right spot in the tree hierarchy
-   */
   async autoPlace(
       contentId: string,
       gist: string,
@@ -406,65 +271,57 @@ export class Fractalizer {
     const maxPlacementDepth = 3;
     let depth = 0;
 
-    // Routing Loop
     while (depth < maxPlacementDepth) {
       const children = await this.treeStore.getChildren(currentParentId);
 
-      // --- START SEMANTIC DEDUPLICATION / EXPANSION LOGIC ---
+      // --- SEMANTIC DEDUPLICATION ---
       let merged = false;
       for (const child of children) {
-        // Check if the new content is semantically identical or an expansion of this child
         const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
+        if (isMatch) {
+          console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0, 30)}..." matches new content.`);
 
-        for (const child of children) {
-          // 1. Fast Semantic Check (Topic Match?)
-          const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
+          if (child.contentId) {
+            // If leaf, convert to folder and dive
+            console.log(`      📂 Converting Leaf "${child.l0Gist}" to Category Cluster`);
+            const oldContentNodeId = randomUUID();
+            const oldContentNode: TreeNode = {
+              ...child,
+              id: oldContentNodeId,
+              parentId: child.id,
+              path: `${child.path}/${oldContentNodeId}`,
+              l0Gist: `${child.l0Gist} (Original)`,
+              sortOrder: 0,
+              l1Map: null
+            };
+            child.contentId = null;
+            child.l1Map = null;
 
-          if (isMatch) {
-            console.log(`   🔄 Topic Match: "${child.l0Gist.slice(0,30)}..."`);
+            await this.treeStore.saveNode(oldContentNode);
+            await this.treeStore.saveNode(child);
+            await this.vectorStore.add(oldContentNode.id, `Gist: ${oldContentNode.l0Gist}`);
 
-            // 2. Deep Relationship Check (Version Match?)
-            const relationship = await this.checkRelationship(gist, child.l0Gist);
-            console.log(`      ⚖️  Verdict: ${relationship}`);
-
-            if (relationship === 'DUPLICATE' || relationship === 'SUPERSEDED_BY') {
-              // New content adds nothing. Drop it.
-              console.log(`      🗑️  Dropping new content (Duplicate/Old).`);
-              return child; // Return existing node
-            }
-
-            if (relationship === 'SUPERSEDES') {
-              // New content replaces old.
-              // Ideally we Archive the old one or Delete it.
-              // For now, let's REPLACE the content of the existing node.
-              console.log(`      ♻️  Replacing old node content.`);
-              await this.updateNode(child.id, contentId, (await this.contentStore.get(contentId))!.payload);
-              return child;
-            }
-
-            // COMPLEMENTARY -> Create Cluster (Existing Logic)
-            if (child.contentId) {
-              // ... (The clustering logic we wrote before) ...
-              // This is where "Standards" and "Procedures" live side-by-side
-              // ...
-            } else {
-              // It's a folder, dive in
-              currentParent = child;
-              depth++;
-              merged = true;
-              break;
-            }
+            currentParent = child;
+            currentParentId = child.id;
+            depth++;
+            merged = true;
+            break;
+          } else {
+            // Folder, dive
+            currentParent = child;
+            currentParentId = child.id;
+            depth++;
+            merged = true;
+            break;
           }
         }
       }
-
-      if (merged) continue; // Skip LLM routing for this level
-      // --- END SEMANTIC DEDUPLICATION ---
-
+      if (merged) continue;
+      // --- END DEDUPLICATION ---
 
       if (children.length === 0) break;
 
-      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\\n');
+      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
 
       try {
         const placementJson = await this.basicLlm.complete(
@@ -476,7 +333,6 @@ export class Fractalizer {
               availableNodes: candidates || 'No existing categories',
             }
         );
-
         const decision = JSON.parse(placementJson);
 
         if (decision.parentNodeId && decision.parentNodeId !== currentParentId) {
@@ -488,28 +344,20 @@ export class Fractalizer {
             continue;
           }
         }
-
         if (decision.createNodes && decision.createNodes.length > 0) {
           const categoryName = decision.createNodes[0];
-          const categoryNode = await this.createOrganizationalNode(
-              treeId,
-              currentParentId,
-              currentParent.path,
-              categoryName
-          );
+          const categoryNode = await this.createOrganizationalNode(treeId, currentParentId, currentParent.path, categoryName);
           currentParentId = categoryNode.id;
           currentParent = categoryNode;
           break;
         }
         break;
-
       } catch (error) {
         console.error('Placement routing error:', error);
         break;
       }
     }
 
-    // FINAL PLACEMENT LOGIC (Atomic or Split)
     const content = await this.contentStore.get(contentId);
     if (!content) throw new Error(`Content not found: ${contentId}`);
 
@@ -527,11 +375,9 @@ export class Fractalizer {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-
       await this.vectorStore.add(nodeId, `Atomic: ${content.payload}`);
       await this.treeStore.saveNode(node);
       await this.vectorStore.save(treeId);
-
       await this.bubbleUp(currentParentId);
       return node;
     } else {
@@ -547,45 +393,42 @@ export class Fractalizer {
     }
   }
 
-  private async checkRelationship(newGist: string, existingGist: string): Promise<string> {
-    try {
-      const response = await this.smartLlm.complete(
-          this.prompts.checkRelationship,
-          { newGist, existingGist }
-      );
-      const json = JSON.parse(response);
-      return json.relationship;
-    } catch (e) {
-      return "COMPLEMENTARY"; // Fail safe: Keep both
-    }
+  // --- MUTATION ---
+  async updateNode(nodeId: string, newContentAtomId: string, newContentText: string): Promise<void> {
+    console.log(`   📝 Updating Node: ${nodeId}`);
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) throw new Error(`Node ${nodeId} not found`);
+
+    node.contentId = newContentAtomId;
+    node.updatedAt = new Date().toISOString();
+
+    const tree = await this.treeStore.getTree(node.treeId);
+    const rawGist = await this.basicLlm.complete(
+        this.prompts.generateGist,
+        {content: newContentText, organizingPrinciple: tree.organizingPrinciple}
+    );
+    node.l0Gist = await this.sanctify(newContentText, rawGist, node.treeId, 'L0');
+
+    await this.vectorStore.remove(node.id);
+    await this.vectorStore.add(node.id, `Gist: ${node.l0Gist}\n${newContentText.slice(0, 300)}`);
+    await this.treeStore.saveNode(node);
+    await this.vectorStore.save(node.treeId);
+    if (node.parentId) await this.bubbleUp(node.parentId);
   }
 
-  // Check Similarity Implementation
+  // --- HELPERS ---
   private async checkSemanticMatch(newGist: string, existingGist: string): Promise<boolean> {
-    // Optimization: Fast string check first
     if (newGist === existingGist) return true;
-
     try {
-      // You need to ensure 'checkSimilarity' is defined in DEFAULT_PROMPTS
-      // If not, use a simple prompt here:
-      const prompt = this.prompts.checkSimilarity || `
-        Compare these two summaries. Are they describing the EXACT SAME topic or entity?
-        Summary A: "{{newGist}}"
-        Summary B: "{{existingGist}}"
-        Respond ONLY with JSON: {"status": "MATCH" | "DIFFERENT"}
-        `;
-
-      const response = await this.basicLlm.complete(
-          prompt,
-          { newGist, existingGist }
-      );
+      const prompt = this.prompts.checkSimilarity || `Respond ONLY with JSON: {"status": "MATCH" | "DIFFERENT"}`;
+      const response = await this.basicLlm.complete(prompt, {newGist, existingGist});
       const json = JSON.parse(response);
       return json.status === 'MATCH';
     } catch (e) {
       return false;
     }
   }
-  
+
   private async createOrganizationalNode(treeId: string, parentId: string, parentPath: string, name: string): Promise<TreeNode> {
     const id = `${parentId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     const path = `${parentPath}/${id}`;
@@ -607,62 +450,53 @@ export class Fractalizer {
     return 'Group by related topics and themes';
   }
 
-  /**
-   * SANCTIFY: The Inquisitor
-   * Audits a generated summary against source content to detect heresy
-   * (hallucinations, omissions, distortions, miscategorization)
-   */
-  private async sanctify(
-    content: string,
-    proposedSummary: string,
-    treeId: string,
-    summaryType: 'L0' | 'L1' = 'L0'
-  ): Promise<string> {
+  private async sanctify(content: string, proposedSummary: string, treeId: string, summaryType: 'L0' | 'L1' = 'L0'): Promise<string> {
     console.log(`\\n🔍 [The Inquisitor] Inspecting ${summaryType} for Tree: ${treeId}`);
     try {
       const tree = await this.treeStore.getTree(treeId);
       const contentSample = summaryType === 'L0' ? content.slice(0, 3000) : content;
       const heresyCheck = await this.smartLlm.complete(
           this.prompts.detectHeresy,
-          { content: contentSample, summary: proposedSummary, organizingPrinciple: tree.organizingPrinciple }
+          {content: contentSample, summary: proposedSummary, organizingPrinciple: tree.organizingPrinciple}
       );
       let verdict;
-      try { verdict = JSON.parse(heresyCheck); } catch (e) { return proposedSummary; }
+      try {
+        verdict = JSON.parse(heresyCheck);
+      } catch (e) {
+        return proposedSummary;
+      }
       if (verdict.status === 'FAIL') {
         console.warn(`⚠️ [HERESY DETECTED] Reason: ${verdict.reason}`);
         return verdict.correctedSummary || proposedSummary;
       }
       return proposedSummary;
-    } catch (e) { return proposedSummary; }
+    } catch (e) {
+      return proposedSummary;
+    }
   }
 
-  /**
-   * Bubble up: regenerate L1 summaries for a node based on its children
-   */
   private async bubbleUp(nodeId: string): Promise<void> {
     const node = await this.treeStore.getNode(nodeId);
     if (!node) return;
     const children = await this.treeStore.getChildren(nodeId);
     if (children.length === 0) return;
-    const tree = await this.treeStore.getTree(node.treeId);
-    const childGists = children.map(c => c.l0Gist);
-    try {
-      const rawL1Summary = await this.basicLlm.complete(
-          this.prompts.generateL1,
-          { parentGist: node.l0Gist, childGists: childGists, organizingPrinciple: tree.organizingPrinciple }
-      );
-      const childGistsText = childGists.join('\\n');
-      const l1Summary = await this.sanctify(childGistsText, rawL1Summary, node.treeId, 'L1');
-      node.l1Map = {
-        summary: l1Summary,
-        childInventory: children.map(c => ({ nodeId: c.id, gist: c.l0Gist })),
-        outboundRefs: node.l1Map?.outboundRefs || [],
-      };
-      node.updatedAt = new Date().toISOString();
-      await this.vectorStore.add(node.id, `Category: ${node.l0Gist}\nSummary: ${l1Summary}`);
-      await this.vectorStore.save(node.treeId);
-      await this.treeStore.saveNode(node);
-    } catch (error) { console.error('Failed to bubble up L1 summary:', error); }
+
+    // Deterministic L1 (Concatenation)
+    const childSummaries = children.map(c => `- ${c.l0Gist}`).join('\n');
+    node.l1Map = {
+      summary: `Contains ${children.length} items:\n${childSummaries.slice(0, 1000)}`,
+      childInventory: children.map(c => ({nodeId: c.id, gist: c.l0Gist})),
+      outboundRefs: [],
+    };
+
+    node.updatedAt = new Date().toISOString();
+    await this.vectorStore.add(node.id, `Category: ${node.l0Gist}\n${childSummaries.slice(0, 500)}`);
+    await this.vectorStore.save(node.treeId);
+    await this.treeStore.saveNode(node);
+
+    // No recursive bubbleUp needed if using deterministic summaries, 
+    // but useful if vector index relies on full path context.
+    if (node.parentId) await this.bubbleUp(node.parentId);
   }
 
   /**

@@ -623,6 +623,43 @@ export class Fraktag {
   }
 
   /**
+   * Reset a tree to empty state.
+   * @param treeId - The ID of the tree to reset
+   * @param options.pruneContent - If true, deletes generated chunk atoms
+   */
+  async reset(treeId: string, options: { pruneContent?: boolean } = {}): Promise<void> {
+    const treeConfig = this.config.trees.find(t => t.id === treeId);
+    if (!treeConfig) throw new Error(`Tree ${treeId} not configured.`);
+
+    console.log(`🔥 Resetting Tree: ${treeId}`);
+
+    // 1. Delete Tree Data
+    await this.treeStore.deleteTree(treeId);
+
+    // 2. Delete Vector Index
+    await this.vectorStore.deleteIndex(treeId);
+
+    // 3. Re-create Empty Tree
+    await this.treeStore.createTree(treeConfig);
+
+    // 4. Prune Content if requested
+    if (options.pruneContent) {
+      console.log(`   🧹 Pruning derived chunks...`);
+      const count = await this.contentStore.pruneDerived();
+      console.log(`   ✅ Removed ${count} generated fragments.`);
+    }
+
+    console.log(`✅ Tree ${treeId} reset to factory settings.`);
+  }
+
+  /**
+   * Clear internal caches (useful for live-reloading)
+   */
+  clearCache(treeId?: string) {
+    this.treeStore.clearCache(treeId);
+  }
+
+  /**
    * Execute a specific fix operation
    */
   async applyFix(treeId: string, operation: TreeOperation): Promise<string> {

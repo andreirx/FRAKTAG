@@ -89,6 +89,25 @@ export class ContentStore {
   }
 
   /**
+   * Prune content atoms marked as derived chunks.
+   * Keeps original uploads.
+   * @returns Number of atoms deleted
+   */
+  async pruneDerived(): Promise<number> {
+    const ids = await this.listIds();
+    let count = 0;
+
+    for (const id of ids) {
+      const atom = await this.get(id);
+      if (atom?.metadata?.isDerivedChunk) {
+        await this.delete(id);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
    * Update content atom metadata (content itself is immutable)
    */
   async updateMetadata(id: string, metadata: Record<string, unknown>): Promise<ContentAtom | null> {

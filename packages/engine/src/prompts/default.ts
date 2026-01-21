@@ -41,21 +41,21 @@ Content:
 
 Output the full text chunks separated by the delimiter. Do not use JSON.`,
 
-  generateGist: `Write a 1-sentence gist (15-25 words) for this content.
-
-Organizing principle for this tree: {{organizingPrinciple}}
-
-The gist should capture:
-- What this content IS
-- What it DOES or CLAIMS
-- Key context relevant to the organizing principle
+  generateGist: `Create a label (Gist) for this content node.
 
 Content:
 ---
 {{content}}
 ---
 
-Output ONLY the gist sentence, no formatting.`,
+Rules:
+1. If the content is ALREADY a summary, title, or short definition, output it almost verbatim (max 30 words).
+2. If the content is long, synthesize a 1-paragraph summary.
+3. Do not start with "This content is..." or "A summary of...". Just state the fact.
+
+Organizing principle: {{organizingPrinciple}}
+
+Output ONLY the gist sentence.`,
 
   generateL1: `Write a navigation summary (150-200 words) for a parent node.
 

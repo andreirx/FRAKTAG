@@ -70,6 +70,18 @@ export class VectorStore {
         }
     }
 
+    /**
+     * Delete the vector index for a specific tree
+     */
+    async deleteIndex(treeId: string): Promise<void> {
+        this.index = [];
+        this.dirty = false;
+        const path = `indexes/${treeId}.vectors.json`;
+        if (await this.storage.exists(path)) {
+            await this.storage.delete(path);
+        }
+    }
+
     private cosineSimilarity(vecA: number[], vecB: number[]): number {
         // Safety check for dimension mismatch
         if (vecA.length !== vecB.length) return 0;

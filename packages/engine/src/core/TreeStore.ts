@@ -159,6 +159,17 @@ export class TreeStore {
   }
 
   /**
+   * Clear memory cache to force reload from disk.
+   */
+  clearCache(treeId?: string) {
+    if (treeId) {
+      this.cache.delete(treeId);
+    } else {
+      this.cache.clear();
+    }
+  }
+
+  /**
    * Public accessor for the raw tree file (for UI/Visualization)
    */
   async getTreeFile(treeId: string): Promise<TreeFile> {

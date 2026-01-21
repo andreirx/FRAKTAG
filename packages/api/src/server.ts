@@ -57,12 +57,13 @@ app.get('/api/trees', async (req, res) => {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// 2. Get Full Tree Structure (FIXED)
+// 2. Get Full Tree Structure (Recursive)
 app.get('/api/trees/:id/structure', async (req, res) => {
     if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
     try {
-        // OLD: const root = await fraktag.browse(...) <-- Wrong format for UI
-        // NEW: Get the raw monolithic state
+        // FIX: Force reload from disk to see live ingestion updates
+        fraktag.clearCache(req.params.id);
+
         const treeDump = await fraktag.getFullTree(req.params.id);
         res.json(treeDump);
     } catch (e: any) {

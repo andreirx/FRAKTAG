@@ -189,8 +189,17 @@ async function main() {
             }
             break;
 
+        case 'reset':
+            if (!ARG1) throw new Error('Usage: reset <treeId> [--prune]');
+            const treeToReset = ARG1;
+            const prune = process.argv.includes('--prune');
+
+            await fraktag.reset(treeToReset, { pruneContent: prune });
+            break;
+
+
         default:
-            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId> [--apply]');
+            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId> [--apply], \n  reset <treeId> [--prune]');
     }
 }
 
