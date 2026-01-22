@@ -3,7 +3,7 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, MessageSquare, Compass } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
@@ -42,6 +42,20 @@ export default function KnowledgeTree() {
     const [moveNodeId, setMoveNodeId] = useState<string>("");
     const [moveNodeType, setMoveNodeType] = useState<string>("");
     const [moveTargetId, setMoveTargetId] = useState<string>("");
+
+    // Query (Retrieve/Ask) State
+    const [queryText, setQueryText] = useState("");
+    const [retrieveLoading, setRetrieveLoading] = useState(false);
+    const [askLoading, setAskLoading] = useState(false);
+    const [retrieveResults, setRetrieveResults] = useState<{
+        nodes: { nodeId: string; path: string; resolution: string; content: string }[];
+        navigationPath: string[];
+    } | null>(null);
+    const [askAnswer, setAskAnswer] = useState<{
+        answer: string;
+        references: string[];
+    } | null>(null);
+    const [queryError, setQueryError] = useState<string | null>(null);
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(400);
@@ -203,6 +217,55 @@ export default function KnowledgeTree() {
             setSelectedNode(null);
         } catch (e) { console.error(e); }
         finally { setLoading(false); }
+    }
+
+    // Retrieve: Find relevant fragments
+    async function handleRetrieve() {
+        if (!queryText.trim() || !activeTreeId) return;
+        setRetrieveLoading(true);
+        setQueryError(null);
+        setAskAnswer(null);
+        try {
+            const res = await axios.post('/api/retrieve', {
+                treeId: activeTreeId,
+                query: queryText,
+                maxDepth: 5,
+                resolution: 'L2',
+            });
+            setRetrieveResults(res.data);
+        } catch (e: any) {
+            console.error("Retrieve failed:", e);
+            setQueryError(e.response?.data?.error || e.message || "Retrieve failed");
+        } finally {
+            setRetrieveLoading(false);
+        }
+    }
+
+    // Ask: Get AI answer using retrieved content
+    async function handleAsk() {
+        if (!queryText.trim() || !activeTreeId) return;
+        setAskLoading(true);
+        setQueryError(null);
+        setRetrieveResults(null);
+        try {
+            const res = await axios.post('/api/ask', {
+                query: queryText,
+                treeId: activeTreeId,
+            });
+            setAskAnswer(res.data);
+        } catch (e: any) {
+            console.error("Ask failed:", e);
+            setQueryError(e.response?.data?.error || e.message || "Ask failed");
+        } finally {
+            setAskLoading(false);
+        }
+    }
+
+    // Clear query results
+    function clearQueryResults() {
+        setRetrieveResults(null);
+        setAskAnswer(null);
+        setQueryError(null);
     }
 
     async function fetchContent(id: string) {
@@ -448,7 +511,141 @@ export default function KnowledgeTree() {
             {/* MAIN CONTENT */}
             <div className="flex-1 flex flex-col h-full min-w-0 bg-white">
                 <ScrollArea className="h-full">
-                    <div className="p-8 pb-32 max-w-5xl mx-auto">
+                    <div className="p-8 pb-32 max-w-5xl mx-auto space-y-8">
+
+                        {/* QUERY INTERFACE (Retrieve / Ask) */}
+                        <div className="bg-gradient-to-r from-purple-50 to-indigo-50 rounded-xl border border-purple-100 p-6 space-y-4">
+                            <div className="flex items-center gap-2 text-purple-700">
+                                <Sparkles className="w-5 h-5" />
+                                <h2 className="font-semibold">Query Knowledge Base</h2>
+                            </div>
+
+                            {/* Query Input */}
+                            <div className="flex gap-2">
+                                <Input
+                                    value={queryText}
+                                    onChange={(e) => setQueryText(e.target.value)}
+                                    placeholder="Enter your query..."
+                                    className="flex-1 bg-white"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleAsk();
+                                        }
+                                    }}
+                                />
+                                <Button
+                                    variant="outline"
+                                    onClick={handleRetrieve}
+                                    disabled={!queryText.trim() || retrieveLoading || askLoading}
+                                    className="gap-2 bg-white"
+                                >
+                                    {retrieveLoading ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <Compass className="w-4 h-4" />
+                                    )}
+                                    Retrieve
+                                </Button>
+                                <Button
+                                    onClick={handleAsk}
+                                    disabled={!queryText.trim() || retrieveLoading || askLoading}
+                                    className="gap-2 bg-purple-600 hover:bg-purple-700"
+                                >
+                                    {askLoading ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <MessageSquare className="w-4 h-4" />
+                                    )}
+                                    Ask
+                                </Button>
+                            </div>
+
+                            {/* Loading Indicator */}
+                            {(retrieveLoading || askLoading) && (
+                                <div className="flex items-center gap-3 text-purple-600 bg-purple-100 rounded-lg px-4 py-3">
+                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                    <div>
+                                        <div className="font-medium text-sm">
+                                            {retrieveLoading ? "Searching knowledge base..." : "AI is thinking..."}
+                                        </div>
+                                        <div className="text-xs text-purple-500">
+                                            {retrieveLoading
+                                                ? "Finding relevant content fragments"
+                                                : "Retrieving context and generating answer"}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Error Display */}
+                            {queryError && (
+                                <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-red-700 text-sm">
+                                    <span className="font-medium">Error:</span> {queryError}
+                                </div>
+                            )}
+
+                            {/* Ask Answer */}
+                            {askAnswer && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-sm font-semibold text-purple-700 flex items-center gap-2">
+                                            <MessageSquare className="w-4 h-4" />
+                                            Answer
+                                        </h3>
+                                        <Button variant="ghost" size="sm" onClick={clearQueryResults} className="text-xs">
+                                            <X className="w-3 h-3 mr-1" /> Clear
+                                        </Button>
+                                    </div>
+                                    <div className="bg-white rounded-lg border p-4 text-sm leading-relaxed whitespace-pre-wrap">
+                                        {askAnswer.answer}
+                                    </div>
+                                    {askAnswer.references.length > 0 && (
+                                        <div className="text-xs text-zinc-500">
+                                            <span className="font-medium">References:</span>{" "}
+                                            {askAnswer.references.join(", ")}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Retrieve Results */}
+                            {retrieveResults && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-sm font-semibold text-purple-700 flex items-center gap-2">
+                                            <Compass className="w-4 h-4" />
+                                            Retrieved Fragments ({retrieveResults.nodes.length})
+                                        </h3>
+                                        <Button variant="ghost" size="sm" onClick={clearQueryResults} className="text-xs">
+                                            <X className="w-3 h-3 mr-1" /> Clear
+                                        </Button>
+                                    </div>
+                                    {retrieveResults.navigationPath.length > 0 && (
+                                        <div className="text-xs text-zinc-500 bg-zinc-50 rounded px-3 py-2">
+                                            <span className="font-medium">Navigation Path:</span>{" "}
+                                            {retrieveResults.navigationPath.join(" → ")}
+                                        </div>
+                                    )}
+                                    <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                                        {retrieveResults.nodes.map((node, i) => (
+                                            <div key={i} className="bg-white rounded-lg border p-4 space-y-2">
+                                                <div className="flex items-center gap-2 text-xs text-zinc-500">
+                                                    <span className="font-mono bg-zinc-100 px-2 py-0.5 rounded">
+                                                        {node.resolution}
+                                                    </span>
+                                                    <span className="truncate">{node.path}</span>
+                                                </div>
+                                                <div className="text-sm leading-relaxed whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                                                    {node.content}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         {selectedNode ? (
                             <div className="space-y-8 animate-in fade-in duration-300">
 
