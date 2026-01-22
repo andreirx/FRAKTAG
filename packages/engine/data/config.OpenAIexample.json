@@ -7,7 +7,7 @@
     "basicModel": "gpt-4.1-nano",
     "expertModel": "gpt-5",
     "apiKey": "sk-proj-...",
-    "timeoutMs": 15000
+    "timeoutMs": 60000
   },
   "embedding": {
     "adapter": "openai",
@@ -19,8 +19,29 @@
       "id": "notes",
       "name": "Master Notes",
       "organizingPrinciple": "Universal Knowledge Base. Organized by Domain (Tech/Personal), Project, and Status.",
-      "autoPlace": true,
-      "placementStrategy": "Sort into 'Active Projects', 'Reference', 'Archives', or 'Journal'. Create new sub-categories if topic is novel.",
+      "autoPlace": false,
+      "seedFolders": [
+        {
+          "title": "Active Projects",
+          "gist": "Current work in progress. Projects actively being developed or maintained."
+        },
+        {
+          "title": "Reference",
+          "gist": "Stable reference material. Documentation, guides, and specifications for ongoing use.",
+          "children": [
+            { "title": "Technical", "gist": "Programming, systems, tools, and technical documentation" },
+            { "title": "Personal", "gist": "Life systems, habits, and personal knowledge" }
+          ]
+        },
+        {
+          "title": "Archives",
+          "gist": "Completed or deprecated material. Preserved for historical reference."
+        },
+        {
+          "title": "Journal",
+          "gist": "Chronological entries. Daily notes, reflections, and observations."
+        }
+      ],
       "dogma": {
         "strictness": "strict",
         "forbiddenConcepts": ["marketing fluff", "generic filler"],
@@ -31,8 +52,21 @@
       "id": "conversations",
       "name": "Infinite Context Log",
       "organizingPrinciple": "Episodic Narrative. Organized Hierarchically by: 1. Epoch/Year, 2. Session/Project Thread, 3. Interaction Phase (e.g., 'Problem Statement', 'Exploration', 'Resolution').",
-      "autoPlace": true,
-      "placementStrategy": "Place chronologically under the active Session ID. If the conversation shifts topic significantly, create a new Phase node under the same Session. Do NOT merge distinct sessions.",
+      "autoPlace": false,
+      "seedFolders": [
+        {
+          "title": "2024",
+          "gist": "Conversations and sessions from 2024"
+        },
+        {
+          "title": "2025",
+          "gist": "Conversations and sessions from 2025"
+        },
+        {
+          "title": "2026",
+          "gist": "Conversations and sessions from 2026"
+        }
+      ],
       "dogma": {
         "strictness": "fanatical",
         "forbiddenConcepts": [
@@ -52,8 +86,65 @@
       "id": "governance",
       "name": "Enterprise Governance & Standards",
       "organizingPrinciple": "The Compliance Pyramid. Organized first by Functional Domain (e.g., Engineering, InfoSec, Operations), then by Authority Level: 1. Policies (Mandates), 2. Procedures (SOPs/Workflows), 3. Standards (Coding Rules, Tooling), 4. Records/Reference.",
-      "autoPlace": true,
-      "placementStrategy": "First, identify the Functional Domain (Who owns this?). Second, classify by document type: Is it a rule (Policy), a how-to (Procedure), a technical constraint (Standard), or a definition (Role/Tool)? Group Standards by specific technology or practice area.",
+      "autoPlace": false,
+      "seedFolders": [
+        {
+          "title": "Engineering",
+          "gist": "Software development standards, architecture decisions, and technical governance.",
+          "children": [
+            { "title": "Policies", "gist": "Mandates and rules for engineering practices. MUST-level requirements." },
+            { "title": "Procedures", "gist": "SOPs, workflows, and how-to guides for engineering processes." },
+            {
+              "title": "Standards",
+              "gist": "Technical constraints, coding rules, and tooling specifications.",
+              "children": [
+                { "title": "Code Style", "gist": "Coding conventions, formatting rules, and naming standards." },
+                { "title": "Architecture", "gist": "System design patterns, ADRs, and structural guidelines." },
+                { "title": "Testing", "gist": "Test coverage requirements, QA processes, and validation rules." },
+                { "title": "DevOps", "gist": "CI/CD standards, deployment procedures, and infrastructure rules." }
+              ]
+            },
+            { "title": "Reference", "gist": "Tool documentation, role definitions, and technical glossaries." }
+          ]
+        },
+        {
+          "title": "InfoSec",
+          "gist": "Information security policies, compliance requirements, and security standards.",
+          "children": [
+            { "title": "Policies", "gist": "Security mandates, access control rules, and data protection requirements." },
+            { "title": "Procedures", "gist": "Incident response workflows, audit processes, and security reviews." },
+            {
+              "title": "Standards",
+              "gist": "Security controls, encryption requirements, and compliance frameworks.",
+              "children": [
+                { "title": "Access Control", "gist": "Authentication, authorization, and identity management standards." },
+                { "title": "Data Protection", "gist": "Encryption, data handling, and privacy requirements." },
+                { "title": "Network Security", "gist": "Firewall rules, network segmentation, and traffic policies." }
+              ]
+            },
+            { "title": "Reference", "gist": "Compliance mappings, security tools, and threat models." }
+          ]
+        },
+        {
+          "title": "Operations",
+          "gist": "Operational procedures, SLAs, and infrastructure governance.",
+          "children": [
+            { "title": "Policies", "gist": "Operational mandates, availability requirements, and service level rules." },
+            { "title": "Procedures", "gist": "Runbooks, escalation workflows, and maintenance processes." },
+            { "title": "Standards", "gist": "Monitoring requirements, alerting thresholds, and capacity rules." },
+            { "title": "Reference", "gist": "Service catalogs, on-call rotations, and vendor contacts." }
+          ]
+        },
+        {
+          "title": "HR & People",
+          "gist": "Human resources policies, onboarding procedures, and organizational standards.",
+          "children": [
+            { "title": "Policies", "gist": "Employment policies, conduct rules, and compliance requirements." },
+            { "title": "Procedures", "gist": "Hiring workflows, performance reviews, and offboarding processes." },
+            { "title": "Reference", "gist": "Role definitions, org charts, and benefits documentation." }
+          ]
+        }
+      ],
       "dogma": {
         "strictness": "fanatical",
         "forbiddenConcepts": [

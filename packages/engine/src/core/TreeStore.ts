@@ -1,7 +1,22 @@
 // packages/engine/src/core/TreeStore.ts
+// STRICT TAXONOMY GATEKEEPER
 
-import { Tree, TreeNode, TreeConfig } from './types.js';
+import {
+  Tree,
+  TreeNode,
+  TreeConfig,
+  FolderNode,
+  DocumentNode,
+  FragmentNode,
+  NodeType,
+  SeedFolder,
+  isFolder,
+  isDocument,
+  isFragment,
+  hasContent
+} from './types.js';
 import { JsonStorage } from '../adapters/storage/JsonStorage.js';
+import { randomUUID } from 'crypto';
 
 interface TreeFile {
   config: Tree;
@@ -16,14 +31,12 @@ export class TreeStore {
     this.storage = storage;
   }
 
+  // ============ LOAD / SAVE ============
+
   private async loadTreeFile(treeId: string): Promise<TreeFile> {
     if (this.cache.has(treeId)) return this.cache.get(treeId)!;
 
-    // Try loading monolithic file
-    let file = await this.storage.read<TreeFile>(`trees/${treeId}.json`);
-
-    // MIGRATION FALLBACK: If monolithic doesn't exist, try loading old folder structure?
-    // No, for clean start, we just throw or return null if creating.
+    const file = await this.storage.read<TreeFile>(`trees/${treeId}.json`);
     if (!file) {
       throw new Error(`Tree file not found: ${treeId}`);
     }
@@ -37,9 +50,12 @@ export class TreeStore {
     await this.storage.write(`trees/${treeId}.json`, data);
   }
 
+  // ============ TREE CREATION ============
+
   async createTree(config: TreeConfig): Promise<Tree> {
     const rootNodeId = `root-${config.id}`;
     const now = new Date().toISOString();
+
     const treeMeta: Tree = {
       id: config.id,
       name: config.name,
@@ -49,27 +65,70 @@ export class TreeStore {
       updatedAt: now,
     };
 
+    const rootNode: FolderNode = {
+      id: rootNodeId,
+      treeId: config.id,
+      parentId: null,
+      path: '/',
+      type: 'folder',
+      title: config.name,
+      gist: config.organizingPrinciple,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
     const treeFile: TreeFile = {
       config: treeMeta,
-      nodes: {
-        [rootNodeId]: {
-          id: rootNodeId,
-          treeId: config.id,
-          parentId: null,
-          path: '/',
-          contentId: null,
-          l0Gist: `Root of ${config.name}`,
-          l1Map: null,
-          sortOrder: 0,
-          createdAt: now,
-          updatedAt: now,
-        }
-      }
+      nodes: { [rootNodeId]: rootNode }
     };
+
+    // Create seed folders if specified
+    if (config.seedFolders && config.seedFolders.length > 0) {
+      await this.createSeedFolders(treeFile, config.id, rootNodeId, '/', config.seedFolders);
+    }
 
     await this.saveTreeFile(config.id, treeFile);
     return treeMeta;
   }
+
+  private async createSeedFolders(
+    treeFile: TreeFile,
+    treeId: string,
+    parentId: string,
+    parentPath: string,
+    seeds: SeedFolder[]
+  ): Promise<void> {
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < seeds.length; i++) {
+      const seed = seeds[i];
+      const nodeId = `${parentId}-${seed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      const path = `${parentPath}${nodeId}/`;
+
+      const folderNode: FolderNode = {
+        id: nodeId,
+        treeId,
+        parentId,
+        path,
+        type: 'folder',
+        title: seed.title,
+        gist: seed.gist,
+        sortOrder: i,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      treeFile.nodes[nodeId] = folderNode;
+
+      // Recursively create children
+      if (seed.children && seed.children.length > 0) {
+        await this.createSeedFolders(treeFile, treeId, nodeId, path, seed.children);
+      }
+    }
+  }
+
+  // ============ TREE QUERIES ============
 
   async getTree(treeId: string): Promise<Tree> {
     const file = await this.loadTreeFile(treeId);
@@ -90,7 +149,135 @@ export class TreeStore {
     return trees;
   }
 
+  async getAllNodes(treeId: string): Promise<TreeNode[]> {
+    const file = await this.loadTreeFile(treeId);
+    return Object.values(file.nodes);
+  }
+
+  async getTreeFile(treeId: string): Promise<TreeFile> {
+    return await this.loadTreeFile(treeId);
+  }
+
+  // ============ THE GATEKEEPER: STRICT VALIDATION ============
+
+  /**
+   * Validates if a parent can accept a specific type of child based on STRICT constraints.
+   *
+   * Rules:
+   * 1. Folders can contain EITHER Folders OR Documents (not both)
+   * 2. Documents can ONLY contain Fragments
+   * 3. Fragments can ONLY contain other Fragments
+   * 4. Folders cannot contain Fragments directly
+   */
+  async validateParentChild(parentId: string, childType: NodeType, treeId: string): Promise<void> {
+    const file = await this.loadTreeFile(treeId);
+    const parent = file.nodes[parentId];
+
+    if (!parent) {
+      throw new Error(`Parent node ${parentId} not found.`);
+    }
+
+    // Rule: Documents can ONLY contain Fragments
+    if (isDocument(parent)) {
+      if (childType !== 'fragment') {
+        throw new Error(
+          `Strict Violation: Document "${parent.title}" can ONLY contain Fragments, not ${childType}s.`
+        );
+      }
+      return; // Valid: Document → Fragment
+    }
+
+    // Rule: Fragments can ONLY contain other Fragments
+    if (isFragment(parent)) {
+      if (childType !== 'fragment') {
+        throw new Error(
+          `Strict Violation: Fragment "${parent.title}" can ONLY contain other Fragments, not ${childType}s.`
+        );
+      }
+      return; // Valid: Fragment → Fragment
+    }
+
+    // Rule: Folders cannot contain Fragments directly
+    if (isFolder(parent)) {
+      if (childType === 'fragment') {
+        throw new Error(
+          `Strict Violation: Folder "${parent.title}" cannot contain Fragments directly. ` +
+          `Fragments must be children of Documents.`
+        );
+      }
+
+      // Check existing children to enforce Branch/Leaf constraint
+      const children = Object.values(file.nodes).filter(n => n.parentId === parentId);
+
+      if (children.length > 0) {
+        const hasFolderChildren = children.some(c => isFolder(c));
+        const hasDocumentChildren = children.some(c => isDocument(c));
+
+        if (childType === 'folder' && hasDocumentChildren) {
+          throw new Error(
+            `Strict Violation: Folder "${parent.title}" is a Leaf Folder (contains Documents). ` +
+            `Cannot add a Folder to it. Leaf Folders can only contain Documents.`
+          );
+        }
+
+        if (childType === 'document' && hasFolderChildren) {
+          throw new Error(
+            `Strict Violation: Folder "${parent.title}" is a Branch Folder (contains Sub-Folders). ` +
+            `Cannot add a Document to it. Documents can only be placed in Leaf Folders.`
+          );
+        }
+      }
+
+      return; // Valid: Folder → Folder OR Folder → Document
+    }
+  }
+
+  /**
+   * Get folder type (Branch, Leaf, or Empty)
+   */
+  async getFolderType(nodeId: string): Promise<'branch' | 'leaf' | 'empty'> {
+    const node = await this.getNode(nodeId);
+    if (!node || !isFolder(node)) {
+      throw new Error(`Node ${nodeId} is not a folder`);
+    }
+
+    const children = await this.getChildren(nodeId);
+    if (children.length === 0) return 'empty';
+
+    const hasSubfolders = children.some(c => isFolder(c));
+    return hasSubfolders ? 'branch' : 'leaf';
+  }
+
+  /**
+   * Get all leaf folders (folders that can accept Documents)
+   */
+  async getLeafFolders(treeId: string): Promise<FolderNode[]> {
+    const file = await this.loadTreeFile(treeId);
+    const folders = Object.values(file.nodes).filter(isFolder) as FolderNode[];
+
+    const leafFolders: FolderNode[] = [];
+
+    for (const folder of folders) {
+      const children = Object.values(file.nodes).filter(n => n.parentId === folder.id);
+      const hasSubfolders = children.some(c => isFolder(c));
+
+      // A leaf folder is one that has no subfolders (may have documents or be empty)
+      if (!hasSubfolders) {
+        leafFolders.push(folder);
+      }
+    }
+
+    return leafFolders;
+  }
+
+  // ============ NODE OPERATIONS ============
+
   async saveNode(node: TreeNode): Promise<void> {
+    // Validate before saving (if has a parent)
+    if (node.parentId) {
+      await this.validateParentChild(node.parentId, node.type, node.treeId);
+    }
+
     const file = await this.loadTreeFile(node.treeId);
     file.nodes[node.id] = node;
     file.config.updatedAt = new Date().toISOString();
@@ -110,7 +297,9 @@ export class TreeStore {
     try {
       const file = await this.loadTreeFile(treeId);
       return file.nodes[nodeId] || null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   async getChildren(nodeId: string): Promise<TreeNode[]> {
@@ -118,18 +307,17 @@ export class TreeStore {
     if (!node) return [];
     const file = await this.loadTreeFile(node.treeId);
     return Object.values(file.nodes)
-        .filter(n => n.parentId === nodeId)
-        .sort((a, b) => a.sortOrder - b.sortOrder);
-  }
-
-  async getAllNodes(treeId: string): Promise<TreeNode[]> {
-    const file = await this.loadTreeFile(treeId);
-    return Object.values(file.nodes);
+      .filter(n => n.parentId === nodeId)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
   async moveNode(nodeId: string, newParentId: string): Promise<TreeNode> {
     const node = await this.getNode(nodeId);
     if (!node) throw new Error("Node not found");
+
+    // Validate the move
+    await this.validateParentChild(newParentId, node.type, node.treeId);
+
     const file = await this.loadTreeFile(node.treeId);
     const parent = file.nodes[newParentId];
     if (!parent) throw new Error("Parent not found");
@@ -148,7 +336,7 @@ export class TreeStore {
     const res: TreeNode[] = [];
     for (const t of trees) {
       const file = await this.loadTreeFile(t.id);
-      res.push(...Object.values(file.nodes).filter(n => n.contentId === contentId));
+      res.push(...Object.values(file.nodes).filter(n => hasContent(n) && n.contentId === contentId));
     }
     return res;
   }
@@ -158,34 +346,13 @@ export class TreeStore {
     this.cache.delete(treeId);
   }
 
-  /**
-   * Clear memory cache to force reload from disk.
-   */
-  clearCache(treeId?: string) {
-    if (treeId) {
-      this.cache.delete(treeId);
-    } else {
-      this.cache.clear();
-    }
-  }
-
-  /**
-   * Public accessor for the raw tree file (for UI/Visualization)
-   */
-  async getTreeFile(treeId: string): Promise<TreeFile> {
-    return await this.loadTreeFile(treeId);
-  }
-
-
   async deleteNode(nodeId: string): Promise<void> {
     const node = await this.getNode(nodeId);
-    if (!node) return; // Already gone
+    if (!node) return;
 
     const file = await this.loadTreeFile(node.treeId);
 
-    // Check for children first?
-    // Ideally we should delete children recursively or move them.
-    // For a clean delete, let's delete children too (Cascading Delete).
+    // Cascading delete: remove all children first
     const children = Object.values(file.nodes).filter(n => n.parentId === nodeId);
     for (const child of children) {
       await this.deleteNode(child.id);
@@ -195,90 +362,168 @@ export class TreeStore {
     file.config.updatedAt = new Date().toISOString();
 
     await this.saveTreeFile(node.treeId, file);
-    // Note: We leave the ContentAtom in ContentStore.
-    // It might be used by other trees.
-    // Garbage collection of orphaned content is a separate maintenance task.
   }
 
-  /**
-   * Calculate statistics for the tree to help with navigation heuristics.
-   */
-  async getTreeStats(treeId: string): Promise<{ maxDepth: number; totalNodes: number }> {
-    const file = await this.loadTreeFile(treeId);
-    const nodes = Object.values(file.nodes);
-    let maxDepth = 0;
+  clearCache(treeId?: string) {
+    if (treeId) {
+      this.cache.delete(treeId);
+    } else {
+      this.cache.clear();
+    }
+  }
 
-    for (const node of nodes) {
-      // Path format is like: /root-id/child-id/grandchild-id
-      // Split by '/' and filter empty strings to count segments
-      const segments = node.path.split('/').filter(p => p.length > 0);
-      const depth = segments.length;
-      if (depth > maxDepth) maxDepth = depth;
+  // ============ FOLDER CREATION HELPERS ============
+
+  /**
+   * Create a new folder under a parent
+   */
+  async createFolder(
+    treeId: string,
+    parentId: string,
+    title: string,
+    gist: string
+  ): Promise<FolderNode> {
+    // Validate parent can accept a folder
+    await this.validateParentChild(parentId, 'folder', treeId);
+
+    const file = await this.loadTreeFile(treeId);
+    const parent = file.nodes[parentId];
+    if (!parent) throw new Error(`Parent ${parentId} not found`);
+
+    const now = new Date().toISOString();
+    const nodeId = `${parentId}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+
+    // Check if already exists
+    if (file.nodes[nodeId]) {
+      return file.nodes[nodeId] as FolderNode;
     }
 
-    // If tree is empty or just root, ensure at least 1 to prevent divide-by-zero issues elsewhere
-    return {
-      maxDepth: Math.max(1, maxDepth),
-      totalNodes: nodes.length
+    const siblings = Object.values(file.nodes).filter(n => n.parentId === parentId);
+
+    const folder: FolderNode = {
+      id: nodeId,
+      treeId,
+      parentId,
+      path: `${parent.path}${nodeId}/`,
+      type: 'folder',
+      title,
+      gist,
+      sortOrder: siblings.length,
+      createdAt: now,
+      updatedAt: now,
     };
+
+    file.nodes[nodeId] = folder;
+    file.config.updatedAt = now;
+    await this.saveTreeFile(treeId, file);
+
+    return folder;
   }
 
   /**
-   * Generates a token-efficient ASCII tree map for the "First Glance" capability.
-   * Format:
-   * [id] Root Gist
-   *   [child_id] Child Gist
+   * Create a document node under a leaf folder
    */
-  async generateTreeMap(treeId: string): Promise<string> {
+  async createDocument(
+    treeId: string,
+    parentId: string,
+    title: string,
+    gist: string,
+    contentId: string
+  ): Promise<DocumentNode> {
+    // Validate parent can accept a document
+    await this.validateParentChild(parentId, 'document', treeId);
+
     const file = await this.loadTreeFile(treeId);
-    const root = file.nodes[file.config.rootNodeId];
-    if (!root) return "Tree is empty.";
+    const parent = file.nodes[parentId];
+    if (!parent) throw new Error(`Parent ${parentId} not found`);
 
-    return this.buildMapRecursive(file.nodes, root, 0);
-  }
+    const now = new Date().toISOString();
+    const nodeId = randomUUID();
+    const siblings = Object.values(file.nodes).filter(n => n.parentId === parentId);
 
-  private buildMapRecursive(
-      allNodes: Record<string, TreeNode>,
-      currentNode: TreeNode,
-      depth: number
-  ): string {
-    const indent = '  '.repeat(depth);
-    // Format: "  [node-id] The Gist text..."
-    let output = `${indent}[${currentNode.id}] ${currentNode.l0Gist}\n`;
+    const doc: DocumentNode = {
+      id: nodeId,
+      treeId,
+      parentId,
+      path: `${parent.path}${nodeId}/`,
+      type: 'document',
+      title,
+      gist,
+      contentId,
+      sortOrder: siblings.length,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    // Find children manually (since we have the full record loaded)
-    const children = Object.values(allNodes)
-        .filter(n => n.parentId === currentNode.id)
-        .sort((a, b) => a.sortOrder - b.sortOrder);
+    file.nodes[nodeId] = doc;
+    file.config.updatedAt = now;
+    await this.saveTreeFile(treeId, file);
 
-    for (const child of children) {
-      output += this.buildMapRecursive(allNodes, child, depth + 1);
-    }
-
-    return output;
+    return doc;
   }
 
   /**
-   * Generates a Bash-style visual tree string
+   * Create a fragment node under a document or another fragment
    */
+  async createFragment(
+    treeId: string,
+    parentId: string,
+    title: string,
+    gist: string,
+    contentId: string
+  ): Promise<FragmentNode> {
+    // Validate parent can accept a fragment
+    await this.validateParentChild(parentId, 'fragment', treeId);
+
+    const file = await this.loadTreeFile(treeId);
+    const parent = file.nodes[parentId];
+    if (!parent) throw new Error(`Parent ${parentId} not found`);
+
+    const now = new Date().toISOString();
+    const nodeId = randomUUID();
+    const siblings = Object.values(file.nodes).filter(n => n.parentId === parentId);
+
+    const fragment: FragmentNode = {
+      id: nodeId,
+      treeId,
+      parentId,
+      path: `${parent.path}${nodeId}/`,
+      type: 'fragment',
+      title,
+      gist,
+      contentId,
+      sortOrder: siblings.length,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    file.nodes[nodeId] = fragment;
+    file.config.updatedAt = now;
+    await this.saveTreeFile(treeId, file);
+
+    return fragment;
+  }
+
+  // ============ VISUALIZATION ============
+
   async generateVisualTree(treeId: string): Promise<string> {
     const file = await this.loadTreeFile(treeId);
     const root = file.nodes[file.config.rootNodeId];
     if (!root) return "Empty Tree";
 
-    let output = `${root.l0Gist} (${root.id})\n`;
-
-    const children = await this.getChildren(root.id);
-    output += await this.drawChildren(file.nodes, children, "");
-
+    let output = `${root.title} [${root.gist.slice(0, 50)}${root.gist.length > 50 ? '...' : ''}]\n`;
+    const children = Object.values(file.nodes)
+      .filter(n => n.parentId === root.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    output += this.drawChildren(file.nodes, children, "");
     return output;
   }
 
-  private async drawChildren(
-      allNodes: Record<string, TreeNode>,
-      nodes: TreeNode[],
-      prefix: string
-  ): Promise<string> {
+  private drawChildren(
+    allNodes: Record<string, TreeNode>,
+    nodes: TreeNode[],
+    prefix: string
+  ): string {
     let output = "";
 
     for (let i = 0; i < nodes.length; i++) {
@@ -286,23 +531,86 @@ export class TreeStore {
       const isLast = i === nodes.length - 1;
       const connector = isLast ? "└── " : "├── ";
 
-      const typeIcon = node.contentId ? "📄" : "📂";
-      // Truncate gist for cleaner CLI view
-      const cleanGist = node.l0Gist.replace(/\n/g, ' ').slice(0, 60);
-      const suffix = node.l0Gist.length > 60 ? "..." : "";
+      // Icon based on type
+      let icon = "📂";
+      if (node.type === 'document') icon = "📄";
+      if (node.type === 'fragment') icon = "🧩";
 
-      output += `${prefix}${connector}${typeIcon} ${cleanGist}${suffix} [${node.id}]\n`;
+      const cleanTitle = node.title.replace(/\n/g, ' ').slice(0, 40);
+      const titleSuffix = node.title.length > 40 ? "..." : "";
+      const gistPreview = node.gist.slice(0, 30).replace(/\n/g, ' ');
 
-      // Get children (recurse)
+      output += `${prefix}${connector}${icon} ${cleanTitle}${titleSuffix} [${gistPreview}...]\n`;
+
       const children = Object.values(allNodes)
-          .filter(n => n.parentId === node.id)
-          .sort((a, b) => a.sortOrder - b.sortOrder);
+        .filter(n => n.parentId === node.id)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
 
       if (children.length > 0) {
         const childPrefix = prefix + (isLast ? "    " : "│   ");
-        output += await this.drawChildren(allNodes, children, childPrefix);
+        output += this.drawChildren(allNodes, children, childPrefix);
       }
     }
     return output;
+  }
+
+  async generateTreeMap(treeId: string): Promise<string> {
+    const file = await this.loadTreeFile(treeId);
+    const root = file.nodes[file.config.rootNodeId];
+    if (!root) return "Tree is empty.";
+    return this.buildMapRecursive(file.nodes, root, 0);
+  }
+
+  private buildMapRecursive(
+    allNodes: Record<string, TreeNode>,
+    currentNode: TreeNode,
+    depth: number
+  ): string {
+    const indent = '  '.repeat(depth);
+    const typeTag = currentNode.type.toUpperCase().slice(0, 3);
+    let output = `${indent}[${currentNode.id}] (${typeTag}) ${currentNode.title}: ${currentNode.gist}\n`;
+
+    const children = Object.values(allNodes)
+      .filter(n => n.parentId === currentNode.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+
+    for (const child of children) {
+      output += this.buildMapRecursive(allNodes, child, depth + 1);
+    }
+    return output;
+  }
+
+  async getTreeStats(treeId: string): Promise<{
+    maxDepth: number;
+    totalNodes: number;
+    folderCount: number;
+    documentCount: number;
+    fragmentCount: number;
+  }> {
+    const file = await this.loadTreeFile(treeId);
+    const nodes = Object.values(file.nodes);
+
+    let maxDepth = 0;
+    let folderCount = 0;
+    let documentCount = 0;
+    let fragmentCount = 0;
+
+    for (const node of nodes) {
+      const segments = node.path.split('/').filter(p => p.length > 0);
+      const depth = segments.length;
+      if (depth > maxDepth) maxDepth = depth;
+
+      if (isFolder(node)) folderCount++;
+      else if (isDocument(node)) documentCount++;
+      else if (isFragment(node)) fragmentCount++;
+    }
+
+    return {
+      maxDepth: Math.max(1, maxDepth),
+      totalNodes: nodes.length,
+      folderCount,
+      documentCount,
+      fragmentCount
+    };
   }
 }

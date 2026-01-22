@@ -1,14 +1,18 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, FileText, Folder } from "lucide-react";
+import { ChevronRight, ChevronDown, FileText, Folder, Puzzle } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// Matches the new strict taxonomy types
+export type NodeType = 'folder' | 'document' | 'fragment';
 
 export interface TreeNode {
     id: string;
     parentId: string | null;
     path: string;
-    l0Gist: string;
-    l1Map?: { summary: string } | null;
-    contentId?: string | null;
+    type: NodeType;
+    title: string;           // User-facing label
+    gist: string;            // AI summary / readme
+    contentId?: string;      // Only for document/fragment
     sortOrder?: number;
 }
 
@@ -24,54 +28,93 @@ export function TreeItem({ node, childrenMap, onSelect, selectedId, depth = 0 }:
     const children = childrenMap[node.id] || [];
     const hasChildren = children.length > 0;
 
-    // Logic: It's a folder if it has children OR if it has no content.
-    const isFolder = hasChildren || !node.contentId;
-
-    // FIX: Auto-expand top 4 levels so the tree feels "open" by default
-    const [isOpen, setIsOpen] = useState(depth < 4);
+    // Default expansion:
+    // - Root and first 2 levels: open
+    // - Documents with fragments: closed by default (fragments are implementation detail)
+    const defaultOpen = depth < 2 && node.type === 'folder';
+    const [isOpen, setIsOpen] = useState(defaultOpen);
     const isSelected = selectedId === node.id;
 
+    // Icon based on type
+    const getIcon = () => {
+        switch (node.type) {
+            case 'folder':
+                return <Folder size={14} fill="currentColor" className="opacity-20" />;
+            case 'document':
+                return <FileText size={14} />;
+            case 'fragment':
+                return <Puzzle size={14} />;
+        }
+    };
+
+    // Color based on type
+    const getColorClass = () => {
+        switch (node.type) {
+            case 'folder':
+                return "text-blue-500";
+            case 'document':
+                return "text-zinc-600";
+            case 'fragment':
+                return "text-amber-500";
+        }
+    };
+
     return (
-        <div className="select-none text-sm font-medium">
+        <div className="select-none font-medium">
             <div
                 className={cn(
-                    "flex items-center py-1.5 px-2 cursor-pointer transition-colors border-l-2 rounded-r-md",
+                    "flex flex-col py-1.5 px-2 cursor-pointer transition-colors border-l-2 rounded-r-md group",
                     isSelected
-                        ? "bg-zinc-100 border-purple-600 text-purple-900"
-                        : "border-transparent hover:bg-zinc-50 text-zinc-600 hover:text-zinc-900"
+                        ? "bg-purple-50 border-purple-600"
+                        : "border-transparent hover:bg-zinc-50"
                 )}
                 style={{ paddingLeft: `${depth * 16 + 8}px` }}
                 onClick={(e) => {
                     e.stopPropagation();
                     onSelect(node);
-                    // Toggle open/close only if it acts as a folder (has children)
                     if (hasChildren) setIsOpen(!isOpen);
                 }}
             >
-        <span
-            className={cn(
-                "mr-1 shrink-0 w-4 h-4 flex items-center justify-center transition-transform hover:bg-zinc-200 rounded",
-                !hasChildren && "opacity-0"
-            )}
-            onClick={(e) => {
-                e.stopPropagation();
-                if (hasChildren) setIsOpen(!isOpen);
-            }}
-        >
-          {hasChildren && (
-              isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
-          )}
-        </span>
+                {/* Main Row: Expander + Icon + Title */}
+                <div className="flex items-center">
+                    {/* Expander */}
+                    <span
+                        className={cn(
+                            "mr-1 shrink-0 w-4 h-4 flex items-center justify-center transition-transform hover:bg-zinc-200 rounded",
+                            !hasChildren && "opacity-0"
+                        )}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (hasChildren) setIsOpen(!isOpen);
+                        }}
+                    >
+                        {hasChildren && (isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+                    </span>
 
-                <span className={cn("mr-2 shrink-0", isFolder ? "text-blue-500" : "text-amber-500")}>
-           {isFolder ? <Folder size={14} fill="currentColor" className="opacity-20" /> : <FileText size={14} />}
-        </span>
+                    {/* Icon */}
+                    <span className={cn("mr-2 shrink-0", getColorClass())}>
+                        {getIcon()}
+                    </span>
 
-                <span className="truncate">
-          {node.l0Gist}
-        </span>
+                    {/* Title */}
+                    <span className={cn(
+                        "truncate text-sm",
+                        isSelected ? "text-purple-900" : "text-zinc-700"
+                    )}>
+                        {node.title}
+                    </span>
+                </div>
+
+                {/* Gist (sub-line) - shown on hover or when selected */}
+                <div className={cn(
+                    "text-[10px] text-zinc-400 pl-7 truncate mt-0.5 font-normal",
+                    !isSelected && "hidden group-hover:block"
+                )}>
+                    {node.gist}
+                </div>
             </div>
 
+            {/* Children */}
             {isOpen && hasChildren && (
                 <div>
                     {children.map((child) => (

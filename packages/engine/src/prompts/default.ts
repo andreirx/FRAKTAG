@@ -41,7 +41,7 @@ Content:
 
 Output the full text chunks separated by the delimiter. Do not use JSON.`,
 
-  generateGist: `Create a label (Gist) for this content node.
+  generateGist: `Create a summary (Gist) for this content node.
 
 Content:
 ---
@@ -49,28 +49,31 @@ Content:
 ---
 
 Rules:
-1. If the content is ALREADY a summary, title, or short definition, output it almost verbatim (max 30 words).
-2. If the content is long, synthesize a 1-paragraph summary.
+1. If the content is ALREADY a summary, title, or short definition, output it almost verbatim (max 50 words).
+2. If the content is long, synthesize a 1-2 sentence summary.
 3. Do not start with "This content is..." or "A summary of...". Just state the fact.
+4. Focus on WHAT this content is about and its key points.
 
 Organizing principle: {{organizingPrinciple}}
 
-Output ONLY the gist sentence.`,
+Output ONLY the gist (1-3 sentences).`,
 
-  generateL1: `Write a navigation summary (150-200 words) for a parent node.
+  generateTitle: `Create a concise title for this content.
+
+Content:
+---
+{{content}}
+---
+
+Rules:
+1. Create a clear, descriptive title (3-10 words).
+2. If there's an obvious title in the content (heading, first line), use it.
+3. The title should describe WHAT this content is, not summarize it.
+4. Do not use generic titles like "Document" or "Content".
 
 Organizing principle: {{organizingPrinciple}}
-Parent gist: {{parentGist}}
 
-Child gists:
-{{childGists}}
-
-Write prose paragraphs (no bullets) explaining:
-- What this collection contains
-- How the children relate to each other
-- Key patterns or groupings
-
-Output ONLY the summary, no formatting.`,
+Output ONLY the title (no quotes, no explanation).`,
 
   placeInTree: `Determine where to place this content in the tree.
 
@@ -343,7 +346,33 @@ Respond ONLY with JSON:
 
   ]
 }
-If no changes needed, return { "issues": [] }`
+If no changes needed, return { "issues": [] }`,
+
+  proposePlacement: `You are the Librarian. Your job is to recommend where to place a new document in the knowledge tree.
+
+Document to place:
+- Title: "{{documentTitle}}"
+- Summary: "{{documentGist}}"
+
+Tree Structure (Leaf Folders only):
+{{leafFolders}}
+
+Task:
+1. Identify the most appropriate leaf folder for this document.
+2. If no existing folder fits, suggest a new folder to create.
+3. Explain your reasoning.
+
+Respond ONLY with JSON:
+{
+  "targetFolderId": "id of best-fit folder",
+  "confidence": 0.0-1.0,
+  "reasoning": "why this folder is appropriate",
+  "newFolderSuggestion": {
+    "title": "New Folder Name",
+    "gist": "What this folder is for",
+    "parentId": "where to create it"
+  } // ONLY include if no existing folder fits well (confidence < 0.6)
+}`
 
 };
 

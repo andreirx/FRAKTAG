@@ -3,9 +3,10 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, ChevronDown, X } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, Pencil, Check, XCircle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
 
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
@@ -18,6 +19,15 @@ export default function KnowledgeTree() {
     const [contentPayload, setContentPayload] = useState<string | null>(null);
     const [contentLoading, setContentLoading] = useState(false);
     const [contentError, setContentError] = useState(false);
+
+    // Ingestion Dialog
+    const [ingestionOpen, setIngestionOpen] = useState(false);
+
+    // Edit Mode State
+    const [isEditing, setIsEditing] = useState(false);
+    const [editTitle, setEditTitle] = useState("");
+    const [editGist, setEditGist] = useState("");
+    const [saving, setSaving] = useState(false);
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(400);
@@ -58,15 +68,60 @@ export default function KnowledgeTree() {
         if (activeTreeId) loadTreeStructure(activeTreeId);
     }, [activeTreeId]);
 
-    // Content Fetching
+    // Content Fetching & Reset Edit Mode
     useEffect(() => {
         setContentPayload(null);
         setContentError(false);
         setContentLoading(false);
+        setIsEditing(false);
         if (selectedNode?.contentId) {
             fetchContent(selectedNode.contentId);
         }
     }, [selectedNode]);
+
+    // Enter edit mode
+    const startEditing = () => {
+        if (!selectedNode) return;
+        setEditTitle(selectedNode.title);
+        setEditGist(selectedNode.gist);
+        setIsEditing(true);
+    };
+
+    // Cancel editing
+    const cancelEditing = () => {
+        setIsEditing(false);
+        setEditTitle("");
+        setEditGist("");
+    };
+
+    // Save changes
+    const saveChanges = async () => {
+        if (!selectedNode) return;
+        setSaving(true);
+        try {
+            const res = await axios.patch(`/api/nodes/${selectedNode.id}`, {
+                title: editTitle,
+                gist: editGist,
+            });
+            // Update selected node with new data
+            setSelectedNode(res.data);
+            // Also update in rawData to reflect in tree
+            if (rawData?.nodes) {
+                setRawData({
+                    ...rawData,
+                    nodes: {
+                        ...rawData.nodes,
+                        [selectedNode.id]: res.data,
+                    },
+                });
+            }
+            setIsEditing(false);
+        } catch (e) {
+            console.error("Failed to save:", e);
+        } finally {
+            setSaving(false);
+        }
+    };
 
     async function loadTreeStructure(id: string) {
         setLoading(true);
@@ -113,14 +168,42 @@ export default function KnowledgeTree() {
         return { rootNode: root, childrenMap: map, flatList: nodes };
     }, [rawData]);
 
-    // Filter Logic
+    // Filter Logic - search both title and gist
     const filteredNodes = useMemo(() => {
         if (!searchTerm.trim()) return null;
+        const term = searchTerm.toLowerCase();
         return flatList.filter(n =>
-            n.l0Gist.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            n.id.toLowerCase().includes(searchTerm.toLowerCase())
+            n.title.toLowerCase().includes(term) ||
+            n.gist.toLowerCase().includes(term) ||
+            n.id.toLowerCase().includes(term)
         );
     }, [searchTerm, flatList]);
+
+    // Type badge helper
+    const getTypeBadge = (type: string) => {
+        switch (type) {
+            case 'folder':
+                return (
+                    <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 tracking-wider flex items-center gap-1">
+                        <Folder size={10} /> FOLDER
+                    </span>
+                );
+            case 'document':
+                return (
+                    <span className="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-2 py-1 rounded border border-emerald-100 tracking-wider flex items-center gap-1">
+                        <FileText size={10} /> DOCUMENT
+                    </span>
+                );
+            case 'fragment':
+                return (
+                    <span className="text-[10px] font-bold bg-amber-50 text-amber-600 px-2 py-1 rounded border border-amber-100 tracking-wider flex items-center gap-1">
+                        <Puzzle size={10} /> FRAGMENT
+                    </span>
+                );
+            default:
+                return null;
+        }
+    };
 
     if (!activeTreeId && !loading && trees.length === 0) return <div className="p-8 text-red-500">No trees found.</div>;
     const activeTreeName = trees.find(t => t.id === activeTreeId)?.name || "Unknown Tree";
@@ -166,6 +249,16 @@ export default function KnowledgeTree() {
                         >
                             <RefreshCw className="h-4 w-4"/>
                         </Button>
+
+                        <Button
+                            variant="default"
+                            size="icon"
+                            onClick={() => setIngestionOpen(true)}
+                            title="Ingest Document"
+                            className="shrink-0 bg-purple-600 hover:bg-purple-700"
+                        >
+                            <Plus className="h-4 w-4"/>
+                        </Button>
                     </div>
 
                     <div className="relative">
@@ -187,7 +280,7 @@ export default function KnowledgeTree() {
                     </div>
                 </div>
 
-                {/* TREE CONTENT - FIXED SCROLLING */}
+                {/* TREE CONTENT */}
                 <div className="flex-1 min-h-0">
                     <ScrollArea className="h-full">
                         <div className="p-2 pb-10">
@@ -203,11 +296,16 @@ export default function KnowledgeTree() {
                                         <div
                                             key={node.id}
                                             onClick={() => setSelectedNode(node)}
-                                            className={`px-3 py-2 text-sm rounded cursor-pointer flex items-center gap-2 ${selectedNode?.id === node.id ? 'bg-purple-50 text-purple-900 border border-purple-100' : 'hover:bg-zinc-100 text-zinc-700'}`}
+                                            className={`px-3 py-2 text-sm rounded cursor-pointer ${selectedNode?.id === node.id ? 'bg-purple-50 text-purple-900 border border-purple-100' : 'hover:bg-zinc-100 text-zinc-700'}`}
                                         >
-                                            <FileText className="w-4 h-4 opacity-50 shrink-0" />
-                                            <div className="truncate min-w-0">
-                                                <div className="font-medium truncate">{node.l0Gist}</div>
+                                            <div className="flex items-center gap-2">
+                                                {node.type === 'folder' && <Folder className="w-4 h-4 text-blue-500 shrink-0" />}
+                                                {node.type === 'document' && <FileText className="w-4 h-4 text-emerald-500 shrink-0" />}
+                                                {node.type === 'fragment' && <Puzzle className="w-4 h-4 text-amber-500 shrink-0" />}
+                                                <div className="truncate min-w-0">
+                                                    <div className="font-medium truncate">{node.title}</div>
+                                                    <div className="text-[10px] text-zinc-400 truncate">{node.gist}</div>
+                                                </div>
                                             </div>
                                         </div>
                                     ))}
@@ -243,43 +341,90 @@ export default function KnowledgeTree() {
 
                                 {/* Header */}
                                 <div>
-                                    <div className="flex items-center gap-3 mb-3">
-                                        <span className="text-[10px] font-mono bg-zinc-100 text-zinc-500 px-2 py-1 rounded border select-all">
-                                            {selectedNode.id}
-                                        </span>
-                                        {selectedNode.contentId ? (
-                                            <span className="text-[10px] font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 tracking-wider">
-                                                CONTENT
+                                    <div className="flex items-center justify-between mb-3">
+                                        <div className="flex items-center gap-3 flex-wrap">
+                                            <span className="text-[10px] font-mono bg-zinc-100 text-zinc-500 px-2 py-1 rounded border select-all">
+                                                {selectedNode.id}
                                             </span>
+                                            {getTypeBadge(selectedNode.type)}
+                                        </div>
+                                        {!isEditing ? (
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={startEditing}
+                                                className="gap-1"
+                                            >
+                                                <Pencil className="w-3 h-3" />
+                                                Edit
+                                            </Button>
                                         ) : (
-                                            <span className="text-[10px] font-bold bg-amber-50 text-amber-600 px-2 py-1 rounded border border-amber-100 tracking-wider">
-                                                FOLDER
-                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={cancelEditing}
+                                                    disabled={saving}
+                                                >
+                                                    <XCircle className="w-4 h-4" />
+                                                    Cancel
+                                                </Button>
+                                                <Button
+                                                    variant="default"
+                                                    size="sm"
+                                                    onClick={saveChanges}
+                                                    disabled={saving}
+                                                    className="bg-emerald-600 hover:bg-emerald-700"
+                                                >
+                                                    {saving ? (
+                                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                                    ) : (
+                                                        <Check className="w-4 h-4" />
+                                                    )}
+                                                    Save
+                                                </Button>
+                                            </div>
                                         )}
                                     </div>
-                                    <h1 className="text-3xl font-bold leading-tight text-zinc-900">
-                                        {selectedNode.l0Gist}
-                                    </h1>
+                                    {isEditing ? (
+                                        <Input
+                                            value={editTitle}
+                                            onChange={(e) => setEditTitle(e.target.value)}
+                                            className="text-2xl font-bold h-auto py-2"
+                                            placeholder="Title..."
+                                        />
+                                    ) : (
+                                        <h1 className="text-3xl font-bold leading-tight text-zinc-900">
+                                            {selectedNode.title}
+                                        </h1>
+                                    )}
                                 </div>
 
-                                {/* Summary Card */}
-                                {selectedNode.l1Map && (
-                                    <div className="bg-zinc-50 rounded-xl border p-6">
-                                        <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3">
-                                            Overview
-                                        </h3>
+                                {/* Gist Card (The "Readme") */}
+                                <div className="bg-zinc-50 rounded-xl border p-6">
+                                    <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3">
+                                        Summary
+                                    </h3>
+                                    {isEditing ? (
+                                        <textarea
+                                            value={editGist}
+                                            onChange={(e) => setEditGist(e.target.value)}
+                                            className="w-full min-h-[120px] p-3 text-sm border rounded-lg resize-y bg-white"
+                                            placeholder="Summary/gist..."
+                                        />
+                                    ) : (
                                         <div className="prose prose-sm max-w-none text-zinc-700 whitespace-pre-wrap">
-                                            {selectedNode.l1Map.summary}
+                                            {selectedNode.gist}
                                         </div>
-                                    </div>
-                                )}
+                                    )}
+                                </div>
 
-                                {/* Content Payload */}
+                                {/* Content Payload (for Documents and Fragments) */}
                                 {selectedNode.contentId && (
                                     <div className="space-y-4">
                                         <div className="flex items-center justify-between border-b pb-2">
                                             <h3 className="font-semibold text-lg flex items-center gap-2">
-                                                <FileText className="w-5 h-5 text-blue-600" /> Source Content
+                                                <FileText className="w-5 h-5 text-emerald-600" /> Source Content
                                             </h3>
                                         </div>
 
@@ -307,6 +452,19 @@ export default function KnowledgeTree() {
                                         </div>
                                     </div>
                                 )}
+
+                                {/* Folder Info (for Folders) */}
+                                {selectedNode.type === 'folder' && (
+                                    <div className="bg-blue-50/50 rounded-xl border border-blue-100 p-6">
+                                        <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400 mb-3">
+                                            Folder Info
+                                        </h3>
+                                        <p className="text-sm text-blue-700">
+                                            This is a folder node. It organizes content but contains no direct payload.
+                                            Select a child document or fragment to view content.
+                                        </p>
+                                    </div>
+                                )}
                             </div>
                         ) : (
                             <div className="h-[80vh] flex flex-col items-center justify-center text-zinc-300 space-y-4">
@@ -319,6 +477,15 @@ export default function KnowledgeTree() {
                     </div>
                 </ScrollArea>
             </div>
+
+            {/* Ingestion Dialog */}
+            <IngestionDialog
+                open={ingestionOpen}
+                onOpenChange={setIngestionOpen}
+                treeId={activeTreeId}
+                treeName={activeTreeName}
+                onComplete={() => loadTreeStructure(activeTreeId)}
+            />
         </div>
     );
 }

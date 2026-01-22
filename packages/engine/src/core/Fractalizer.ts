@@ -1,511 +1,553 @@
-import { randomUUID } from 'crypto';
+// packages/engine/src/core/Fractalizer.ts
+// SIMPLIFIED INGESTION ENGINE
+// Full auto-split/auto-place logic removed - will be replaced by human-assisted workflow
+
 import { ContentStore } from './ContentStore.js';
 import { TreeStore } from './TreeStore.js';
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
-import { TreeNode, IngestionConfig, PromptSet, TreeConfig } from './types.js';
+import {
+  TreeNode,
+  DocumentNode,
+  FragmentNode,
+  IngestionConfig,
+  PromptSet,
+  SplitAnalysis,
+  DetectedSplit,
+  hasContent
+} from './types.js';
 import { VectorStore } from './VectorStore.js';
 
 export class Fractalizer {
   constructor(
-      private contentStore: ContentStore,
-      private treeStore: TreeStore,
-      private vectorStore: VectorStore,
-      private basicLlm: ILLMAdapter,
-      private smartLlm: ILLMAdapter,
-      private config: IngestionConfig,
-      private prompts: PromptSet
-  ) {
+    private contentStore: ContentStore,
+    private treeStore: TreeStore,
+    private vectorStore: VectorStore,
+    private basicLlm: ILLMAdapter,
+    private smartLlm: ILLMAdapter,
+    private config: IngestionConfig,
+    private prompts: PromptSet
+  ) {}
+
+  // ============ SPLIT ANALYSIS (Programmatic - No AI) ============
+
+  /**
+   * Analyze a file for potential splits using programmatic detection.
+   * This is PHASE 1 of human-assisted ingestion.
+   * Returns detected splits for human review.
+   */
+  analyzeSplits(content: string, sourceUri: string): SplitAnalysis {
+    const splits = this.detectSplitPoints(content);
+
+    return {
+      sourceUri,
+      fullText: content,
+      suggestedTitle: this.extractTitle(content, sourceUri),
+      detectedSplits: splits,
+      splitMethod: splits.length > 0 ? this.determineSplitMethod(content) : 'NONE'
+    };
   }
 
-  async ingest(
-      content: string,
-      treeId: string,
-      parentId: string | null,
-      currentPath: string,
-      depth: number = 0
-  ): Promise<TreeNode> {
-    const wordCount = content.split(/\s+/).length;
+  private extractTitle(content: string, sourceUri: string): string {
+    // Try to extract title from content (first line, first header, etc.)
+    const lines = content.split('\n').filter(l => l.trim());
 
-    // === ATOMIC PATH (< 150 words) ===
-    if (wordCount < 150) {
-      console.log(`   ⚛️  Atomic Content detected (${wordCount} words). Skipping split logic.`);
+    // Check for markdown title
+    const h1Match = content.match(/^#\s+(.+)$/m);
+    if (h1Match) return h1Match[1].trim();
 
-      const contentAtom = await this.contentStore.create({
-        payload: content,
-        mediaType: 'text/plain',
-        createdBy: 'system',
-      });
+    // Check for first non-empty line if it's short enough to be a title
+    if (lines.length > 0 && lines[0].length < 100) {
+      return lines[0].trim();
+    }
 
-      let gist = content;
-      if (wordCount > 50) {
-        const tree = await this.treeStore.getTree(treeId);
-        gist = await this.basicLlm.complete(
-            this.prompts.generateGist,
-            {content, organizingPrinciple: tree.organizingPrinciple}
-        );
-      }
+    // Fall back to filename from sourceUri
+    const filename = sourceUri.split('/').pop() || 'Untitled';
+    return filename.replace(/\.[^.]+$/, ''); // Remove extension
+  }
 
-      if (parentId) {
-        const nodeId = randomUUID();
-        const node: TreeNode = {
-          id: nodeId,
-          treeId,
-          parentId,
-          path: `${currentPath}/${nodeId}`,
-          contentId: contentAtom.id,
-          l0Gist: gist,
-          l1Map: null,
-          sortOrder: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
+  private determineSplitMethod(content: string): 'TOC' | 'PDF_PAGE' | 'HEADER' | 'HR' | 'NONE' {
+    if (/---=== PAGE \d+ ===---/.test(content)) return 'PDF_PAGE';
+    if (/^##?\s+.+$/m.test(content)) return 'HEADER';
+    if (/^\s*---\s*$/m.test(content)) return 'HR';
+    return 'NONE';
+  }
 
-        await this.vectorStore.add(nodeId, `Atomic: ${content}`);
-        await this.treeStore.saveNode(node);
-        await this.vectorStore.save(treeId);
-        await this.bubbleUp(parentId);
-        return node;
-      } else {
-        return this.autoPlace(contentAtom.id, gist, treeId, true);
+  private detectSplitPoints(content: string): DetectedSplit[] {
+    const splits: DetectedSplit[] = [];
+    const len = content.length;
+
+    if (len < 500) return []; // Too short to split
+
+    // Try PDF pages first
+    const pdfSplits = this.splitByPdfPages(content);
+    if (pdfSplits.length > 1) return pdfSplits;
+
+    // Try headers
+    const headerSplits = this.splitByHeaders(content);
+    if (headerSplits.length > 1 && headerSplits.length <= 50) return headerSplits;
+
+    // Try HR markers
+    const hrSplits = this.splitByHrMarkers(content);
+    if (hrSplits.length > 1 && hrSplits.length <= 50) return hrSplits;
+
+    return splits;
+  }
+
+  private splitByPdfPages(content: string): DetectedSplit[] {
+    const pageRegex = /---=== PAGE (\d+) ===---/g;
+    const matches = [...content.matchAll(pageRegex)];
+
+    if (matches.length < 2) return [];
+
+    const splits: DetectedSplit[] = [];
+    let lastIndex = 0;
+
+    // Content before first page marker
+    if (matches[0].index! > 0) {
+      const text = content.slice(0, matches[0].index).trim();
+      if (text.length > 0) {
+        splits.push({
+          title: 'Preamble',
+          text,
+          startIndex: 0,
+          endIndex: matches[0].index!,
+          confidence: 0.9
+        });
       }
     }
 
-    // === STANDARD PATH ===
+    for (let i = 0; i < matches.length; i++) {
+      const match = matches[i];
+      const pageNum = match[1];
+      const startIndex = match.index! + match[0].length;
+      const endIndex = matches[i + 1]?.index ?? content.length;
+      const text = content.slice(startIndex, endIndex).trim();
+
+      if (text.length > 0) {
+        splits.push({
+          title: `Page ${pageNum}`,
+          text,
+          startIndex,
+          endIndex,
+          confidence: 0.95
+        });
+      }
+    }
+
+    return splits;
+  }
+
+  private splitByHeaders(content: string): DetectedSplit[] {
+    // Try H1, then H2
+    const h1Regex = /^(#\s+.+)$/gm;
+    const h2Regex = /^(##\s+.+)$/gm;
+
+    let matches = [...content.matchAll(h1Regex)];
+    if (matches.length < 2) {
+      matches = [...content.matchAll(h2Regex)];
+    }
+
+    if (matches.length < 2) return [];
+
+    const splits: DetectedSplit[] = [];
+
+    // Content before first header
+    if (matches[0].index! > 0) {
+      const text = content.slice(0, matches[0].index).trim();
+      if (text.length > 0) {
+        splits.push({
+          title: 'Introduction',
+          text,
+          startIndex: 0,
+          endIndex: matches[0].index!,
+          confidence: 0.7
+        });
+      }
+    }
+
+    for (let i = 0; i < matches.length; i++) {
+      const match = matches[i];
+      const title = match[1].replace(/^#+\s*/, '').trim();
+      const startIndex = match.index!;
+      const endIndex = matches[i + 1]?.index ?? content.length;
+      const text = content.slice(startIndex, endIndex).trim();
+
+      splits.push({
+        title,
+        text,
+        startIndex,
+        endIndex,
+        confidence: 0.85
+      });
+    }
+
+    return splits;
+  }
+
+  private splitByHrMarkers(content: string): DetectedSplit[] {
+    const hrRegex = /^\s*---\s*$/gm;
+    const matches = [...content.matchAll(hrRegex)];
+
+    if (matches.length < 2) return [];
+
+    const splits: DetectedSplit[] = [];
+    let lastIndex = 0;
+
+    for (let i = 0; i <= matches.length; i++) {
+      const endIndex = matches[i]?.index ?? content.length;
+      const text = content.slice(lastIndex, endIndex).trim();
+
+      if (text.length > 0 && !text.match(/^---\s*$/)) {
+        splits.push({
+          title: `Section ${splits.length + 1}`,
+          text,
+          startIndex: lastIndex,
+          endIndex,
+          confidence: 0.6
+        });
+      }
+
+      if (matches[i]) {
+        lastIndex = matches[i].index! + matches[i][0].length;
+      }
+    }
+
+    return splits;
+  }
+
+  // ============ SIMPLE INGESTION (Direct - No Auto-Place) ============
+
+  /**
+   * Simple ingest: Create a document in a specified folder.
+   * This bypasses all auto-placement logic.
+   */
+  async ingestDocument(
+    content: string,
+    treeId: string,
+    parentFolderId: string,
+    title: string,
+    gist?: string
+  ): Promise<DocumentNode> {
+    // 1. Create content atom
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
-      createdBy: 'system',
+      createdBy: 'fractalizer'
     });
 
-    const tree = await this.treeStore.getTree(treeId);
-    const rawGist = await this.basicLlm.complete(
-        this.prompts.generateGist,
-        {content, organizingPrinciple: tree.organizingPrinciple}
-    );
-    const gist = await this.sanctify(content, rawGist, treeId, 'L0');
+    // 2. Generate gist if not provided
+    const finalGist = gist || await this.generateGist(content, treeId);
 
-    if (parentId) {
-      return this.processContentWithSplitting(content, contentAtom.id, gist, treeId, parentId, currentPath, depth);
-    } else {
-      return this.autoPlace(contentAtom.id, gist, treeId, false);
-    }
-  }
-
-  private async processContentWithSplitting(
-      content: string,
-      contentId: string | null,
-      gist: string,
-      treeId: string,
-      parentId: string,
-      currentPath: string,
-      depth: number
-  ): Promise<TreeNode> {
-
-    const nodeId = randomUUID();
-    const path = parentId ? `${currentPath}/${nodeId}` : `/${nodeId}`;
-
-    await this.vectorStore.add(nodeId, `Gist: ${gist}\n${content.slice(0, 500)}`);
-
-    let node: TreeNode = {
-      id: nodeId,
+    // 3. Create document node
+    const doc = await this.treeStore.createDocument(
       treeId,
-      parentId,
-      path,
-      contentId,
-      l0Gist: gist,
-      l1Map: null,
-      sortOrder: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+      parentFolderId,
+      title,
+      finalGist,
+      contentAtom.id
+    );
 
-    // Stop recursion if too deep
-    if (depth >= this.config.maxDepth) {
-      await this.treeStore.saveNode(node);
-      return node;
-    }
-
-    // === CENSUS & SPLIT STRATEGY ===
-    const strategy = this.determineSplitStrategy(content);
-
-    if (strategy.method !== 'NONE') {
-      console.log(`   🔪 Level ${depth}: Splitting via [${strategy.method}] into ${strategy.chunks.length} chunks.`);
-
-      // 1. CONVERT TO FOLDER
-      node.contentId = null;
-
-      const children: TreeNode[] = [];
-      const tree = await this.treeStore.getTree(treeId);
-
-      for (let i = 0; i < strategy.chunks.length; i++) {
-        const chunk = strategy.chunks[i];
-
-        const chunkAtom = await this.contentStore.create({
-          payload: chunk,
-          mediaType: 'text/plain',
-          createdBy: 'system',
-          metadata: {parentOriginalId: contentId, splitIndex: i, method: strategy.method}
-        });
-
-        // Optimization: If chunk is tiny, skip LLM gist
-        let chunkGist = "";
-        if (chunk.length < 200) {
-          chunkGist = chunk.slice(0, 100).replace(/\n/g, ' ');
-        } else {
-          const raw = await this.basicLlm.complete(
-              this.prompts.generateGist,
-              {content: chunk.slice(0, 3000), organizingPrinciple: tree.organizingPrinciple}
-          );
-          chunkGist = await this.sanctify(chunk, raw, treeId, 'L0');
-        }
-
-        const child = await this.processContentWithSplitting(
-            chunk,
-            chunkAtom.id,
-            chunkGist,
-            treeId,
-            nodeId,
-            path,
-            depth + 1
-        );
-        child.sortOrder = i;
-
-        await this.treeStore.saveNode(child);
-        children.push(child);
-      }
-
-      // 2. DETERMINISTIC L1 MAP
-      const summaryList = children.map(c => `- ${c.l0Gist}`).join('\n');
-
-      node.l1Map = {
-        summary: `Contains ${children.length} items:\n${summaryList.slice(0, 1000)}`,
-        childInventory: children.map(c => ({nodeId: c.id, gist: c.l0Gist})), // Kept for API compat if needed
-        outboundRefs: []
-      };
-    }
-
-    await this.treeStore.saveNode(node);
+    // 4. Index for retrieval
+    await this.vectorStore.add(doc.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
     await this.vectorStore.save(treeId);
 
-    if (parentId) await this.bubbleUp(parentId);
-
-    return node;
-  }
-
-  private determineSplitStrategy(content: string): { method: string, chunks: string[] } {
-    const len = content.length;
-    if (len < 500) return {method: 'NONE', chunks: []};
-
-    const patterns = {
-      'PDF_PAGE': /(\n\n---=== PAGE \d+ ===---\n\n)/,
-      'MARKER_HR': /(^\s*---\s*$)/m,
-      'H1': /^#\s+(.+)$/gm,
-      'H2': /^##\s+(.+)$/gm,
-      'H3': /^###\s+(.+)$/gm
-    };
-
-    // 1. Explicit Markers (PDF)
-    const pageChunks = this.splitByRegexDelimiter(content, patterns.PDF_PAGE);
-    if (pageChunks.length > 1) return {method: 'PDF_PAGE', chunks: pageChunks};
-
-    // 2. Headers
-    const MAX_CHUNKS = 60;
-    const MIN_AVG_LEN = 200;
-
-    const h1Chunks = this.splitByHeader(content, patterns.H1);
-    if (this.isValidSplit(h1Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H1', chunks: h1Chunks};
-
-    const h2Chunks = this.splitByHeader(content, patterns.H2);
-    if (this.isValidSplit(h2Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H2', chunks: h2Chunks};
-
-    const h3Chunks = this.splitByHeader(content, patterns.H3);
-    if (this.isValidSplit(h3Chunks, MAX_CHUNKS, MIN_AVG_LEN)) return {method: 'H3', chunks: h3Chunks};
-
-    // 3. HR Markers
-    const hrChunks = this.splitByRegexDelimiter(content, patterns.MARKER_HR);
-    if (this.isValidSplit(hrChunks, 100, 100)) return {method: 'HR', chunks: hrChunks};
-
-    return {method: 'NONE', chunks: []};
-  }
-
-  private isValidSplit(chunks: string[], maxCount: number, minAvgLen: number): boolean {
-    if (chunks.length < 2) return false;
-    if (chunks.length > maxCount) return false;
-    const avg = chunks.reduce((sum, c) => sum + c.length, 0) / chunks.length;
-    return avg >= minAvgLen;
-  }
-
-  private splitByRegexDelimiter(content: string, regex: RegExp): string[] {
-    return content.split(regex)
-        .map(p => p.trim())
-        .filter(p => p.length > 0 && !regex.test(p) && !p.startsWith('---==='));
-  }
-
-  private splitByHeader(content: string, regex: RegExp): string[] {
-    const matches = [...content.matchAll(regex)];
-    if (matches.length < 2) return [];
-
-    const chunks: string[] = [];
-    if (matches[0].index! > 0) chunks.push(content.slice(0, matches[0].index).trim());
-
-    for (let i = 0; i < matches.length; i++) {
-      const start = matches[i].index!;
-      const end = matches[i + 1] ? matches[i + 1].index! : content.length;
-      chunks.push(content.slice(start, end).trim());
-    }
-    return chunks;
-  }
-
-  async autoPlace(
-      contentId: string,
-      gist: string,
-      treeId: string,
-      isAtomic: boolean = false
-  ): Promise<TreeNode> {
-    const tree = await this.treeStore.getTree(treeId);
-    let currentParentId = tree.rootNodeId;
-    let currentParent = await this.treeStore.getNodeFromTree(treeId, currentParentId);
-
-    if (!currentParent) throw new Error(`Root node not found for tree: ${treeId}`);
-
-    const maxPlacementDepth = 3;
-    let depth = 0;
-
-    while (depth < maxPlacementDepth) {
-      const children = await this.treeStore.getChildren(currentParentId);
-
-      // --- SEMANTIC DEDUPLICATION ---
-      let merged = false;
-      for (const child of children) {
-        const isMatch = await this.checkSemanticMatch(gist, child.l0Gist);
-        if (isMatch) {
-          console.log(`   🔄 Semantic Match found: "${child.l0Gist.slice(0, 30)}..." matches new content.`);
-
-          if (child.contentId) {
-            // If leaf, convert to folder and dive
-            console.log(`      📂 Converting Leaf "${child.l0Gist}" to Category Cluster`);
-            const oldContentNodeId = randomUUID();
-            const oldContentNode: TreeNode = {
-              ...child,
-              id: oldContentNodeId,
-              parentId: child.id,
-              path: `${child.path}/${oldContentNodeId}`,
-              l0Gist: `${child.l0Gist} (Original)`,
-              sortOrder: 0,
-              l1Map: null
-            };
-            child.contentId = null;
-            child.l1Map = null;
-
-            await this.treeStore.saveNode(oldContentNode);
-            await this.treeStore.saveNode(child);
-            await this.vectorStore.add(oldContentNode.id, `Gist: ${oldContentNode.l0Gist}`);
-
-            currentParent = child;
-            currentParentId = child.id;
-            depth++;
-            merged = true;
-            break;
-          } else {
-            // Folder, dive
-            currentParent = child;
-            currentParentId = child.id;
-            depth++;
-            merged = true;
-            break;
-          }
-        }
-      }
-      if (merged) continue;
-      // --- END DEDUPLICATION ---
-
-      if (children.length === 0) break;
-
-      const candidates = children.map(c => `- ${c.id}: ${c.l0Gist}`).join('\n');
-
-      try {
-        const placementJson = await this.basicLlm.complete(
-            this.prompts.placeInTree,
-            {
-              organizingPrinciple: tree.organizingPrinciple,
-              placementStrategy: this.getPlacementStrategy(tree),
-              gist,
-              availableNodes: candidates || 'No existing categories',
-            }
-        );
-        const decision = JSON.parse(placementJson);
-
-        if (decision.parentNodeId && decision.parentNodeId !== currentParentId) {
-          const nextNode = children.find(c => c.id === decision.parentNodeId);
-          if (nextNode) {
-            currentParentId = nextNode.id;
-            currentParent = nextNode;
-            depth++;
-            continue;
-          }
-        }
-        if (decision.createNodes && decision.createNodes.length > 0) {
-          const categoryName = decision.createNodes[0];
-          const categoryNode = await this.createOrganizationalNode(treeId, currentParentId, currentParent.path, categoryName);
-          currentParentId = categoryNode.id;
-          currentParent = categoryNode;
-          break;
-        }
-        break;
-      } catch (error) {
-        console.error('Placement routing error:', error);
-        break;
-      }
-    }
-
-    const content = await this.contentStore.get(contentId);
-    if (!content) throw new Error(`Content not found: ${contentId}`);
-
-    if (isAtomic) {
-      const nodeId = randomUUID();
-      const node: TreeNode = {
-        id: nodeId,
-        treeId,
-        parentId: currentParentId,
-        path: `${currentParent.path}${nodeId}`,
-        contentId,
-        l0Gist: gist,
-        l1Map: null,
-        sortOrder: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await this.vectorStore.add(nodeId, `Atomic: ${content.payload}`);
-      await this.treeStore.saveNode(node);
-      await this.vectorStore.save(treeId);
-      await this.bubbleUp(currentParentId);
-      return node;
-    } else {
-      return this.processContentWithSplitting(
-          content.payload,
-          contentId,
-          gist,
-          treeId,
-          currentParentId,
-          currentParent.path,
-          0
-      );
-    }
-  }
-
-  // --- MUTATION ---
-  async updateNode(nodeId: string, newContentAtomId: string, newContentText: string): Promise<void> {
-    console.log(`   📝 Updating Node: ${nodeId}`);
-    const node = await this.treeStore.getNode(nodeId);
-    if (!node) throw new Error(`Node ${nodeId} not found`);
-
-    node.contentId = newContentAtomId;
-    node.updatedAt = new Date().toISOString();
-
-    const tree = await this.treeStore.getTree(node.treeId);
-    const rawGist = await this.basicLlm.complete(
-        this.prompts.generateGist,
-        {content: newContentText, organizingPrinciple: tree.organizingPrinciple}
-    );
-    node.l0Gist = await this.sanctify(newContentText, rawGist, node.treeId, 'L0');
-
-    await this.vectorStore.remove(node.id);
-    await this.vectorStore.add(node.id, `Gist: ${node.l0Gist}\n${newContentText.slice(0, 300)}`);
-    await this.treeStore.saveNode(node);
-    await this.vectorStore.save(node.treeId);
-    if (node.parentId) await this.bubbleUp(node.parentId);
-  }
-
-  // --- HELPERS ---
-  private async checkSemanticMatch(newGist: string, existingGist: string): Promise<boolean> {
-    if (newGist === existingGist) return true;
-    try {
-      const prompt = this.prompts.checkSimilarity || `Respond ONLY with JSON: {"status": "MATCH" | "DIFFERENT"}`;
-      const response = await this.basicLlm.complete(prompt, {newGist, existingGist});
-      const json = JSON.parse(response);
-      return json.status === 'MATCH';
-    } catch (e) {
-      return false;
-    }
-  }
-
-  private async createOrganizationalNode(treeId: string, parentId: string, parentPath: string, name: string): Promise<TreeNode> {
-    const id = `${parentId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-    const path = `${parentPath}/${id}`;
-    const existing = await this.treeStore.getNodeFromTree(treeId, id);
-    if (existing) return existing;
-
-    const node: TreeNode = {
-      id, treeId, parentId, path, contentId: null, l0Gist: name, l1Map: null, sortOrder: 0,
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    };
-    await this.vectorStore.add(id, `Category: ${name}`);
-    await this.treeStore.saveNode(node);
-    if (parentId) await this.bubbleUp(parentId);
-    return node;
-  }
-
-  private getPlacementStrategy(tree: TreeConfig | { organizingPrinciple: string; placementStrategy?: string }): string {
-    if ('placementStrategy' in tree && tree.placementStrategy) return tree.placementStrategy;
-    return 'Group by related topics and themes';
-  }
-
-  private async sanctify(content: string, proposedSummary: string, treeId: string, summaryType: 'L0' | 'L1' = 'L0'): Promise<string> {
-    console.log(`\\n🔍 [The Inquisitor] Inspecting ${summaryType} for Tree: ${treeId}`);
-    try {
-      const tree = await this.treeStore.getTree(treeId);
-      const contentSample = summaryType === 'L0' ? content.slice(0, 3000) : content;
-      const heresyCheck = await this.smartLlm.complete(
-          this.prompts.detectHeresy,
-          {content: contentSample, summary: proposedSummary, organizingPrinciple: tree.organizingPrinciple}
-      );
-      let verdict;
-      try {
-        verdict = JSON.parse(heresyCheck);
-      } catch (e) {
-        return proposedSummary;
-      }
-      if (verdict.status === 'FAIL') {
-        console.warn(`⚠️ [HERESY DETECTED] Reason: ${verdict.reason}`);
-        return verdict.correctedSummary || proposedSummary;
-      }
-      return proposedSummary;
-    } catch (e) {
-      return proposedSummary;
-    }
-  }
-
-  private async bubbleUp(nodeId: string): Promise<void> {
-    const node = await this.treeStore.getNode(nodeId);
-    if (!node) return;
-    const children = await this.treeStore.getChildren(nodeId);
-    if (children.length === 0) return;
-
-    // Deterministic L1 (Concatenation)
-    const childSummaries = children.map(c => `- ${c.l0Gist}`).join('\n');
-    node.l1Map = {
-      summary: `Contains ${children.length} items:\n${childSummaries.slice(0, 1000)}`,
-      childInventory: children.map(c => ({nodeId: c.id, gist: c.l0Gist})),
-      outboundRefs: [],
-    };
-
-    node.updatedAt = new Date().toISOString();
-    await this.vectorStore.add(node.id, `Category: ${node.l0Gist}\n${childSummaries.slice(0, 500)}`);
-    await this.vectorStore.save(node.treeId);
-    await this.treeStore.saveNode(node);
-
-    // No recursive bubbleUp needed if using deterministic summaries, 
-    // but useful if vector index relies on full path context.
-    if (node.parentId) await this.bubbleUp(node.parentId);
+    return doc;
   }
 
   /**
-   * Regenerate summaries for a node and its ancestors
+   * Create a fragment under a document
+   */
+  async createFragment(
+    content: string,
+    treeId: string,
+    parentDocumentId: string,
+    title: string,
+    gist?: string
+  ): Promise<FragmentNode> {
+    // 1. Create content atom
+    const contentAtom = await this.contentStore.create({
+      payload: content,
+      mediaType: 'text/plain',
+      createdBy: 'fractalizer'
+    });
+
+    // 2. Generate gist if not provided
+    const finalGist = gist || await this.generateGist(content, treeId);
+
+    // 3. Create fragment node
+    const fragment = await this.treeStore.createFragment(
+      treeId,
+      parentDocumentId,
+      title,
+      finalGist,
+      contentAtom.id
+    );
+
+    // 4. Index for retrieval
+    await this.vectorStore.add(fragment.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
+    await this.vectorStore.save(treeId);
+
+    return fragment;
+  }
+
+  /**
+   * Generate a gist for content using LLM
+   */
+  async generateGist(content: string, treeId: string): Promise<string> {
+    try {
+      const tree = await this.treeStore.getTree(treeId);
+      const gist = await this.basicLlm.complete(
+        this.prompts.generateGist,
+        {
+          content: content.slice(0, 3000),
+          organizingPrinciple: tree.organizingPrinciple
+        }
+      );
+      return gist.trim();
+    } catch (e) {
+      // Fallback: first 100 chars
+      return content.slice(0, 100).replace(/\n/g, ' ').trim() + '...';
+    }
+  }
+
+  /**
+   * Generate a title for content using LLM
+   */
+  async generateTitle(content: string, treeId: string): Promise<string> {
+    try {
+      const tree = await this.treeStore.getTree(treeId);
+      const title = await this.basicLlm.complete(
+        this.prompts.generateTitle || this.prompts.generateGist,
+        {
+          content: content.slice(0, 2000),
+          organizingPrinciple: tree.organizingPrinciple
+        }
+      );
+      return title.trim().slice(0, 100); // Cap title length
+    } catch (e) {
+      return 'Untitled Document';
+    }
+  }
+
+  // ============ UPDATE OPERATIONS ============
+
+  /**
+   * Update the content of an existing document/fragment
+   */
+  async updateNode(nodeId: string, newContent: string): Promise<void> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node || !hasContent(node)) {
+      throw new Error(`Node ${nodeId} not found or is not a content node`);
+    }
+
+    // 1. Create new content atom (versioned)
+    const oldContentId = node.contentId;
+    const newAtom = await this.contentStore.create({
+      payload: newContent,
+      mediaType: 'text/plain',
+      createdBy: 'fractalizer',
+      supersedes: oldContentId
+    });
+
+    // 2. Update node
+    (node as DocumentNode | FragmentNode).contentId = newAtom.id;
+    node.gist = await this.generateGist(newContent, node.treeId);
+    node.updatedAt = new Date().toISOString();
+
+    await this.treeStore.saveNode(node);
+
+    // 3. Update vector index
+    await this.vectorStore.remove(nodeId);
+    await this.vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${newContent.slice(0, 500)}`);
+    await this.vectorStore.save(node.treeId);
+  }
+
+  /**
+   * Regenerate gist for a node
+   */
+  async regenerateGist(nodeId: string): Promise<void> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) throw new Error(`Node ${nodeId} not found`);
+
+    if (hasContent(node)) {
+      const content = await this.contentStore.get(node.contentId);
+      if (content) {
+        node.gist = await this.generateGist(content.payload, node.treeId);
+        node.updatedAt = new Date().toISOString();
+        await this.treeStore.saveNode(node);
+
+        // Update vector index
+        await this.vectorStore.remove(nodeId);
+        await this.vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${content.payload.slice(0, 500)}`);
+        await this.vectorStore.save(node.treeId);
+      }
+    }
+  }
+
+  // ============ AI-ASSISTED OPERATIONS ============
+
+  /**
+   * AI-assisted split generation
+   * The AI analyzes content and proposes logical split points
+   */
+  async generateAiSplits(content: string, treeId: string): Promise<{ title: string; text: string }[]> {
+    try {
+      const tree = await this.treeStore.getTree(treeId);
+
+      const prompt = `Analyze this content and split it into logical sections. Each section should be self-contained and cover a distinct topic.
+
+Organizing principle: ${tree.organizingPrinciple}
+
+Content:
+---
+${content.slice(0, 8000)}
+---
+
+Return a JSON array of sections with "title" and "text" properties.
+Example: [{"title": "Introduction", "text": "content here..."}, {"title": "Main Topic", "text": "..."}]
+
+IMPORTANT: Return ONLY valid JSON array, no other text.`;
+
+      const response = await this.smartLlm.complete(prompt, {});
+
+      // Try to parse JSON from response
+      const jsonMatch = response.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        console.warn('AI split response was not valid JSON, falling back to single section');
+        return [{ title: await this.generateTitle(content, treeId), text: content }];
+      }
+
+      const splits = JSON.parse(jsonMatch[0]);
+      return splits.map((s: any) => ({
+        title: String(s.title || 'Untitled Section'),
+        text: String(s.text || '')
+      }));
+    } catch (e) {
+      console.error('AI split failed:', e);
+      // Fallback: return content as single section
+      return [{ title: await this.generateTitle(content, treeId), text: content }];
+    }
+  }
+
+  /**
+   * AI-assisted placement proposal
+   * The AI suggests which folder a document should be placed in
+   */
+  async proposePlacement(
+    treeId: string,
+    documentTitle: string,
+    documentGist: string
+  ): Promise<{ folderId: string; reasoning: string; confidence: number }> {
+    try {
+      const tree = await this.treeStore.getTree(treeId);
+      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+
+      if (leafFolders.length === 0) {
+        throw new Error('No leaf folders available');
+      }
+
+      if (leafFolders.length === 1) {
+        return {
+          folderId: leafFolders[0].id,
+          reasoning: 'Only one folder available',
+          confidence: 1.0
+        };
+      }
+
+      // Build folder list for prompt
+      const folderList = leafFolders.map(f =>
+        `- ID: ${f.id}\n  Title: ${f.title}\n  Gist: ${f.gist}\n  Path: ${f.path}`
+      ).join('\n\n');
+
+      const response = await this.smartLlm.complete(
+        this.prompts.proposePlacement,
+        {
+          documentTitle,
+          documentGist: documentGist || 'No summary available',
+          leafFolders: folderList
+        }
+      );
+
+      // Try to parse JSON from response
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        // Fallback to first folder
+        return {
+          folderId: leafFolders[0].id,
+          reasoning: 'AI response was not valid JSON',
+          confidence: 0.5
+        };
+      }
+
+      const proposal = JSON.parse(jsonMatch[0]);
+
+      // Validate the proposed folder exists
+      const validFolder = leafFolders.find(f => f.id === proposal.targetFolderId);
+      if (!validFolder) {
+        // AI proposed invalid folder, use first one
+        return {
+          folderId: leafFolders[0].id,
+          reasoning: proposal.reasoning || 'Default folder selected',
+          confidence: 0.5
+        };
+      }
+
+      return {
+        folderId: proposal.targetFolderId,
+        reasoning: proposal.reasoning || 'AI-selected folder',
+        confidence: typeof proposal.confidence === 'number' ? proposal.confidence : 0.7
+      };
+    } catch (e) {
+      console.error('Placement proposal failed:', e);
+      // Get first leaf folder as fallback
+      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+      return {
+        folderId: leafFolders[0]?.id || 'unknown',
+        reasoning: 'Error during placement analysis',
+        confidence: 0.3
+      };
+    }
+  }
+
+  // ============ LEGACY COMPATIBILITY (STUBBED) ============
+
+  /**
+   * @deprecated Use ingestDocument instead
+   */
+  async ingest(
+    content: string,
+    treeId: string,
+    parentId: string | null,
+    currentPath: string,
+    depth: number = 0
+  ): Promise<TreeNode> {
+    console.warn('Fractalizer.ingest() is deprecated. Use ingestDocument() with explicit placement.');
+
+    // Get a leaf folder to place content
+    const tree = await this.treeStore.getTree(treeId);
+    const targetParentId = parentId || tree.rootNodeId;
+
+    // Try to use the parent directly, or find a leaf folder
+    const parent = await this.treeStore.getNodeFromTree(treeId, targetParentId);
+    if (!parent) throw new Error(`Parent ${targetParentId} not found`);
+
+    // If parent is a folder, create document there
+    // This may fail if parent is a branch folder - caller should handle
+    const title = await this.generateTitle(content, treeId);
+    return await this.ingestDocument(content, treeId, targetParentId, title);
+  }
+
+  /**
+   * @deprecated No longer used in strict taxonomy
    */
   async regenerateSummaries(nodeId: string): Promise<void> {
-    const node = await this.treeStore.getNode(nodeId);
-    if (!node) throw new Error(`Node not found: ${nodeId}`);
-    await this.bubbleUp(nodeId);
-    if (node.parentId) await this.regenerateSummaries(node.parentId);
+    await this.regenerateGist(nodeId);
+  }
+
+  /**
+   * @deprecated Use updateNode instead
+   */
+  async updateNodeContent(nodeId: string, newContentId: string, newContent: string): Promise<void> {
+    await this.updateNode(nodeId, newContent);
   }
 }
