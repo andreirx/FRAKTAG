@@ -29,9 +29,9 @@ export function TreeItem({ node, childrenMap, onSelect, selectedId, depth = 0 }:
     const hasChildren = children.length > 0;
 
     // Default expansion:
-    // - Root and first 2 levels: open
-    // - Documents with fragments: closed by default (fragments are implementation detail)
-    const defaultOpen = depth < 2 && node.type === 'folder';
+    // - All folders: expanded (to show full hierarchy)
+    // - Documents: closed (fragments inside are implementation detail)
+    const defaultOpen = node.type === 'folder';
     const [isOpen, setIsOpen] = useState(defaultOpen);
     const isSelected = selectedId === node.id;
 
