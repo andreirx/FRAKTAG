@@ -282,6 +282,39 @@ export function IngestionDialog({
 
   // ============ SPLITS STEP ============
 
+  // Helper: Try to find a split's text in the original using progressively shorter chunks
+  const findSplitInOriginal = (
+    splitText: string,
+    originalText: string,
+    searchStart: number
+  ): { foundIndex: number; matchLength: number } | null => {
+    const normalize = (s: string) => s.replace(/\r\n/g, '\n').trim();
+    const splitNormalized = normalize(splitText);
+
+    // Try different chunk sizes for matching (longer is more reliable)
+    const chunkSizes = [200, 100, 50];
+    for (const size of chunkSizes) {
+      if (splitNormalized.length < size) continue;
+      const searchChunk = splitNormalized.slice(0, size);
+      const foundIndex = originalText.indexOf(searchChunk, searchStart);
+      if (foundIndex >= 0) {
+        return { foundIndex, matchLength: splitNormalized.length };
+      }
+    }
+
+    // Try matching just the first line (for cases where AI keeps the first line)
+    const firstLine = splitNormalized.split('\n')[0].trim();
+    if (firstLine.length >= 20) {
+      const foundIndex = originalText.indexOf(firstLine, searchStart);
+      if (foundIndex >= 0) {
+        // Found first line - estimate the end by looking for the next split's start
+        return { foundIndex, matchLength: splitNormalized.length };
+      }
+    }
+
+    return null;
+  };
+
   // Helper: Detect uncovered content after AI splits and add remaining text as extra sections
   const ensureFullCoverage = (
     originalText: string,
@@ -289,50 +322,103 @@ export function IngestionDialog({
   ): { title: string; text: string }[] => {
     if (proposedSplits.length === 0) return proposedSplits;
 
-    // Normalize text for comparison (trim whitespace, normalize line endings)
+    // Normalize text for comparison
     const normalize = (s: string) => s.replace(/\r\n/g, '\n').trim();
     const originalNormalized = normalize(originalText);
 
-    // Track which parts of the original are covered
-    let coveredLength = 0;
-    const uncoveredParts: { text: string; position: 'start' | 'middle' | 'end'; afterIndex: number }[] = [];
+    // Track match results for each split
+    interface MatchResult {
+      splitIndex: number;
+      foundIndex: number;
+      matchLength: number;
+    }
+    const matches: MatchResult[] = [];
+    let lastFoundEnd = 0;
 
     // Find where each split appears in the original
-    let searchStart = 0;
     for (let i = 0; i < proposedSplits.length; i++) {
       const split = proposedSplits[i];
-      const splitNormalized = normalize(split.text);
+      const result = findSplitInOriginal(split.text, originalNormalized, lastFoundEnd);
 
-      // Look for this split's text in the original (use first 200 chars for matching to handle minor differences)
-      const searchChunk = splitNormalized.slice(0, 200);
-      const foundIndex = originalNormalized.indexOf(searchChunk, searchStart);
-
-      if (foundIndex >= 0) {
-        // Check for uncovered content before this split
-        if (foundIndex > searchStart) {
-          const uncoveredText = originalNormalized.slice(searchStart, foundIndex).trim();
-          if (uncoveredText.length > 50) { // Only capture significant content
-            uncoveredParts.push({
-              text: uncoveredText,
-              position: i === 0 ? 'start' : 'middle',
-              afterIndex: i - 1,
-            });
-          }
-        }
-        searchStart = foundIndex + splitNormalized.length;
-        coveredLength += splitNormalized.length;
+      if (result) {
+        matches.push({
+          splitIndex: i,
+          foundIndex: result.foundIndex,
+          matchLength: result.matchLength,
+        });
+        lastFoundEnd = result.foundIndex + result.matchLength;
       }
     }
 
-    // Check for uncovered content after the last split
-    if (searchStart < originalNormalized.length) {
-      const remainingText = originalNormalized.slice(searchStart).trim();
-      if (remainingText.length > 50) { // Only capture significant content
+    // Calculate how much of the AI output appears to be copied vs summarized
+    const matchedSplits = matches.length;
+    const totalSplits = proposedSplits.length;
+    const matchRatio = matchedSplits / totalSplits;
+
+    // If less than 50% of splits were found, AI likely summarized - don't try to recover
+    // as we'd just duplicate content
+    if (matchRatio < 0.5) {
+      // Check if AI output is significantly shorter (suggesting summarization)
+      const aiTotalLength = proposedSplits.reduce((sum, s) => sum + s.text.length, 0);
+      const originalLength = originalNormalized.length;
+
+      if (aiTotalLength < originalLength * 0.7) {
+        // AI summarized - add a warning note but don't duplicate content
+        addAuditEntry(
+          "AI_SUMMARIZED_WARNING",
+          `AI output (${aiTotalLength.toLocaleString()} chars) is significantly shorter than original (${originalLength.toLocaleString()} chars) - content may be summarized rather than split`,
+          "system"
+        );
+      }
+      return proposedSplits;
+    }
+
+    // Build uncovered parts based on matches
+    const uncoveredParts: { text: string; position: 'start' | 'middle' | 'end'; afterIndex: number }[] = [];
+
+    // Check for content before first match
+    if (matches.length > 0 && matches[0].foundIndex > 0) {
+      const uncoveredText = originalNormalized.slice(0, matches[0].foundIndex).trim();
+      if (uncoveredText.length > 50) {
         uncoveredParts.push({
-          text: remainingText,
-          position: 'end',
-          afterIndex: proposedSplits.length - 1,
+          text: uncoveredText,
+          position: 'start',
+          afterIndex: -1,
         });
+      }
+    }
+
+    // Check for gaps between matches
+    for (let i = 0; i < matches.length - 1; i++) {
+      const currentEnd = matches[i].foundIndex + matches[i].matchLength;
+      const nextStart = matches[i + 1].foundIndex;
+
+      if (nextStart > currentEnd) {
+        const gapText = originalNormalized.slice(currentEnd, nextStart).trim();
+        if (gapText.length > 50) {
+          uncoveredParts.push({
+            text: gapText,
+            position: 'middle',
+            afterIndex: matches[i].splitIndex,
+          });
+        }
+      }
+    }
+
+    // Check for content after last match
+    if (matches.length > 0) {
+      const lastMatch = matches[matches.length - 1];
+      const lastMatchEnd = lastMatch.foundIndex + lastMatch.matchLength;
+
+      if (lastMatchEnd < originalNormalized.length) {
+        const remainingText = originalNormalized.slice(lastMatchEnd).trim();
+        if (remainingText.length > 50) {
+          uncoveredParts.push({
+            text: remainingText,
+            position: 'end',
+            afterIndex: lastMatch.splitIndex,
+          });
+        }
       }
     }
 
@@ -558,8 +644,74 @@ export function IngestionDialog({
     return result;
   };
 
+  // Helper: Build regex for numbered/lettered section markers
+  // Matches patterns like: 1. | A. | I. | 1.1. | A.1. | 1.1.1. | IV.2.3. etc.
+  const buildNumberedSectionRegex = (maxDepth: number): RegExp => {
+    // A segment can be: digits, single letter, or roman numeral
+    const segment = "(?:[0-9]+|[A-Za-z]|[IVXLCDM]+|[ivxlcdm]+)";
+    // Build pattern for 1 to maxDepth segments separated by dots
+    // e.g., for depth 2: (segment\.)?(segment\.)\s+ matches "1." or "1.1." or "A.1."
+    const patterns: string[] = [];
+    for (let depth = 1; depth <= maxDepth; depth++) {
+      // Pattern: segment followed by dot, repeated 'depth' times, then space and title text
+      const depthPattern = `${segment}\\.`.repeat(depth);
+      patterns.push(depthPattern);
+    }
+    // Match any of the depth patterns at start of line, followed by space and title
+    // Sort by longest first so deeper sections match before shallower ones
+    patterns.reverse();
+    return new RegExp(`^((?:${patterns.join("|")})\\s*.+)$`, "gm");
+  };
+
+  // Helper: Split content by numbered sections (1., A., I., 1.1., etc.)
+  const splitByNumberedSections = (
+    content: string,
+    maxDepth: number,
+    contextTitle?: string
+  ): { title: string; text: string }[] => {
+    const regex = buildNumberedSectionRegex(maxDepth);
+    const matches = [...content.matchAll(regex)];
+
+    if (matches.length === 0) {
+      return [];
+    }
+
+    const result: { title: string; text: string }[] = [];
+
+    // Content before first section marker
+    if (matches[0].index! > 0) {
+      const preamble = content.slice(0, matches[0].index).trim();
+      if (preamble.length > 0) {
+        result.push({
+          title: contextTitle ? `${contextTitle} - Introduction` : "Introduction",
+          text: preamble,
+        });
+      }
+    }
+
+    // Each numbered section
+    for (let i = 0; i < matches.length; i++) {
+      const match = matches[i];
+      const fullMatch = match[1];
+      // Extract the section number and title
+      // e.g., "1.2.3. Section Title" -> number="1.2.3.", title="Section Title"
+      const numberMatch = fullMatch.match(/^((?:[0-9]+|[A-Za-z]|[IVXLCDM]+|[ivxlcdm]+)\.)+/);
+      const sectionNumber = numberMatch ? numberMatch[0] : "";
+      const titleText = fullMatch.slice(sectionNumber.length).trim();
+      const title = titleText || `Section ${sectionNumber.replace(/\.$/, "")}`;
+
+      const startIndex = match.index!;
+      const endIndex = matches[i + 1]?.index ?? content.length;
+      const text = content.slice(startIndex, endIndex).trim();
+
+      result.push({ title, text });
+    }
+
+    return result;
+  };
+
   // Programmatic re-split with specific method
-  const resplitWithMethod = (method: "h1" | "h2" | "h3" | "hr" | "none") => {
+  const resplitWithMethod = (method: "h1" | "h2" | "h3" | "hr" | "none" | "num1" | "num2" | "num3" | "num4") => {
     if (!fileContent) return;
 
     addAuditEntry(
@@ -572,6 +724,19 @@ export function IngestionDialog({
 
     if (method === "none") {
       newSplits = [{ title: documentTitle || "Full Document", text: fileContent }];
+    } else if (method.startsWith("num")) {
+      // Split by numbered sections (1., A., I., 1.1., etc.)
+      const maxDepth = parseInt(method.slice(3), 10); // num1 -> 1, num2 -> 2, etc.
+      newSplits = splitByNumberedSections(fileContent, maxDepth);
+
+      if (newSplits.length === 0) {
+        addAuditEntry(
+          "RESPLIT_EMPTY",
+          `No numbered sections (depth ${maxDepth}) found in document`,
+          "system"
+        );
+        return;
+      }
     } else if (method === "hr") {
       // Split by horizontal rules (---)
       const parts = fileContent.split(/^\s*---\s*$/m).filter(p => p.trim());
@@ -639,7 +804,7 @@ export function IngestionDialog({
   };
 
   // Split a SINGLE section with specific method (nested splitting)
-  const splitSingleSection = (index: number, method: "h2" | "h3" | "hr") => {
+  const splitSingleSection = (index: number, method: "h2" | "h3" | "hr" | "num1" | "num2" | "num3" | "num4") => {
     const section = splits[index];
     if (!section) return;
 
@@ -651,7 +816,20 @@ export function IngestionDialog({
 
     let subSplits: { title: string; text: string }[] = [];
 
-    if (method === "hr") {
+    if (method.startsWith("num")) {
+      // Split by numbered sections
+      const maxDepth = parseInt(method.slice(3), 10);
+      subSplits = splitByNumberedSections(section.text, maxDepth, section.title);
+
+      if (subSplits.length <= 1) {
+        addAuditEntry(
+          "SECTION_SPLIT_EMPTY",
+          `No numbered sections (depth ${maxDepth}) found in section ${index + 1}`,
+          "system"
+        );
+        return;
+      }
+    } else if (method === "hr") {
       // Split by horizontal rules (---)
       const parts = section.text.split(/^\s*---\s*$/m).filter(p => p.trim());
       if (parts.length <= 1) {
@@ -1227,6 +1405,23 @@ export function IngestionDialog({
                 Split by HR (---)
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => resplitWithMethod("num1")}>
+                <FileText className="w-4 h-4 mr-2" />
+                Split by Sections (1. A. I.)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => resplitWithMethod("num2")}>
+                <FileText className="w-4 h-4 mr-2" />
+                Split by Subsections (1.1. A.1.)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => resplitWithMethod("num3")}>
+                <FileText className="w-4 h-4 mr-2" />
+                Split by Sub-subsections (1.1.1.)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => resplitWithMethod("num4")}>
+                <FileText className="w-4 h-4 mr-2" />
+                Split by Deep sections (1.1.1.1.)
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => resplitWithMethod("none")}>
                 No Split (single doc)
               </DropdownMenuItem>
@@ -1343,6 +1538,19 @@ export function IngestionDialog({
                         <DropdownMenuItem onClick={() => splitSingleSection(index, "hr")}>
                           <Minus className="w-4 h-4 mr-2" />
                           Split by HR (---)
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "num1")}>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Sections (1. A. I.)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "num2")}>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Subsections (1.1.)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "num3")}>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Sub-subsections (1.1.1.)
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => aiSplitSingleSection(index)}>
@@ -1482,10 +1690,8 @@ export function IngestionDialog({
             <ScrollArea className="h-[300px] border rounded-lg">
               <div className="p-2 space-y-1">
                 {leafFolders.map((folder) => {
-                  // Split path into parent path and folder name
+                  // Split path into segments - the last segment is the folder name
                   const pathSegments = folder.path.split(" > ");
-                  const folderName = folder.title; // Use actual title, not last path segment
-                  const parentPath = pathSegments.slice(0, -1); // All except the last
 
                   return (
                     <div
@@ -1505,28 +1711,24 @@ export function IngestionDialog({
                         }`}
                       />
                       <div className="flex-1 min-w-0">
-                        {/* Folder name shown prominently */}
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-semibold text-zinc-900">{folderName}</span>
+                        {/* Full path with folder name bold at the end */}
+                        <div className="text-sm mb-1 flex items-center gap-1 flex-wrap">
+                          {pathSegments.map((segment, i) => (
+                            <span key={i} className="flex items-center gap-1">
+                              <span className={i === pathSegments.length - 1 ? "font-semibold text-zinc-900" : "text-zinc-500"}>
+                                {segment}
+                              </span>
+                              {i < pathSegments.length - 1 && (
+                                <ChevronRight className="w-3 h-3 text-zinc-300" />
+                              )}
+                            </span>
+                          ))}
                           {proposedPlacement?.folderId === folder.id && (
-                            <span className="text-[10px] text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded-full font-medium">
+                            <span className="ml-1 text-[10px] text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded-full font-medium">
                               AI suggested
                             </span>
                           )}
                         </div>
-                        {/* Parent path shown below */}
-                        {parentPath.length > 0 && (
-                          <div className="text-xs font-mono text-zinc-400 mb-1 flex items-center gap-1 flex-wrap">
-                            {parentPath.map((segment, i) => (
-                              <span key={i} className="flex items-center gap-1">
-                                <span>{segment}</span>
-                                {i < parentPath.length - 1 && (
-                                  <ChevronRight className="w-3 h-3 text-zinc-300" />
-                                )}
-                              </span>
-                            ))}
-                          </div>
-                        )}
                         {/* Gist description */}
                         <div className="text-xs text-zinc-500">
                           {folder.gist}
