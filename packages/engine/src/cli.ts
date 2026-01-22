@@ -14,6 +14,25 @@ const ARG2 = process.argv[4];
 const ARG3 = process.argv[5];
 const ARG4 = process.argv[6];
 
+// Parse named arguments (--name "value" or --flag)
+function parseNamedArgs(args: string[]): Record<string, string | boolean> {
+  const result: Record<string, string | boolean> = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2);
+      const nextArg = args[i + 1];
+      if (nextArg && !nextArg.startsWith('--')) {
+        result[key] = nextArg;
+        i++;
+      } else {
+        result[key] = true;
+      }
+    }
+  }
+  return result;
+}
+
 async function findConfig(): Promise<string> {
   // 1. Environment variable
   if (process.env.FRAKTAG_CONFIG) {
@@ -36,6 +55,15 @@ async function main() {
   if (!COMMAND || COMMAND === 'help' || COMMAND === '--help') {
     console.log(`
 FRAKTAG CLI - Strict Taxonomy Edition
+
+KNOWLEDGE BASE MANAGEMENT:
+  kb list            List all loaded knowledge bases
+  kb create <path>   Create a new knowledge base
+                     --name "Name" --principle "Organizing principle"
+  kb add-tree <kbId> <treeId>
+                     Add a new tree to a knowledge base
+                     --name "Tree Name"
+  kb info <kbId>     Show knowledge base details
 
 TREE MANAGEMENT:
   setup              Initialize trees from config (with seed folders)
@@ -68,6 +96,9 @@ MAINTENANCE:
 
 Examples:
   fkt setup
+  fkt kb list
+  fkt kb create ./my-kb --name "My Knowledge" --principle "Organize by topic"
+  fkt kb add-tree my-kb topics --name "Topic Tree"
   fkt tree notes
   fkt folders notes
   fkt analyze ./document.pdf
@@ -137,6 +168,113 @@ Examples:
   const processor = new FileProcessor();
 
   switch (COMMAND) {
+    case 'kb': {
+      const subCommand = ARG1;
+      const namedArgs = parseNamedArgs(process.argv.slice(4));
+
+      switch (subCommand) {
+        case 'list': {
+          const kbs = fraktag.listKnowledgeBases();
+          if (kbs.length === 0) {
+            console.log('\n📚 No knowledge bases loaded.');
+            console.log('   Add "knowledgeBases" to your config.json or use "fkt kb create"');
+          } else {
+            console.log(`\n📚 Knowledge Bases (${kbs.length}):\n`);
+            for (const kb of kbs) {
+              console.log(`  📦 ${kb.name} (${kb.id})`);
+              console.log(`     Path: ${kb.path}`);
+              console.log(`     Principle: ${kb.organizingPrinciple.slice(0, 60)}...`);
+              console.log('');
+            }
+          }
+          break;
+        }
+
+        case 'create': {
+          const kbPath = ARG2;
+          if (!kbPath) {
+            console.error('Usage: fkt kb create <path> --name "Name" --principle "Organizing principle"');
+            process.exit(1);
+          }
+
+          const name = namedArgs.name as string;
+          const principle = namedArgs.principle as string;
+
+          if (!name || !principle) {
+            console.error('Both --name and --principle are required');
+            console.error('Usage: fkt kb create <path> --name "Name" --principle "Organizing principle"');
+            process.exit(1);
+          }
+
+          // Generate ID from name
+          const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+          const kb = await fraktag.createKnowledgeBase(kbPath, {
+            id,
+            name,
+            organizingPrinciple: principle
+          });
+
+          console.log(`\n✅ Created knowledge base: ${kb.name}`);
+          console.log(`   ID: ${kb.id}`);
+          console.log(`   Path: ${kb.path}`);
+          console.log(`   Principle: ${kb.organizingPrinciple}`);
+          console.log(`\n💡 Add this to your config.json knowledgeBases array:`);
+          console.log(`   { "path": "${kbPath}", "enabled": true }`);
+          break;
+        }
+
+        case 'add-tree': {
+          const kbId = ARG2;
+          const treeId = ARG3;
+
+          if (!kbId || !treeId) {
+            console.error('Usage: fkt kb add-tree <kbId> <treeId> [--name "Tree Name"]');
+            process.exit(1);
+          }
+
+          const treeName = namedArgs.name as string | undefined;
+          await fraktag.addTreeToKnowledgeBase(kbId, treeId, treeName);
+
+          console.log(`\n✅ Added tree "${treeId}" to knowledge base "${kbId}"`);
+          break;
+        }
+
+        case 'info': {
+          const kbId = ARG2;
+          if (!kbId) {
+            console.error('Usage: fkt kb info <kbId>');
+            process.exit(1);
+          }
+
+          const kb = fraktag.getKnowledgeBase(kbId);
+          if (!kb) {
+            console.error(`Knowledge base "${kbId}" not found`);
+            process.exit(1);
+          }
+
+          const trees = await kb.listTrees();
+
+          console.log(`\n📦 Knowledge Base: ${kb.name}`);
+          console.log(`   ID: ${kb.id}`);
+          console.log(`   Path: ${kb.path}`);
+          console.log(`   Principle: ${kb.organizingPrinciple}`);
+          console.log(`   Default Tree: ${kb.defaultTreeId}`);
+          console.log(`\n🌲 Trees (${trees.length}):`);
+          for (const treeId of trees) {
+            console.log(`   - ${treeId}`);
+          }
+          break;
+        }
+
+        default:
+          console.error(`Unknown kb subcommand: ${subCommand}`);
+          console.error('Available: list, create, add-tree, info');
+          process.exit(1);
+      }
+      break;
+    }
+
     case 'setup': {
       const trees = await fraktag.listTrees();
       console.log(`\n🌲 Trees initialized: ${trees.length}`);

@@ -2,7 +2,7 @@
 // FRAKTAG ENGINE - Strict Taxonomy Edition
 
 import { readFile } from 'fs/promises';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
 import { ContentStore } from './core/ContentStore.js';
 import { TreeStore } from './core/TreeStore.js';
 import { Fractalizer } from './core/Fractalizer.js';
@@ -28,6 +28,7 @@ import {
   VerificationResult,
   EmbeddingConfig,
   SplitAnalysis,
+  KnowledgeBaseConfig,
   isFolder,
   hasContent
 } from './core/types.js';
@@ -37,6 +38,7 @@ import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAda
 import { VectorStore } from './core/VectorStore.js';
 import { Arborist, TreeOperation } from './core/Arborist.js';
 import { FileProcessor } from './utils/FileProcessor.js';
+import { KnowledgeBase, KnowledgeBaseManager } from './core/KnowledgeBase.js';
 
 /**
  * Fraktag Engine - Strict Taxonomy Knowledge Management
@@ -56,6 +58,10 @@ export class Fraktag {
   private basicLlm: ILLMAdapter;
   private smartLlm: ILLMAdapter;
   private expertLlm: ILLMAdapter;
+
+  // Knowledge Base support
+  private kbManager?: KnowledgeBaseManager;
+  private configPath?: string;
 
   private constructor(config: FraktagConfig, storage: JsonStorage) {
     this.config = config;
@@ -143,6 +149,24 @@ export class Fraktag {
       await storage.ensureDir('indexes');
 
       const instance = new Fraktag(config, storage);
+      instance.configPath = absolutePath;
+
+      // Load knowledge bases if configured
+      if (config.knowledgeBases && config.knowledgeBases.length > 0) {
+        const configDir = dirname(absolutePath);
+        instance.kbManager = new KnowledgeBaseManager(configDir);
+
+        const kbPaths = config.knowledgeBases
+          .filter(kb => kb.enabled !== false)
+          .map(kb => kb.path);
+
+        await instance.kbManager.loadFromPaths(kbPaths);
+
+        // Initialize trees from loaded KBs
+        await instance.initializeKnowledgeBases();
+      }
+
+      // Also initialize legacy inline trees
       await instance.initializeTrees();
 
       return instance;
@@ -739,6 +763,137 @@ export class Fraktag {
         console.log(`🌱 Created tree: ${treeConfig.name}`);
       }
     }
+  }
+
+  /**
+   * Initialize trees from loaded knowledge bases
+   */
+  private async initializeKnowledgeBases(): Promise<void> {
+    if (!this.kbManager) return;
+
+    for (const kb of this.kbManager.list()) {
+      // Check what trees exist in this KB
+      const existingTreeIds = await kb.listTrees();
+
+      // If no trees exist, create the default tree
+      if (existingTreeIds.length === 0) {
+        const treeConfig = kb.getTreeConfig();
+
+        // Create tree in the KB's storage
+        // For now, we create trees in the main storage for simplicity
+        // Future: each KB will have its own TreeStore
+        const existingTrees = await this.treeStore.listTrees();
+        if (!existingTrees.some(t => t.id === treeConfig.id)) {
+          await this.treeStore.createTree(treeConfig);
+          console.log(`🌱 Created tree for KB "${kb.name}": ${treeConfig.name}`);
+        }
+      }
+    }
+  }
+
+  // ============ KNOWLEDGE BASE MANAGEMENT ============
+
+  /**
+   * List all loaded knowledge bases
+   */
+  listKnowledgeBases(): { id: string; name: string; path: string; organizingPrinciple: string }[] {
+    if (!this.kbManager) return [];
+    return this.kbManager.list().map(kb => kb.toJSON());
+  }
+
+  /**
+   * Get a knowledge base by ID
+   */
+  getKnowledgeBase(id: string): KnowledgeBase | undefined {
+    return this.kbManager?.get(id);
+  }
+
+  /**
+   * Create a new knowledge base
+   */
+  async createKnowledgeBase(
+    relativePath: string,
+    options: {
+      id: string;
+      name: string;
+      organizingPrinciple: string;
+      seedFolders?: KnowledgeBaseConfig['seedFolders'];
+      dogma?: KnowledgeBaseConfig['dogma'];
+    }
+  ): Promise<KnowledgeBase> {
+    if (!this.kbManager) {
+      // Initialize KB manager if not present
+      const configDir = this.configPath ? dirname(this.configPath) : process.cwd();
+      this.kbManager = new KnowledgeBaseManager(configDir);
+    }
+
+    const kb = await this.kbManager.create(relativePath, options);
+
+    // Create the default tree for this KB
+    const treeConfig = kb.getTreeConfig();
+    await this.treeStore.createTree(treeConfig);
+    console.log(`🌱 Created tree for new KB "${kb.name}": ${treeConfig.name}`);
+
+    return kb;
+  }
+
+  /**
+   * Load an existing knowledge base from a path
+   */
+  async loadKnowledgeBase(kbPath: string): Promise<KnowledgeBase> {
+    if (!this.kbManager) {
+      // Initialize KB manager if not present
+      const configDir = this.configPath ? dirname(this.configPath) : process.cwd();
+      this.kbManager = new KnowledgeBaseManager(configDir);
+    }
+
+    // Load the KB
+    const absolutePath = resolve(
+      this.configPath ? dirname(this.configPath) : process.cwd(),
+      kbPath
+    );
+    const kb = await KnowledgeBase.load(absolutePath);
+
+    // Add to manager
+    (this.kbManager as any).knowledgeBases.set(kb.id, kb);
+    console.log(`📚 Loaded KB: ${kb.name} (${kb.id})`);
+
+    // Initialize trees from this KB
+    const treeIds = await kb.listTrees();
+    for (const treeId of treeIds) {
+      const exists = await this.treeStore.treeExists(treeId);
+      if (!exists) {
+        const treeConfig = kb.getTreeConfig(treeId);
+        await this.treeStore.createTree(treeConfig);
+        console.log(`   🌱 Initialized tree: ${treeConfig.name}`);
+      }
+    }
+
+    return kb;
+  }
+
+  /**
+   * Add a new tree to an existing knowledge base
+   */
+  async addTreeToKnowledgeBase(kbId: string, treeId: string, treeName?: string): Promise<void> {
+    const kb = this.kbManager?.get(kbId);
+    if (!kb) {
+      throw new Error(`Knowledge base not found: ${kbId}`);
+    }
+
+    // Check if tree already exists
+    if (await kb.hasTree(treeId)) {
+      throw new Error(`Tree "${treeId}" already exists in KB "${kb.name}"`);
+    }
+
+    // Create tree config from KB
+    const treeConfig = kb.getTreeConfig(treeId);
+    if (treeName) {
+      treeConfig.name = treeName;
+    }
+
+    await this.treeStore.createTree(treeConfig);
+    console.log(`🌱 Created new tree "${treeId}" in KB "${kb.name}"`);
   }
 
   private createLLMAdapter(config: FraktagConfig['llm']): ILLMAdapter {

@@ -39,6 +39,95 @@ function findConfig(): string {
   throw new Error('Config not found. Set FRAKTAG_CONFIG env var.');
 }
 
+// ============ KNOWLEDGE BASE ENDPOINTS ============
+
+// List all knowledge bases
+app.get('/api/knowledge-bases', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const kbs = fraktag.listKnowledgeBases();
+    res.json(kbs);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get knowledge base details
+app.get('/api/knowledge-bases/:id', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const kb = fraktag.getKnowledgeBase(req.params.id);
+    if (!kb) {
+      return res.status(404).json({ error: `Knowledge base "${req.params.id}" not found` });
+    }
+    const trees = await kb.listTrees();
+    res.json({
+      ...kb.toJSON(),
+      trees
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create a new knowledge base
+app.post('/api/knowledge-bases', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { path: kbPath, name, organizingPrinciple, seedFolders, dogma } = req.body;
+    if (!kbPath || !name || !organizingPrinciple) {
+      return res.status(400).json({ error: 'path, name, and organizingPrinciple are required' });
+    }
+
+    // Generate ID from name
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    const kb = await fraktag.createKnowledgeBase(kbPath, {
+      id,
+      name,
+      organizingPrinciple,
+      seedFolders,
+      dogma
+    });
+
+    res.json(kb.toJSON());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Add a tree to a knowledge base
+app.post('/api/knowledge-bases/:id/trees', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { treeId, treeName } = req.body;
+    if (!treeId) {
+      return res.status(400).json({ error: 'treeId is required' });
+    }
+
+    await fraktag.addTreeToKnowledgeBase(req.params.id, treeId, treeName);
+    res.json({ success: true, kbId: req.params.id, treeId });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Load an existing knowledge base from a path
+app.post('/api/knowledge-bases/load', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { path: kbPath } = req.body;
+    if (!kbPath) {
+      return res.status(400).json({ error: 'path is required' });
+    }
+
+    const kb = await fraktag.loadKnowledgeBase(kbPath);
+    res.json(kb.toJSON());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ TREE ENDPOINTS ============
 
 app.get('/api/trees', async (req, res) => {

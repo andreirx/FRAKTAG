@@ -50,6 +50,12 @@ export class TreeStore {
     await this.storage.write(`trees/${treeId}.json`, data);
   }
 
+  // ============ TREE EXISTENCE CHECK ============
+
+  async treeExists(treeId: string): Promise<boolean> {
+    return this.storage.exists(`trees/${treeId}.json`);
+  }
+
   // ============ TREE CREATION ============
 
   async createTree(config: TreeConfig): Promise<Tree> {

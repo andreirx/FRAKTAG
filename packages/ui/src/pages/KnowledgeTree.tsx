@@ -3,16 +3,27 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
 import { QueryDialog } from "@/components/fraktag/QueryDialog";
 import { MoveDialog } from "@/components/fraktag/MoveDialog";
+import { KBManagerDialog } from "@/components/fraktag/KBManagerDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+
+interface KnowledgeBase {
+    id: string;
+    name: string;
+    path: string;
+    organizingPrinciple: string;
+    defaultTreeId: string;
+}
 
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
+    const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+    const [activeKbId, setActiveKbId] = useState<string | null>(null); // null means "All KBs"
     const [trees, setTrees] = useState<any[]>([]);
     const [activeTreeId, setActiveTreeId] = useState<string>("");
     const [rawData, setRawData] = useState<any>(null);
@@ -47,6 +58,9 @@ export default function KnowledgeTree() {
     // Query Dialog State
     const [queryDialogOpen, setQueryDialogOpen] = useState(false);
 
+    // KB Manager Dialog State
+    const [kbManagerOpen, setKbManagerOpen] = useState(false);
+
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(400);
     const isResizing = useRef(false);
@@ -68,19 +82,59 @@ export default function KnowledgeTree() {
         };
     }, [resize, stopResizing]);
 
-    // Initial Load
+    // Initial Load - Fetch KBs and Trees
     useEffect(() => {
-        async function fetchTrees() {
+        async function fetchData() {
             try {
-                const res = await axios.get('/api/trees');
-                setTrees(res.data);
-                if (res.data.length > 0) setActiveTreeId(res.data[0].id);
+                // Fetch knowledge bases
+                const kbRes = await axios.get('/api/knowledge-bases');
+                setKnowledgeBases(kbRes.data);
+
+                // Fetch all trees
+                const treeRes = await axios.get('/api/trees');
+                setTrees(treeRes.data);
+                if (treeRes.data.length > 0) setActiveTreeId(treeRes.data[0].id);
             } catch (e) {
-                console.error("Failed to list trees", e);
+                console.error("Failed to load data", e);
             }
         }
-        fetchTrees();
+        fetchData();
     }, []);
+
+    // Filter trees by active KB
+    const filteredTrees = useMemo(() => {
+        if (!activeKbId) return trees; // Show all trees
+        // TODO: When trees have kbId, filter by that. For now show all.
+        return trees;
+    }, [trees, activeKbId]);
+
+    // Get active KB name
+    const activeKbName = activeKbId
+        ? knowledgeBases.find(kb => kb.id === activeKbId)?.name || "Unknown KB"
+        : knowledgeBases.length > 0 ? "All Knowledge Bases" : "No Knowledge Bases";
+
+    // Reload functions for after KB/tree creation
+    const reloadKnowledgeBases = async () => {
+        try {
+            const kbRes = await axios.get('/api/knowledge-bases');
+            setKnowledgeBases(kbRes.data);
+        } catch (e) {
+            console.error("Failed to reload KBs", e);
+        }
+    };
+
+    const reloadTrees = async () => {
+        try {
+            const treeRes = await axios.get('/api/trees');
+            setTrees(treeRes.data);
+            // Reload current tree structure if active
+            if (activeTreeId) {
+                loadTreeStructure(activeTreeId);
+            }
+        } catch (e) {
+            console.error("Failed to reload trees", e);
+        }
+    };
 
     useEffect(() => {
         if (activeTreeId) loadTreeStructure(activeTreeId);
@@ -287,7 +341,58 @@ export default function KnowledgeTree() {
                 style={{ width: sidebarWidth }}
             >
                 {/* Header */}
-                <div className="p-4 border-b space-y-4 flex-shrink-0 bg-white z-20">
+                <div className="p-4 border-b space-y-3 flex-shrink-0 bg-white z-20">
+                    {/* KB Selector - Always show with manager button */}
+                    <div className="flex items-center gap-1">
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" className="flex-1 justify-between text-xs h-8 px-2 bg-purple-50/50 hover:bg-purple-100/50 border border-purple-100">
+                                    <div className="flex items-center gap-2 truncate">
+                                        <Library className="w-3 h-3 text-purple-500 shrink-0" />
+                                        <span className="truncate font-medium text-purple-700">{activeKbName}</span>
+                                    </div>
+                                    <ChevronDown className="w-3 h-3 opacity-50 shrink-0" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="w-[280px]" align="start">
+                                <DropdownMenuLabel className="text-xs text-zinc-400">Knowledge Bases</DropdownMenuLabel>
+                                {knowledgeBases.length > 0 ? (
+                                    <>
+                                        <DropdownMenuItem onClick={() => setActiveKbId(null)}>
+                                            <Library className="w-4 h-4 mr-2 text-zinc-400" />
+                                            <span className={!activeKbId ? "font-bold" : ""}>All Knowledge Bases</span>
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                        {knowledgeBases.map(kb => (
+                                            <DropdownMenuItem key={kb.id} onClick={() => setActiveKbId(kb.id)}>
+                                                <Library className="w-4 h-4 mr-2 text-purple-500" />
+                                                <div className="flex-1 min-w-0">
+                                                    <div className={activeKbId === kb.id ? "font-bold" : "font-medium"}>{kb.name}</div>
+                                                    <div className="text-[10px] text-zinc-400 truncate">{kb.organizingPrinciple.slice(0, 50)}...</div>
+                                                </div>
+                                            </DropdownMenuItem>
+                                        ))}
+                                    </>
+                                ) : (
+                                    <div className="px-2 py-3 text-xs text-zinc-400 text-center">
+                                        No knowledge bases loaded.<br/>
+                                        Click + to create one.
+                                    </div>
+                                )}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0 border border-purple-100 bg-purple-50/50 hover:bg-purple-100"
+                            onClick={() => setKbManagerOpen(true)}
+                            title="Manage Knowledge Bases"
+                        >
+                            <Plus className="w-3 h-3 text-purple-600" />
+                        </Button>
+                    </div>
+
+                    {/* Tree Selector */}
                     <div className="flex items-center gap-2">
                         <div className="flex-1 min-w-0">
                             <DropdownMenu>
@@ -301,7 +406,7 @@ export default function KnowledgeTree() {
                                     </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent className="w-[250px]" align="start">
-                                    {trees.map(t => (
+                                    {filteredTrees.map(t => (
                                         <DropdownMenuItem key={t.id} onClick={() => setActiveTreeId(t.id)}>
                                             <span className="font-medium">{t.name}</span>
                                         </DropdownMenuItem>
@@ -629,6 +734,18 @@ export default function KnowledgeTree() {
                 onOpenChange={setQueryDialogOpen}
                 treeId={activeTreeId}
                 treeName={activeTreeName}
+            />
+
+            {/* KB Manager Dialog */}
+            <KBManagerDialog
+                open={kbManagerOpen}
+                onOpenChange={setKbManagerOpen}
+                knowledgeBases={knowledgeBases}
+                onKBCreated={() => {
+                    reloadKnowledgeBases();
+                    reloadTrees();
+                }}
+                onTreeCreated={reloadTrees}
             />
         </div>
     );

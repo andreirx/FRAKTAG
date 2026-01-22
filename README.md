@@ -507,7 +507,7 @@ fkt kb migrate notes ./knowledge-bases/notes
 *   **Inline Content Editing:** Edit document/fragment content directly in the UI.
 *   **Batch Ingestion:** Process multiple files with consistent rules.
 *   **Version History:** Track changes to content over time (supersedes chain).
-*   **PDF Table of Contents:** Detect and use PDF TOC for intelligent splitting.
 *   **Cloud Deployment:** AWS CDK infrastructure.
 *   **Conversation Memory:** Multi-turn Q&A with context retention.
 *   **Question and Answer Caching:** Some questions have been asked before, why not answer from a cache.
+*   **Fix Splitting:** Splitting by section returns the same result whatever the section depth. Splitting by custom applies only to the overall doc, it should also help split individual sections. Add an option to SPLIT SECTION AT CURSOR.
