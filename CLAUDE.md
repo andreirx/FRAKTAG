@@ -33,9 +33,36 @@ npm run dev --workspace=@fraktag/ui
 
 # Build UI for production
 npm run build --workspace=@fraktag/ui
+
+# Initialize trees from config
+cd packages/engine && npx tsx src/cli.ts setup
 ```
 
 **Full local setup:** Run all three in separate terminals: engine (watch), api, ui.
+
+## Quick Setup (New Installation)
+
+```bash
+# 1. Install
+npm install && npm run build --workspace=@fraktag/engine
+
+# 2. Configure (choose one)
+cp packages/engine/data/config.OpenAIexample.json packages/engine/data/config.json
+# OR
+cp packages/engine/data/config.OLLAMAexample.json packages/engine/data/config.json
+
+# 3. Edit config.json with your API key (OpenAI) or verify Ollama endpoint
+
+# 4. Initialize trees
+cd packages/engine && npx tsx src/cli.ts setup && cd ../..
+
+# 5. Run (3 terminals)
+npm run dev --workspace=@fraktag/engine  # Terminal 1
+npm run dev --workspace=api              # Terminal 2
+npm run dev --workspace=@fraktag/ui      # Terminal 3
+
+# 6. Open http://localhost:5173
+```
 
 ## Monorepo Structure
 
@@ -62,14 +89,18 @@ packages/
 
 The default workflow for adding content:
 1. **Upload** - Drag-and-drop file
-2. **Split Detection** - Programmatic (H1/H2/H3/HR) or AI-assisted
-3. **Human Review** - Edit splits, merge sections, nested splitting per-section
-4. **Placement** - AI proposes folder, human can override
+2. **Split Detection** - Programmatic (H1/H2/H3/HR/numbered sections/custom regex) or AI-assisted
+3. **Human Review** - Edit splits, merge sections, nested splitting per-section, document minimap
+4. **Placement** - AI proposes folder, human can override, create folders inline
 5. **Commit** - Creates nodes with full audit trail
 
 Key features:
+- **Document minimap:** Visual preview showing where splits fall on the document
 - Smart title detection for repeated delimiter patterns
+- **Numbered section splitting:** Detects `1.`, `A.`, `I.`, `1.1.`, etc.
+- **Custom regex splitting:** User-defined patterns for domain-specific documents
 - Per-section nested splitting (further split large sections)
+- **Auto-recovery:** Detects when AI splits miss content and adds remaining text
 - Large section warnings (>5000 chars)
 - Auto-save audit logs to `trees/{treeId}.audit.log`
 
@@ -122,7 +153,8 @@ Three model tiers for cost/latency/intelligence balance:
 
 ### Retrieval
 - `POST /api/retrieve` - Vector + graph retrieval
-- `POST /api/ask` - RAG synthesis with sources
+- `POST /api/ask` - RAG synthesis with sources (returns complete response)
+- `GET /api/ask/stream` - **Streaming RAG synthesis via SSE** (real-time sources + answer)
 - `POST /api/browse` - Navigate tree structure
 
 ### Audit & Maintenance
@@ -165,10 +197,41 @@ Environment: `FRAKTAG_OPENAI_KEY` or `FRAKTAG_CONFIG` path override.
 
 **Tree Config:** `organizingPrinciple` (guides summaries), `autoPlace`, `seedFolders`, `dogma` (heresy prevention rules)
 
+**Knowledge Base Config (Planned):** Self-contained KB definition with `id`, `name`, `organizingPrinciple`, `seedFolders`, `dogma`
+
 **Audit Log:** Append-only text file at `trees/{treeId}.audit.log` with entries:
 ```
 [timestamp] [ACTOR] ACTION: details (session: id)
 ```
+
+## Data Portability
+
+### Current Structure
+```
+packages/engine/data/
+├── config.json     # Tree definitions + adapter settings
+├── content/        # Shared content store
+├── indexes/        # Shared vector indexes
+└── trees/          # Tree JSON + audit logs
+```
+
+### Planned Portable Structure
+```
+knowledge-bases/
+├── my-kb/
+│   ├── kb.json     # KB definition (extracted from config)
+│   ├── content/    # KB-specific content
+│   ├── indexes/    # KB-specific indexes
+│   └── trees/      # KB trees (can have multiple)
+```
+
+### Manual Portability (Current)
+To share a knowledge base:
+1. Export tree definition from config.json
+2. Copy tree file + audit log from `trees/`
+3. Copy referenced content files from `content/`
+4. Copy index file from `indexes/`
+5. At destination: add tree config to config.json, run `fkt setup`
 
 ## Tech Stack
 
@@ -180,19 +243,33 @@ Environment: `FRAKTAG_OPENAI_KEY` or `FRAKTAG_CONFIG` path override.
 
 ## Key Files
 
-- Entry point: `packages/engine/src/index.ts` (Fraktag class)
+- Entry point: `packages/engine/src/index.ts` (Fraktag class with `ask()` and `askStream()`)
 - Types: `packages/engine/src/core/types.ts`
 - CLI: `packages/engine/src/cli.ts`
 - API server: `packages/api/src/server.ts`
 - Main UI: `packages/ui/src/pages/KnowledgeTree.tsx`
-- Ingestion dialog: `packages/ui/src/components/fraktag/IngestionDialog.tsx`
-- Tree renderer: `packages/ui/src/components/fraktag/TreeItem.tsx`
+- **UI Components:**
+  - `packages/ui/src/components/fraktag/IngestionDialog.tsx` - Multi-step ingestion wizard with minimap
+  - `packages/ui/src/components/fraktag/QueryDialog.tsx` - Streaming Q&A dialog with SSE
+  - `packages/ui/src/components/fraktag/MoveDialog.tsx` - Node relocation with folder creation
+  - `packages/ui/src/components/fraktag/TreeItem.tsx` - Recursive tree renderer
+- **LLM Adapters:**
+  - `packages/engine/src/adapters/llm/ILLMAdapter.ts` - Interface with `complete()` and `stream()` methods
+  - `packages/engine/src/adapters/llm/OpenAIAdapter.ts` - OpenAI implementation with streaming support
+
+## Package MAP Files
+
+Each package has a detailed `MAP.md` file explaining its internal architecture:
+- `packages/engine/MAP.md` - Core engine components, data flow, adapters
+- `packages/api/MAP.md` - API endpoints, SSE streaming, error handling
+- `packages/ui/MAP.md` - React components, state management, styling patterns
 
 ## Component Status
 
-- ✅ Ingestion: Human-supervised with audit trails
-- ✅ Retrieval (Navigator): Highly accurate
-- ✅ UI: Auto-save, folder management, ingestion wizard
+- ✅ Ingestion: Human-supervised with audit trails, minimap, custom regex, numbered sections
+- ✅ Retrieval (Navigator): Highly accurate with streaming support
+- ✅ UI: Auto-save, folder management, ingestion wizard, streaming Q&A
+- ✅ Streaming: Real-time sources + answer via SSE
 - ⚠️ Arborist: BETA - limited autonomy
 
 ## Coding Guidelines
@@ -207,9 +284,24 @@ Environment: `FRAKTAG_OPENAI_KEY` or `FRAKTAG_CONFIG` path override.
 - Audit log auto-scroll to bottom
 - Smart title detection for repeated delimiter headers
 - Per-section nested splitting for large sections
+- **Document minimap:** Color-coded visual preview of split positions
+- **Streaming UI:** EventSource for SSE, auto-scroll during streaming, blinking cursor
+- **Dialog extraction:** Complex dialogs (Ingestion, Query, Move) as separate components
 
 ### API Patterns
 - All endpoints return JSON
 - Errors return `{ error: string }`
 - Node operations update `updatedAt` timestamp
 - Audit operations append to log file (never overwrite)
+- **Streaming endpoint:** `GET /api/ask/stream` uses Server-Sent Events (SSE):
+  - `event: source` - Emits each source as discovered
+  - `event: chunk` - Emits answer text chunks
+  - `event: done` - Signals completion with references
+  - `event: error` - Error handling
+
+### Streaming Architecture
+The streaming system enables real-time feedback during Q&A:
+1. **LLM Adapter:** `ILLMAdapter.stream()` method with `onChunk` callback
+2. **Engine:** `Fraktag.askStream()` emits events for sources and answer chunks
+3. **API:** SSE endpoint at `/api/ask/stream` with proper headers
+4. **UI:** `EventSource` in QueryDialog with state management for progressive display

@@ -1,6 +1,33 @@
 // src/core/types.ts
 // STRICT TAXONOMY: Folder → Document → Fragment
 
+// ============ PORTABLE KNOWLEDGE BASE ============
+
+/**
+ * A self-contained knowledge base with its own content, indexes, and trees.
+ * Can be moved, shared, and versioned independently.
+ */
+export interface KnowledgeBaseConfig {
+  id: string;
+  name: string;
+  organizingPrinciple: string;
+  defaultTreeId?: string;
+  seedFolders?: SeedFolder[];
+  dogma?: {
+    strictness: 'lenient' | 'strict' | 'fanatical';
+    forbiddenConcepts?: string[];
+    requiredContext?: string[];
+  };
+}
+
+/**
+ * Reference to a knowledge base in the main config
+ */
+export interface KnowledgeBaseRef {
+  path: string;           // Path to KB folder (relative or absolute)
+  enabled?: boolean;      // Whether to load this KB (default: true)
+}
+
 // ============ CONFIGURATION ============
 
 export interface FraktagConfig {
@@ -8,7 +35,8 @@ export interface FraktagConfig {
   storagePath: string;
   llm: LLMConfig;
   embedding?: EmbeddingConfig;
-  trees: TreeConfig[];
+  trees: TreeConfig[];                  // Legacy: inline tree definitions
+  knowledgeBases?: KnowledgeBaseRef[];  // New: portable KB references
   ingestion: IngestionConfig;
 }
 
