@@ -27,7 +27,7 @@ export default function KnowledgeTree() {
     const resize = useCallback((e: MouseEvent) => {
         if (isResizing.current) {
             const w = e.clientX;
-            if (w > 250 && w < 800) setSidebarWidth(w);
+            if (w > 250 && w < 1280) setSidebarWidth(w);
         }
     }, []);
 
