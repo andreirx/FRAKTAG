@@ -86,7 +86,42 @@ app.get('/api/trees/:id/folders', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
     const folders = await fraktag.getLeafFolders(req.params.id);
-    res.json(folders);
+    const tree = await fraktag.getFullTree(req.params.id);
+
+    // Build a lookup map of node id -> node for path building
+    const nodeMap = new Map<string, { id: string; title: string; parentId: string | null }>();
+    const buildNodeMap = (node: any) => {
+      nodeMap.set(node.id, { id: node.id, title: node.title, parentId: node.parentId });
+      if (node.children) {
+        node.children.forEach(buildNodeMap);
+      }
+    };
+    buildNodeMap(tree);
+
+    // For each folder, build a human-readable path using titles
+    const enrichedFolders = folders.map(folder => {
+      const pathParts: string[] = [];
+      let currentId: string | null = folder.id;
+
+      while (currentId) {
+        const node = nodeMap.get(currentId);
+        if (node) {
+          pathParts.unshift(node.title);
+          currentId = node.parentId;
+        } else {
+          break;
+        }
+      }
+
+      return {
+        id: folder.id,
+        title: folder.title,
+        gist: folder.gist,
+        path: pathParts.join(' > '),
+      };
+    });
+
+    res.json(enrichedFolders);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
