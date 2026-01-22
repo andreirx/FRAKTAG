@@ -31,6 +31,7 @@ import {
   SplitSquareVertical,
   ChevronsUp,
   ChevronsDown,
+  Regex,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -107,6 +108,11 @@ export function IngestionDialog({
   const [aiSplitLoading, setAiSplitLoading] = useState(false);
   const [sectionSplitLoading, setSectionSplitLoading] = useState<number | null>(null);
 
+  // Custom Split State
+  const [showCustomSplit, setShowCustomSplit] = useState(false);
+  const [customSplitPattern, setCustomSplitPattern] = useState("");
+  const [customSplitError, setCustomSplitError] = useState<string | null>(null);
+
   // Placement State
   const [leafFolders, setLeafFolders] = useState<LeafFolder[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string>("");
@@ -165,6 +171,9 @@ export function IngestionDialog({
     setCommittedNodeId("");
     setAuditLog([]);
     setTransitioningToPlacement(false);
+    setShowCustomSplit(false);
+    setCustomSplitPattern("");
+    setCustomSplitError(null);
   };
 
   // Reset when dialog closes
@@ -803,6 +812,89 @@ export function IngestionDialog({
     }
   };
 
+  // Custom split by user-defined pattern/regex
+  const applyCustomSplit = () => {
+    if (!fileContent || !customSplitPattern.trim()) return;
+
+    setCustomSplitError(null);
+
+    addAuditEntry(
+      "CUSTOM_SPLIT_REQUESTED",
+      `User requested custom split with pattern: "${customSplitPattern}"`,
+      "human"
+    );
+
+    try {
+      // Try to parse as regex (with multiline flag)
+      const regex = new RegExp(`(${customSplitPattern})`, "gm");
+      const matches = [...fileContent.matchAll(regex)];
+
+      if (matches.length === 0) {
+        setCustomSplitError(`No matches found for pattern: "${customSplitPattern}"`);
+        addAuditEntry(
+          "CUSTOM_SPLIT_EMPTY",
+          `No matches found for pattern`,
+          "system"
+        );
+        return;
+      }
+
+      const newSplits: { title: string; text: string }[] = [];
+
+      // Content before first match
+      if (matches[0].index! > 0) {
+        const preamble = fileContent.slice(0, matches[0].index).trim();
+        if (preamble.length > 0) {
+          newSplits.push({ title: "Introduction", text: preamble });
+        }
+      }
+
+      // Each matched section
+      for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const matchedDelimiter = match[1];
+        const startIndex = match.index!;
+        const endIndex = matches[i + 1]?.index ?? fileContent.length;
+        const text = fileContent.slice(startIndex, endIndex).trim();
+
+        // Try to extract a title from the matched delimiter or first line
+        let title = matchedDelimiter.replace(/^#+\s*/, "").trim();
+        if (title.length > 100) title = title.slice(0, 100) + "...";
+        if (title.length < 3 || title === matchedDelimiter) {
+          // Use first substantive line as title
+          const lines = text.split("\n");
+          for (const line of lines.slice(0, 5)) {
+            const trimmed = line.replace(/^[#\-*=\s]+/, "").trim();
+            if (trimmed.length > 3 && trimmed.length < 150) {
+              title = trimmed;
+              break;
+            }
+          }
+          if (title.length < 3) title = `Section ${i + 1}`;
+        }
+
+        newSplits.push({ title, text });
+      }
+
+      if (newSplits.length > 0) {
+        setSplits(newSplits);
+        setShowCustomSplit(false);
+        addAuditEntry(
+          "CUSTOM_SPLIT_COMPLETE",
+          `Created ${newSplits.length} splits using custom pattern`,
+          "system"
+        );
+      }
+    } catch (e: any) {
+      setCustomSplitError(`Invalid regex pattern: ${e.message}`);
+      addAuditEntry(
+        "CUSTOM_SPLIT_ERROR",
+        `Invalid pattern: ${e.message}`,
+        "system"
+      );
+    }
+  };
+
   // Split a SINGLE section with specific method (nested splitting)
   const splitSingleSection = (index: number, method: "h2" | "h3" | "hr" | "num1" | "num2" | "num3" | "num4") => {
     const section = splits[index];
@@ -1425,6 +1517,11 @@ export function IngestionDialog({
               <DropdownMenuItem onClick={() => resplitWithMethod("none")}>
                 No Split (single doc)
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setShowCustomSplit(true)}>
+                <Regex className="w-4 h-4 mr-2" />
+                Custom Pattern...
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -1464,6 +1561,69 @@ export function IngestionDialog({
           <div>
             <div className="text-sm font-medium text-purple-700">AI is analyzing document structure...</div>
             <div className="text-xs text-purple-500">This may take a moment for large documents</div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Split Pattern Input */}
+      {showCustomSplit && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-amber-700">
+              <Regex className="w-4 h-4" />
+              <span className="text-sm font-medium">Custom Split Pattern</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setShowCustomSplit(false);
+                setCustomSplitError(null);
+              }}
+              className="text-amber-600 hover:text-amber-800"
+            >
+              Cancel
+            </Button>
+          </div>
+          <div className="space-y-2">
+            <Input
+              value={customSplitPattern}
+              onChange={(e) => setCustomSplitPattern(e.target.value)}
+              placeholder="Enter regex pattern (e.g., ^## .+ or ^Page \d+ or ^Chapter)"
+              className="font-mono text-sm"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  applyCustomSplit();
+                }
+              }}
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-amber-600">
+                Regex pattern to match section headers. The document will split at each match.
+              </p>
+              <Button
+                size="sm"
+                onClick={applyCustomSplit}
+                disabled={!customSplitPattern.trim()}
+                className="bg-amber-600 hover:bg-amber-700"
+              >
+                <Scissors className="w-4 h-4" />
+                Apply Split
+              </Button>
+            </div>
+            {customSplitError && (
+              <div className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded border border-red-200">
+                {customSplitError}
+              </div>
+            )}
+            <div className="text-xs text-amber-600 bg-amber-100/50 px-3 py-2 rounded">
+              <span className="font-medium">Examples:</span>{" "}
+              <code className="bg-white px-1 rounded">^## .+</code> (H2 headers),{" "}
+              <code className="bg-white px-1 rounded">^Page \d+</code> (page markers),{" "}
+              <code className="bg-white px-1 rounded">^CHAPTER</code> (chapter starts),{" "}
+              <code className="bg-white px-1 rounded">^\*\*\*.+\*\*\*$</code> (bold separators)
+            </div>
           </div>
         </div>
       )}

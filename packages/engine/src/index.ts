@@ -507,6 +507,109 @@ export class Fraktag {
     };
   }
 
+  /**
+   * Streaming version of ask - emits events as sources are found and answer is generated
+   */
+  async askStream(
+    query: string,
+    treeId: string,
+    onEvent: (event: {
+      type: 'source' | 'answer_chunk' | 'done' | 'error';
+      data: any;
+    }) => void
+  ): Promise<void> {
+    console.log(`\n🧠 [Synthesis Streaming] Asking: "${query}"`);
+
+    try {
+      // First, do retrieval and emit sources as we process them
+      const retrieval = await this.retrieve({
+        query,
+        treeId,
+        maxDepth: 5,
+        resolution: 'L2'
+      });
+
+      if (retrieval.nodes.length === 0) {
+        onEvent({
+          type: 'answer_chunk',
+          data: "I explored the knowledge tree but found no relevant information to answer your question."
+        });
+        onEvent({ type: 'done', data: { references: [] } });
+        return;
+      }
+
+      // Process nodes and emit sources as they're discovered
+      const contextBlocks: string[] = [];
+      const references: string[] = [];
+
+      for (let i = 0; i < retrieval.nodes.length; i++) {
+        const node = retrieval.nodes[i];
+        const treeNode = await this.treeStore.getNode(node.nodeId);
+        const title = treeNode?.title || "Untitled Segment";
+
+        let sourceInfo = "";
+        if (node.contentId) {
+          const atom = await this.contentStore.get(node.contentId);
+          if (atom?.sourceUri) {
+            const filename = atom.sourceUri.split('/').pop();
+            sourceInfo = `(File: ${filename})`;
+          }
+        }
+
+        // Emit the source as it's discovered
+        onEvent({
+          type: 'source',
+          data: {
+            index: i + 1,
+            title,
+            path: node.path,
+            sourceInfo,
+            preview: node.content.slice(0, 200) + (node.content.length > 200 ? '...' : '')
+          }
+        });
+
+        contextBlocks.push(`--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`);
+        references.push(node.path);
+      }
+
+      const context = contextBlocks.join('\n\n');
+
+      const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
+
+    Guidelines:
+    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
+    - Use the Titles provided in the context to explain where information comes from.
+    - If the context mentions specific terms, define them as the text does.
+    - Do not use outside knowledge. If the answer isn't in the text, say so.
+
+    Context:
+    ${context}
+
+    Question: ${query}
+
+    Answer:`;
+
+      console.log(`   📝 Streaming answer from ${retrieval.nodes.length} sources...`);
+
+      // Check if the LLM adapter supports streaming
+      if (this.smartLlm.stream) {
+        await this.smartLlm.stream(prompt, {}, (chunk) => {
+          onEvent({ type: 'answer_chunk', data: chunk });
+        });
+      } else {
+        // Fallback to non-streaming
+        const answer = await this.smartLlm.complete(prompt, {});
+        onEvent({ type: 'answer_chunk', data: answer });
+      }
+
+      onEvent({ type: 'done', data: { references } });
+
+    } catch (error: any) {
+      console.error('askStream error:', error);
+      onEvent({ type: 'error', data: error.message || 'Unknown error' });
+    }
+  }
+
   // ============ MAINTENANCE ============
 
   async verifyTree(treeId: string): Promise<VerificationResult> {

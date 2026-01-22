@@ -240,4 +240,114 @@ export class OpenAIAdapter implements ILLMAdapter {
             return response.ok;
         } catch { return false; }
     }
+
+    /**
+     * Stream a completion, calling onChunk for each piece of text received
+     */
+    async stream(
+        prompt: string,
+        variables: Record<string, string | number | string[]>,
+        onChunk: (chunk: string) => void,
+        options?: { maxTokens?: number }
+    ): Promise<string> {
+        const processedVars: Record<string, string | number> = {};
+        for (const [key, value] of Object.entries(variables)) {
+            processedVars[key] = Array.isArray(value) ? value.join('\n') : value;
+        }
+
+        const finalPrompt = substituteTemplate(prompt, processedVars);
+
+        const body: any = {
+            model: this.model,
+            messages: [{ role: 'user', content: finalPrompt }],
+            stream: true,
+        };
+
+        const isGPT5 = this.model.includes('gpt-5') || this.model.includes('o3') || this.model.includes('o4');
+        if (!isGPT5) {
+            body.temperature = 0.3;
+        }
+
+        if (options?.maxTokens && options.maxTokens > 0) {
+            body.max_completion_tokens = options.maxTokens;
+        }
+
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), this.timeoutMs);
+
+        try {
+            const response = await fetch(`${this.endpoint}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+
+            clearTimeout(id);
+
+            if (!response.ok) {
+                const err = await response.text();
+                throw new Error(`OpenAI API error (${response.status}): ${err}`);
+            }
+            if (!response.body) throw new Error('No response body');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (value) {
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = done ? '' : lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed || trimmed === 'data: [DONE]') continue;
+                        if (trimmed.startsWith('data: ')) {
+                            try {
+                                const json = JSON.parse(trimmed.slice(6));
+                                const content = json.choices[0]?.delta?.content || '';
+                                if (content) {
+                                    fullText += content;
+                                    onChunk(content);
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                }
+                if (done) break;
+            }
+
+            // Flush remaining buffer
+            if (buffer.trim()) {
+                const trimmed = buffer.trim();
+                if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+                    try {
+                        const json = JSON.parse(trimmed.slice(6));
+                        const content = json.choices[0]?.delta?.content || '';
+                        if (content) {
+                            fullText += content;
+                            onChunk(content);
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            return this.cleanOutput(fullText);
+
+        } catch (error: any) {
+            if (error.name === 'AbortError') {
+                throw new Error(`Request timed out after ${this.timeoutMs}ms`);
+            }
+            throw error;
+        } finally {
+            clearTimeout(id);
+        }
+    }
 }

@@ -361,6 +361,60 @@ app.post('/api/ask', async (req, res) => {
   }
 });
 
+// Streaming ask endpoint using Server-Sent Events
+app.get('/api/ask/stream', async (req, res) => {
+  if (!fraktag) {
+    res.status(503).json({ error: "Engine not ready" });
+    return;
+  }
+
+  const { query, treeId } = req.query;
+  if (!query || typeof query !== 'string') {
+    res.status(400).json({ error: 'query is required' });
+    return;
+  }
+
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  // Helper to send SSE events
+  const sendEvent = (event: string, data: any) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    await fraktag.askStream(
+      query,
+      (treeId as string) || 'notes',
+      (event) => {
+        switch (event.type) {
+          case 'source':
+            sendEvent('source', event.data);
+            break;
+          case 'answer_chunk':
+            sendEvent('chunk', { text: event.data });
+            break;
+          case 'done':
+            sendEvent('done', event.data);
+            break;
+          case 'error':
+            sendEvent('error', { message: event.data });
+            break;
+        }
+      }
+    );
+  } catch (e: any) {
+    sendEvent('error', { message: e.message || 'Unknown error' });
+  } finally {
+    res.end();
+  }
+});
+
 app.post('/api/browse', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
