@@ -282,6 +282,101 @@ export function IngestionDialog({
 
   // ============ SPLITS STEP ============
 
+  // Helper: Detect uncovered content after AI splits and add remaining text as extra sections
+  const ensureFullCoverage = (
+    originalText: string,
+    proposedSplits: { title: string; text: string }[]
+  ): { title: string; text: string }[] => {
+    if (proposedSplits.length === 0) return proposedSplits;
+
+    // Normalize text for comparison (trim whitespace, normalize line endings)
+    const normalize = (s: string) => s.replace(/\r\n/g, '\n').trim();
+    const originalNormalized = normalize(originalText);
+
+    // Track which parts of the original are covered
+    let coveredLength = 0;
+    const uncoveredParts: { text: string; position: 'start' | 'middle' | 'end'; afterIndex: number }[] = [];
+
+    // Find where each split appears in the original
+    let searchStart = 0;
+    for (let i = 0; i < proposedSplits.length; i++) {
+      const split = proposedSplits[i];
+      const splitNormalized = normalize(split.text);
+
+      // Look for this split's text in the original (use first 200 chars for matching to handle minor differences)
+      const searchChunk = splitNormalized.slice(0, 200);
+      const foundIndex = originalNormalized.indexOf(searchChunk, searchStart);
+
+      if (foundIndex >= 0) {
+        // Check for uncovered content before this split
+        if (foundIndex > searchStart) {
+          const uncoveredText = originalNormalized.slice(searchStart, foundIndex).trim();
+          if (uncoveredText.length > 50) { // Only capture significant content
+            uncoveredParts.push({
+              text: uncoveredText,
+              position: i === 0 ? 'start' : 'middle',
+              afterIndex: i - 1,
+            });
+          }
+        }
+        searchStart = foundIndex + splitNormalized.length;
+        coveredLength += splitNormalized.length;
+      }
+    }
+
+    // Check for uncovered content after the last split
+    if (searchStart < originalNormalized.length) {
+      const remainingText = originalNormalized.slice(searchStart).trim();
+      if (remainingText.length > 50) { // Only capture significant content
+        uncoveredParts.push({
+          text: remainingText,
+          position: 'end',
+          afterIndex: proposedSplits.length - 1,
+        });
+      }
+    }
+
+    // If no uncovered content, return as-is
+    if (uncoveredParts.length === 0) return proposedSplits;
+
+    // Build the result with uncovered parts inserted
+    const result: { title: string; text: string }[] = [];
+
+    // Handle start uncovered content
+    const startPart = uncoveredParts.find(p => p.position === 'start');
+    if (startPart) {
+      result.push({
+        title: 'Introduction (Auto-recovered)',
+        text: startPart.text,
+      });
+    }
+
+    // Add splits with middle uncovered content
+    for (let i = 0; i < proposedSplits.length; i++) {
+      result.push(proposedSplits[i]);
+
+      // Check for uncovered content after this split
+      const middlePart = uncoveredParts.find(p => p.position === 'middle' && p.afterIndex === i);
+      if (middlePart) {
+        result.push({
+          title: `Uncovered Content ${i + 1} (Auto-recovered)`,
+          text: middlePart.text,
+        });
+      }
+    }
+
+    // Handle end uncovered content
+    const endPart = uncoveredParts.find(p => p.position === 'end');
+    if (endPart) {
+      result.push({
+        title: 'Remaining Content (Auto-recovered)',
+        text: endPart.text,
+      });
+    }
+
+    return result;
+  };
+
   const handleAiSplits = async () => {
     if (!fileContent) return;
 
@@ -295,12 +390,25 @@ export function IngestionDialog({
       });
 
       const aiSplits = res.data.splits || [];
-      setSplits(aiSplits);
+
+      // Ensure full coverage - detect and add any uncovered content
+      const completeSplits = ensureFullCoverage(fileContent, aiSplits);
+      const recoveredCount = completeSplits.length - aiSplits.length;
+
+      setSplits(completeSplits);
       addAuditEntry(
         "AI_SPLITS_GENERATED",
-        `AI proposed ${aiSplits.length} splits`,
+        `AI proposed ${aiSplits.length} splits${recoveredCount > 0 ? `, auto-recovered ${recoveredCount} uncovered section(s)` : ''}`,
         "ai"
       );
+
+      if (recoveredCount > 0) {
+        addAuditEntry(
+          "CONTENT_RECOVERED",
+          `Detected ${recoveredCount} section(s) of content not covered by AI splits - automatically added`,
+          "system"
+        );
+      }
     } catch (err: any) {
       console.error("AI split failed:", err);
       addAuditEntry("AI_SPLITS_ERROR", err.message || "Failed", "ai");
@@ -642,17 +750,29 @@ export function IngestionDialog({
       const aiSplits = res.data.splits || [];
 
       if (aiSplits.length > 1) {
+        // Ensure full coverage - detect and add any uncovered content
+        const completeSplits = ensureFullCoverage(section.text, aiSplits);
+        const recoveredCount = completeSplits.length - aiSplits.length;
+
         // Replace the single section with AI-generated sub-sections
         setSplits((prev) => {
           const updated = [...prev];
-          updated.splice(index, 1, ...aiSplits);
+          updated.splice(index, 1, ...completeSplits);
           return updated;
         });
         addAuditEntry(
           "SECTION_AI_SPLIT_COMPLETE",
-          `AI split section ${index + 1} into ${aiSplits.length} sub-sections`,
+          `AI split section ${index + 1} into ${aiSplits.length} sub-sections${recoveredCount > 0 ? `, auto-recovered ${recoveredCount} uncovered part(s)` : ''}`,
           "ai"
         );
+
+        if (recoveredCount > 0) {
+          addAuditEntry(
+            "CONTENT_RECOVERED",
+            `Detected ${recoveredCount} part(s) of section not covered by AI splits - automatically added`,
+            "system"
+          );
+        }
       } else {
         addAuditEntry(
           "SECTION_AI_SPLIT_SINGLE",
@@ -1118,14 +1238,19 @@ export function IngestionDialog({
             variant="outline"
             size="sm"
             onClick={handleAiSplits}
-            disabled={aiSplitLoading}
+            disabled={aiSplitLoading || sectionSplitLoading !== null}
           >
             {aiSplitLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                AI analyzing...
+              </>
             ) : (
-              <Sparkles className="w-4 h-4" />
+              <>
+                <Sparkles className="w-4 h-4" />
+                AI Split
+              </>
             )}
-            AI Split
           </Button>
 
           <Button variant="outline" size="sm" onClick={mergeSplits}>
@@ -1136,6 +1261,17 @@ export function IngestionDialog({
           </Button>
         </div>
       </div>
+
+      {/* AI Loading Banner */}
+      {aiSplitLoading && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg px-4 py-3 flex items-center gap-3">
+          <Loader2 className="w-5 h-5 animate-spin text-purple-600" />
+          <div>
+            <div className="text-sm font-medium text-purple-700">AI is analyzing document structure...</div>
+            <div className="text-xs text-purple-500">This may take a moment for large documents</div>
+          </div>
+        </div>
+      )}
 
       {/* Main content area with minimap */}
       <div className="flex-1 flex gap-4 min-h-[300px]">
@@ -1152,6 +1288,17 @@ export function IngestionDialog({
             >
               {/* Color bar matching minimap */}
               <div className={`absolute left-0 top-0 bottom-0 w-1 ${getSplitColor(index)}`} />
+
+              {/* Loading overlay for section AI split */}
+              {sectionSplitLoading === index && (
+                <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex items-center justify-center">
+                  <div className="flex items-center gap-2 text-purple-600 bg-purple-50 px-4 py-2 rounded-lg shadow-sm">
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="text-sm font-medium">AI analyzing section...</span>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-start gap-3 pl-2">
                 <div className="pt-2 text-zinc-300 cursor-grab">
                   <GripVertical className="w-4 h-4" />
