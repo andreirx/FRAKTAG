@@ -89,14 +89,11 @@ app.get('/api/trees/:id/folders', async (req, res) => {
     const tree = await fraktag.getFullTree(req.params.id);
 
     // Build a lookup map of node id -> node for path building
+    // getFullTree returns { config, nodes } where nodes is a flat Record<string, node>
     const nodeMap = new Map<string, { id: string; title: string; parentId: string | null }>();
-    const buildNodeMap = (node: any) => {
+    for (const node of Object.values(tree.nodes)) {
       nodeMap.set(node.id, { id: node.id, title: node.title, parentId: node.parentId });
-      if (node.children) {
-        node.children.forEach(buildNodeMap);
-      }
-    };
-    buildNodeMap(tree);
+    }
 
     // For each folder, build a human-readable path using titles
     const enrichedFolders = folders.map(folder => {
@@ -111,6 +108,11 @@ app.get('/api/trees/:id/folders', async (req, res) => {
         } else {
           break;
         }
+      }
+
+      // Fallback: if path building failed, use folder title
+      if (pathParts.length === 0) {
+        pathParts.push(folder.title);
       }
 
       return {
