@@ -1,6 +1,9 @@
+// packages/engine/src/core/Arborist.ts
+// Tree Maintenance - Updated for Strict Taxonomy
+
 import { TreeStore } from './TreeStore.js';
 import { VectorStore } from './VectorStore.js';
-import { TreeNode } from './types.js';
+import { TreeNode, FolderNode } from './types.js';
 import { randomUUID } from 'crypto';
 
 export type TreeOperation =
@@ -40,19 +43,15 @@ export class Arborist {
         const newParent = await this.treeStore.getNodeFromTree(treeId, newParentId);
         if (!newParent) throw new Error(`Target Parent ${newParentId} not found`);
 
-        // Use TreeStore's native move logic
         await this.treeStore.moveNode(nodeId, newParentId);
 
-        // We might want to update the vector index if the path is part of the embedding,
-        // but currently we embed "Gist + Content", so moving doesn't invalidate the vector signature.
-        // However, we DO need to save the tree state.
-
-        // Note: TreeStore.moveNode saves the node, but we should ensure the tree file is synced if needed.
-        // Since our TreeStore saves the whole file on saveNode, we are good.
-
-        return `Moved "${node.l0Gist}" to parent "${newParent.l0Gist}"`;
+        return `Moved "${node.title}" to parent "${newParent.title}"`;
     }
 
+    /**
+     * CLUSTER: Group multiple nodes under a new folder.
+     * Note: This may fail if nodes are of different types (folders vs documents).
+     */
     private async clusterNodes(treeId: string, targetIds: string[], newParentName: string): Promise<string> {
         const nodes: TreeNode[] = [];
         for (const id of targetIds) {
@@ -65,33 +64,28 @@ export class Arborist {
 
         // Anchor to the first node's parent
         const anchorParentId = nodes[0].parentId;
-        const anchorParent = anchorParentId ? await this.treeStore.getNodeFromTree(treeId, anchorParentId) : null;
-        const parentPath = anchorParent ? anchorParent.path : '/';
+        if (!anchorParentId) throw new Error("Cannot cluster root nodes");
 
-        // Create Container
-        const containerId = randomUUID();
-        const container: TreeNode = {
-            id: containerId,
+        const anchorParent = await this.treeStore.getNodeFromTree(treeId, anchorParentId);
+        if (!anchorParent) throw new Error("Parent not found");
+
+        // Create new folder container
+        const folder = await this.treeStore.createFolder(
             treeId,
-            parentId: anchorParentId,
-            path: `${parentPath}${containerId}`,
-            contentId: null,
-            l0Gist: newParentName,
-            l1Map: null,
-            sortOrder: nodes[0].sortOrder,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-        };
+            anchorParentId,
+            newParentName,
+            `Container for clustered nodes: ${nodes.map(n => n.title).join(', ').slice(0, 100)}`
+        );
 
-        await this.treeStore.saveNode(container);
-        await this.vectorStore.add(containerId, `Category: ${newParentName}`);
+        await this.vectorStore.add(folder.id, `Category: ${newParentName}`);
 
-        // Move Children
+        // Move children to new folder
         for (const node of nodes) {
-            node.parentId = containerId;
-            node.path = `${container.path}/${node.id}`;
-            node.updatedAt = new Date().toISOString();
-            await this.treeStore.saveNode(node);
+            try {
+                await this.treeStore.moveNode(node.id, folder.id);
+            } catch (e: any) {
+                console.warn(`Could not move node ${node.id}: ${e.message}`);
+            }
         }
 
         await this.vectorStore.save(treeId);
@@ -99,26 +93,30 @@ export class Arborist {
     }
 
     private async pruneNode(treeId: string, nodeId: string): Promise<string> {
+        const node = await this.treeStore.getNodeFromTree(treeId, nodeId);
+        const nodeName = node?.title || nodeId;
+
         await this.treeStore.deleteNode(nodeId);
         await this.vectorStore.remove(nodeId);
         await this.vectorStore.save(treeId);
-        return `Deleted node ${nodeId}`;
+
+        return `Deleted node "${nodeName}"`;
     }
 
     private async renameNode(treeId: string, nodeId: string, newName: string): Promise<string> {
         const node = await this.treeStore.getNodeFromTree(treeId, nodeId);
         if (!node) throw new Error(`Node ${nodeId} not found`);
 
-        const oldName = node.l0Gist;
-        node.l0Gist = newName;
+        const oldName = node.title;
+        node.title = newName;
         node.updatedAt = new Date().toISOString();
 
         await this.vectorStore.remove(nodeId);
-        await this.vectorStore.add(nodeId, `Gist: ${newName}\n(Renamed from ${oldName})`);
+        await this.vectorStore.add(nodeId, `Title: ${newName}\nGist: ${node.gist}`);
 
         await this.treeStore.saveNode(node);
         await this.vectorStore.save(treeId);
 
-        return `Renamed "${oldName.slice(0,20)}..." to "${newName}"`;
+        return `Renamed "${oldName.slice(0, 20)}..." to "${newName}"`;
     }
 }

@@ -1,4 +1,5 @@
 // src/index.ts
+// FRAKTAG ENGINE - Strict Taxonomy Edition
 
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
@@ -22,7 +23,13 @@ import {
   ContentAtom,
   Tree,
   TreeNode,
-  VerificationResult, EmbeddingConfig,
+  FolderNode,
+  DocumentNode,
+  VerificationResult,
+  EmbeddingConfig,
+  SplitAnalysis,
+  isFolder,
+  hasContent
 } from './core/types.js';
 import { IEmbeddingAdapter } from './adapters/embeddings/IEmbeddingAdapter.js';
 import { OllamaEmbeddingAdapter } from './adapters/embeddings/OllamaEmbeddingAdapter.js';
@@ -30,9 +37,8 @@ import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAda
 import { VectorStore } from './core/VectorStore.js';
 import { Arborist, TreeOperation } from './core/Arborist.js';
 
-
 /**
- * Fraktag Engine - Multi-resolution knowledge management
+ * Fraktag Engine - Strict Taxonomy Knowledge Management
  */
 export class Fraktag {
   private config: FraktagConfig;
@@ -53,24 +59,21 @@ export class Fraktag {
     this.config = config;
     this.storage = storage;
 
-    // 1. Initialize Smart LLM (The Brain)
+    // Initialize LLM adapters
     this.smartLlm = this.createLLMAdapter(config.llm);
 
-    // 2. Initialize Basic LLM (The Worker)
     if (config.llm.basicModel) {
-      // Clone config but swap model
       const basicConfig = { ...config.llm, model: config.llm.basicModel };
       this.basicLlm = this.createLLMAdapter(basicConfig);
     } else {
-      this.basicLlm = this.smartLlm; // Fallback
+      this.basicLlm = this.smartLlm;
     }
 
-    // 3. Initialize Expert (Sage) - NEW
     if (config.llm.expertModel) {
       const expertConfig = { ...config.llm, model: config.llm.expertModel };
       this.expertLlm = this.createLLMAdapter(expertConfig);
     } else {
-      this.expertLlm = this.smartLlm; // Fallback to standard if no expert defined
+      this.expertLlm = this.smartLlm;
     }
 
     // Initialize stores
@@ -93,8 +96,8 @@ export class Fraktag {
       this.contentStore,
       this.treeStore,
       this.vectorStore,
-      this.basicLlm, // <--- Use Basic for fast tasks
-      this.smartLlm, // <--- Use Smart for hard tasks
+      this.basicLlm,
+      this.smartLlm,
       config.ingestion,
       prompts
     );
@@ -103,15 +106,15 @@ export class Fraktag {
       this.contentStore,
       this.treeStore,
       this.vectorStore,
-      this.basicLlm // <--- Navigator uses Basic for speed
+      this.basicLlm
     );
   }
 
   private createEmbeddingAdapter(config?: EmbeddingConfig): IEmbeddingAdapter {
     if (!config || config.adapter === 'ollama') {
       return new OllamaEmbeddingAdapter(
-          config?.endpoint,
-          config?.model || 'nomic-embed-text'
+        config?.endpoint,
+        config?.model || 'nomic-embed-text'
       );
     }
     if (config.adapter === 'openai') {
@@ -121,26 +124,22 @@ export class Fraktag {
     throw new Error(`Unknown embedding adapter: ${config.adapter}`);
   }
 
-  /**
-   * Initialize Fraktag from a config file
-   */
+  // ============ FACTORY METHODS ============
+
   static async fromConfigFile(configPath: string): Promise<Fraktag> {
     try {
       const absolutePath = resolve(configPath);
       const configContent = await readFile(absolutePath, 'utf-8');
       const config: FraktagConfig = JSON.parse(configContent);
 
-      // Resolve storage path relative to config file location
       const storagePath = resolve(absolutePath, '..', config.storagePath);
       const storage = new JsonStorage(storagePath);
 
-      // Ensure storage directories exist
       await storage.ensureDir('content');
       await storage.ensureDir('trees');
+      await storage.ensureDir('indexes');
 
       const instance = new Fraktag(config, storage);
-
-      // Initialize trees if they don't exist
       await instance.initializeTrees();
 
       return instance;
@@ -152,13 +151,11 @@ export class Fraktag {
     }
   }
 
-  /**
-   * Initialize Fraktag with direct config
-   */
   static async fromConfig(config: FraktagConfig): Promise<Fraktag> {
     const storage = new JsonStorage(config.storagePath);
     await storage.ensureDir('content');
     await storage.ensureDir('trees');
+    await storage.ensureDir('indexes');
 
     const instance = new Fraktag(config, storage);
     await instance.initializeTrees();
@@ -166,12 +163,109 @@ export class Fraktag {
     return instance;
   }
 
-  // ============ INGESTION ============
+  // ============ TREE MANAGEMENT ============
+
+  async listTrees(): Promise<Tree[]> {
+    return await this.treeStore.listTrees();
+  }
+
+  async getTree(treeId: string): Promise<Tree> {
+    return await this.treeStore.getTree(treeId);
+  }
+
+  async getFullTree(treeId: string): Promise<{ config: any, nodes: Record<string, any> }> {
+    return await this.treeStore.getTreeFile(treeId);
+  }
+
+  async printTree(treeId: string): Promise<string> {
+    return await this.treeStore.generateVisualTree(treeId);
+  }
+
+  async getLeafFolders(treeId: string): Promise<FolderNode[]> {
+    return await this.treeStore.getLeafFolders(treeId);
+  }
+
+  // ============ FOLDER MANAGEMENT ============
+
+  async createFolder(treeId: string, parentId: string, title: string, gist: string): Promise<FolderNode> {
+    return await this.treeStore.createFolder(treeId, parentId, title, gist);
+  }
+
+  // ============ INGESTION (Human-Assisted Workflow) ============
 
   /**
-   * Ingest raw content
+   * PHASE 1: Analyze content for splitting (programmatic, no AI)
+   */
+  analyzeSplits(content: string, sourceUri: string): SplitAnalysis {
+    return this.fractalizer.analyzeSplits(content, sourceUri);
+  }
+
+  /**
+   * PHASE 2: Ingest a document into a specific folder
+   */
+  async ingestDocument(
+    content: string,
+    treeId: string,
+    parentFolderId: string,
+    title: string,
+    gist?: string
+  ): Promise<DocumentNode> {
+    return await this.fractalizer.ingestDocument(content, treeId, parentFolderId, title, gist);
+  }
+
+  /**
+   * PHASE 3: Create fragments under a document
+   */
+  async createFragment(
+    content: string,
+    treeId: string,
+    parentDocumentId: string,
+    title: string,
+    gist?: string
+  ) {
+    return await this.fractalizer.createFragment(content, treeId, parentDocumentId, title, gist);
+  }
+
+  /**
+   * Generate a gist for content
+   */
+  async generateGist(content: string, treeId: string): Promise<string> {
+    return await this.fractalizer.generateGist(content, treeId);
+  }
+
+  /**
+   * Generate a title for content
+   */
+  async generateTitle(content: string, treeId: string): Promise<string> {
+    return await this.fractalizer.generateTitle(content, treeId);
+  }
+
+  /**
+   * AI-assisted split generation
+   */
+  async generateAiSplits(content: string, treeId: string): Promise<{ title: string; text: string }[]> {
+    return await this.fractalizer.generateAiSplits(content, treeId);
+  }
+
+  /**
+   * Propose placement for a document in the tree
+   */
+  async proposePlacement(treeId: string, documentTitle: string, documentGist: string): Promise<{
+    folderId: string;
+    reasoning: string;
+    confidence: number;
+  }> {
+    return await this.fractalizer.proposePlacement(treeId, documentTitle, documentGist);
+  }
+
+  // ============ LEGACY INGESTION (Deprecated) ============
+
+  /**
+   * @deprecated Use ingestDocument with explicit folder placement
    */
   async ingest(request: IngestRequest): Promise<IngestResult> {
+    console.warn('Fraktag.ingest() is deprecated. Use ingestDocument() with explicit placement.');
+
     const targetTrees = request.targetTrees && request.targetTrees.length > 0
       ? request.targetTrees
       : this.config.trees.filter(t => t.autoPlace).map(t => t.id);
@@ -186,251 +280,153 @@ export class Fraktag {
     for (const treeId of targetTrees) {
       const tree = await this.treeStore.getTree(treeId);
 
-      if (request.parentNodeId) {
-        // Explicit placement
-        const node = await this.fractalizer.ingest(
-          request.content,
-          treeId,
-          request.parentNodeId,
-          '',
-          0
-        );
-        contentId = node.contentId ?? '';
-        placements.push({
-          treeId,
-          nodeId: node.id,
-          path: node.path,
-        });
-      } else {
-        // Auto-placement: let fractalizer intelligently place content
-        const node = await this.fractalizer.ingest(
-          request.content,
-          treeId,
-          null, // Triggers auto-placement logic
-          '',
-          0
-        );
+      // Find a leaf folder to place content
+      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+      const targetFolder = request.parentNodeId || (leafFolders.length > 0 ? leafFolders[0].id : tree.rootNodeId);
 
-        contentId = node.contentId ?? '';
-        placements.push({
-          treeId,
-          nodeId: node.id,
-          path: node.path,
-        });
-      }
+      const title = await this.fractalizer.generateTitle(request.content, treeId);
+      const node = await this.fractalizer.ingestDocument(request.content, treeId, targetFolder, title);
+
+      contentId = node.contentId;
+      placements.push({
+        treeId,
+        nodeId: node.id,
+        path: node.path,
+      });
     }
 
     return { contentId, placements };
   }
 
   /**
-   * Ingest from URL
-   */
-  async ingestUrl(url: string, options?: Partial<IngestRequest>): Promise<IngestResult> {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch URL: ${response.statusText}`);
-      }
-
-      const content = await response.text();
-
-      return await this.ingest({
-        content,
-        sourceUri: url,
-        mediaType: response.headers.get('content-type') ?? 'text/plain',
-        ...options,
-      });
-    } catch (error) {
-      throw new Error(`Failed to ingest URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  /**
-   * Upsert content (Update if exists, Insert if new)
-   * Ideal for syncing from external sources like Apple Notes
-   * @param request - Standard ingest request with externalId for tracking
-   * @returns IngestResult with placement information
+   * @deprecated Use ingestDocument with upsert logic in application layer
    */
   async upsert(request: IngestRequest & { externalId: string }): Promise<IngestResult> {
-    // Use sourceUri as the primary tracking key
-    const uri = request.sourceUri || `external:${request.externalId}`;
-    console.log(`📦 [Upsert] Processing: ${uri}`);
-
-    // Look for existing content with this sourceUri
-    const allContentIds = await this.contentStore.listIds();
-    let existingAtom: ContentAtom | null = null;
-
-    for (const id of allContentIds) {
-      const atom = await this.contentStore.get(id);
-      if (atom && atom.sourceUri === uri) {
-        existingAtom = atom;
-        break;
-      }
-    }
-
-    if (existingAtom) {
-      const newHash = this.contentStore.calculateHash(request.content);
-
-      if (existingAtom.hash === newHash) {
-        console.log(`   ⏭️  Content unchanged. Skipping.`);
-        // Return existing placement
-        const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
-        return {
-          contentId: existingAtom.id,
-          placements: nodes.map(n => ({ treeId: n.treeId, nodeId: n.id, path: n.path })),
-        };
-      }
-
-      console.log(`   🔄 Content changed! Creating Version ${new Date().toISOString()}`);
-
-      // 1. Create New Atom (Versioned)
-      const newAtom = await this.contentStore.create({
-        payload: request.content,
-        mediaType: request.mediaType || existingAtom.mediaType,
-        sourceUri: uri,
-        createdBy: existingAtom.createdBy,
-        supersedes: existingAtom.id, // Linked list of history
-        metadata: { ...existingAtom.metadata, ...request.metadata },
-      });
-
-      // 2. Find all nodes using the OLD content
-      const nodes = await this.treeStore.findNodesByContent(existingAtom.id);
-      const placements: IngestResult['placements'] = [];
-
-      // 3. Mutate the Nodes (In-Place Update)
-      for (const node of nodes) {
-        // Use the Fractalizer to handle the heavy lifting (Gist regen, Vector update, Bubble Up)
-        await this.fractalizer.updateNode(node.id, newAtom.id, request.content);
-
-        placements.push({
-          treeId: node.treeId,
-          nodeId: node.id,
-          path: node.path
-        });
-      }
-
-      return { contentId: newAtom.id, placements };
-    }
-
-    console.log(`   ➔ New content detected. Triggering Ingest...`);
-    // New content - use standard ingest with sourceUri
-    return this.ingest({ ...request, sourceUri: uri });
+    console.warn('Fraktag.upsert() is deprecated.');
+    return await this.ingest(request);
   }
 
   // ============ RETRIEVAL ============
 
-  /**
-   * Query-driven retrieval
-   */
   async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
     return await this.navigator.retrieve(request);
   }
 
-  /**
-   * Manual browsing
-   */
   async browse(request: BrowseRequest): Promise<BrowseResult> {
     return await this.navigator.browse(request);
   }
 
-  /**
-   * Direct content fetch
-   */
   async getContent(contentId: string): Promise<ContentAtom | null> {
     return await this.contentStore.get(contentId);
   }
 
-  // ============ TREE MANAGEMENT ============
+  // ============ NODE OPERATIONS ============
 
   /**
-   * List all trees
+   * Update node title and/or gist
    */
-  async listTrees(): Promise<Tree[]> {
-    return await this.treeStore.listTrees();
-  }
+  async updateNode(nodeId: string, updates: { title?: string; gist?: string }): Promise<TreeNode> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) throw new Error(`Node ${nodeId} not found`);
 
-  /**
-   * Create organizational node
-   */
-  async createNode(treeId: string, parentId: string | null, name: string): Promise<TreeNode> {
-    const tree = await this.treeStore.getTree(treeId);
-    const parent = parentId ? await this.treeStore.getNode(parentId) : null;
-
-    const nodeId = name.toLowerCase().replace(/\s+/g, '-');
-    const path = parent ? `${parent.path}${nodeId}/` : `/${nodeId}`;
-
-    const node: TreeNode = {
-      id: nodeId,
-      treeId,
-      parentId,
-      path,
-      contentId: null,
-      l0Gist: name,
-      l1Map: null,
-      sortOrder: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    if (updates.title !== undefined) {
+      node.title = updates.title;
+    }
+    if (updates.gist !== undefined) {
+      node.gist = updates.gist;
+    }
+    node.updatedAt = new Date().toISOString();
 
     await this.treeStore.saveNode(node);
 
-    if (parentId) {
-      await this.fractalizer.regenerateSummaries(parentId);
+    // Update vector index with new title/gist
+    await this.vectorStore.remove(nodeId);
+    let indexText = `${node.title}\n${node.gist}`;
+    if (hasContent(node)) {
+      const content = await this.contentStore.get(node.contentId);
+      if (content) {
+        indexText += `\n${content.payload.slice(0, 500)}`;
+      }
     }
+    await this.vectorStore.add(nodeId, indexText);
+    await this.vectorStore.save(node.treeId);
 
     return node;
   }
 
-  /**
-   * Move node to different parent
-   */
-  async moveNode(nodeId: string, newParentId: string): Promise<TreeNode> {
-    const node = await this.treeStore.moveNode(nodeId, newParentId);
+  // ============ ASK (RAG/KAG Synthesis) ============
 
-    // Regenerate summaries for both old and new parents
-    if (node.parentId) {
-      await this.fractalizer.regenerateSummaries(node.parentId);
+  async ask(query: string, treeId: string = 'notes'): Promise<{ answer: string; references: string[] }> {
+    console.log(`\n🧠 [Synthesis] Asking: "${query}"`);
+
+    const retrieval = await this.retrieve({
+      query,
+      treeId,
+      maxDepth: 5,
+      resolution: 'L2'
+    });
+
+    if (retrieval.nodes.length === 0) {
+      return {
+        answer: "I explored the knowledge tree but found no relevant information to answer your question.",
+        references: []
+      };
     }
 
-    return node;
-  }
+    const contextPromises = retrieval.nodes.map(async (node, i) => {
+      const treeNode = await this.treeStore.getNode(node.nodeId);
+      const title = treeNode?.title || "Untitled Segment";
 
-  /**
-   * Link existing content to additional tree
-   */
-  async placeContent(contentId: string, treeId: string, parentNodeId: string): Promise<TreeNode> {
-    const content = await this.contentStore.get(contentId);
-    if (!content) {
-      throw new Error(`Content not found: ${contentId}`);
-    }
+      let sourceInfo = "";
+      if (node.contentId) {
+        const atom = await this.contentStore.get(node.contentId);
+        if (atom?.sourceUri) {
+          const filename = atom.sourceUri.split('/').pop();
+          sourceInfo = `(File: ${filename})`;
+        }
+      }
 
-    const tree = await this.treeStore.getTree(treeId);
-    const gist = await this.basicLlm.complete(
-      DEFAULT_PROMPTS.generateGist,
-      { content: content.payload, organizingPrinciple: tree.organizingPrinciple }
-    );
+      console.log(`   📄 [${i+1}] ${title.slice(0, 160)}${title.length > 160 ? '...' : ''} ${sourceInfo}`);
 
-    return await this.fractalizer.autoPlace(contentId, gist, treeId);
+      return `--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`;
+    });
+
+    const contextBlocks = await Promise.all(contextPromises);
+    const context = contextBlocks.join('\n\n');
+
+    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
+
+    Guidelines:
+    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
+    - Use the Titles provided in the context to explain where information comes from.
+    - If the context mentions specific terms, define them as the text does.
+    - Do not use outside knowledge. If the answer isn't in the text, say so.
+
+    Context:
+    ${context}
+
+    Question: ${query}
+
+    Answer:`;
+
+    console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
+
+    const answer = await this.smartLlm.complete(prompt, {});
+
+    return {
+      answer,
+      references: retrieval.nodes.map(n => n.path)
+    };
   }
 
   // ============ MAINTENANCE ============
 
-  /**
-   * Regenerate L0/L1 for node and ancestors
-   */
-  async regenerateSummaries(nodeId: string): Promise<void> {
-    await this.fractalizer.regenerateSummaries(nodeId);
-  }
-
-  /**
-   * Verify tree integrity
-   */
   async verifyTree(treeId: string): Promise<VerificationResult> {
     const result: VerificationResult = {
       valid: true,
       orphanNodes: [],
       missingContentRefs: [],
+      constraintViolations: [],
       errors: [],
     };
 
@@ -438,10 +434,10 @@ export class Fraktag {
       const tree = await this.treeStore.getTree(treeId);
       const allNodes = await this.treeStore.getAllNodes(treeId);
 
-      // Check for orphan nodes (nodes with invalid parent references)
       for (const node of allNodes) {
         if (node.id === tree.rootNodeId) continue;
 
+        // Check orphan nodes
         if (node.parentId) {
           const parent = await this.treeStore.getNode(node.parentId);
           if (!parent) {
@@ -450,12 +446,31 @@ export class Fraktag {
           }
         }
 
-        // Check for missing content references
-        if (node.contentId) {
+        // Check missing content refs
+        if (hasContent(node)) {
           const content = await this.contentStore.get(node.contentId);
           if (!content) {
             result.missingContentRefs.push(node.id);
             result.valid = false;
+          }
+        }
+
+        // Check constraint violations
+        if (node.parentId) {
+          const parent = await this.treeStore.getNode(node.parentId);
+          if (parent) {
+            // Folder with both folder and document children
+            if (isFolder(parent)) {
+              const siblings = await this.treeStore.getChildren(node.parentId);
+              const hasFolders = siblings.some(s => isFolder(s));
+              const hasDocuments = siblings.some(s => s.type === 'document');
+              if (hasFolders && hasDocuments) {
+                result.constraintViolations.push(
+                  `Folder "${parent.title}" contains both folders and documents`
+                );
+                result.valid = false;
+              }
+            }
           }
         }
       }
@@ -467,11 +482,62 @@ export class Fraktag {
     return result;
   }
 
+  async audit(treeId: string): Promise<any> {
+    console.log(`\n🕵️  The Gardener (Expert) is inspecting tree: ${treeId}...`);
+
+    const treeMap = await this.treeStore.generateTreeMap(treeId);
+    const treeConfig = await this.treeStore.getTree(treeId);
+
+    const dogma = (treeConfig as any).dogma
+      ? JSON.stringify((treeConfig as any).dogma)
+      : "None";
+
+    const resultJson = await this.expertLlm.complete(
+      DEFAULT_PROMPTS.analyzeTreeStructure,
+      {
+        treeMap,
+        organizingPrinciple: treeConfig.organizingPrinciple,
+        dogma
+      }
+    );
+
+    try {
+      return JSON.parse(resultJson);
+    } catch (e) {
+      console.error("Gardener returned invalid JSON", e);
+      return { issues: [], raw: resultJson };
+    }
+  }
+
+  async applyFix(treeId: string, operation: TreeOperation): Promise<string> {
+    return await this.arborist.execute(treeId, operation);
+  }
+
+  async reset(treeId: string, options: { pruneContent?: boolean } = {}): Promise<void> {
+    const treeConfig = this.config.trees.find(t => t.id === treeId);
+    if (!treeConfig) throw new Error(`Tree ${treeId} not configured.`);
+
+    console.log(`🔥 Resetting Tree: ${treeId}`);
+
+    await this.treeStore.deleteTree(treeId);
+    await this.vectorStore.deleteIndex(treeId);
+    await this.treeStore.createTree(treeConfig);
+
+    if (options.pruneContent) {
+      console.log(`   🧹 Pruning derived chunks...`);
+      const count = await this.contentStore.pruneDerived();
+      console.log(`   ✅ Removed ${count} generated fragments.`);
+    }
+
+    console.log(`✅ Tree ${treeId} reset to factory settings.`);
+  }
+
+  clearCache(treeId?: string) {
+    this.treeStore.clearCache(treeId);
+  }
+
   // ============ PRIVATE METHODS ============
 
-  /**
-   * Initialize trees from config
-   */
   private async initializeTrees(): Promise<void> {
     const existingTrees = await this.treeStore.listTrees();
     const existingTreeIds = new Set(existingTrees.map(t => t.id));
@@ -479,13 +545,11 @@ export class Fraktag {
     for (const treeConfig of this.config.trees) {
       if (!existingTreeIds.has(treeConfig.id)) {
         await this.treeStore.createTree(treeConfig);
+        console.log(`🌱 Created tree: ${treeConfig.name}`);
       }
     }
   }
 
-  /**
-   * Create LLM adapter based on config
-   */
   private createLLMAdapter(config: FraktagConfig['llm']): ILLMAdapter {
     switch (config.adapter) {
       case 'ollama':
@@ -504,179 +568,6 @@ export class Fraktag {
       default:
         throw new Error(`Unknown LLM adapter: ${config.adapter}`);
     }
-  }
-
-  /**
-   * Renders the tree as a visual string (Bash-like)
-   */
-  async printTree(treeId: string): Promise<string> {
-    return await this.treeStore.generateVisualTree(treeId);
-  }
-
-  /**
-   * Uses AI to audit the tree structure for issues
-   * NOW USES EXPERT MODEL
-   */
-  async audit(treeId: string): Promise<any> {
-    console.log(`\n🕵️  The Gardener (Expert) is inspecting tree: ${treeId}...`);
-
-    const treeMap = await this.treeStore.generateTreeMap(treeId);
-    const treeConfig = await this.treeStore.getTree(treeId);
-
-    const dogma = (treeConfig as any).dogma
-        ? JSON.stringify((treeConfig as any).dogma)
-        : "None";
-
-    // USE EXPERT LLM HERE
-    const resultJson = await this.expertLlm.complete(
-        DEFAULT_PROMPTS.analyzeTreeStructure,
-        {
-          treeMap,
-          organizingPrinciple: treeConfig.organizingPrinciple,
-          dogma
-        }
-    );
-
-    try {
-      return JSON.parse(resultJson);
-    } catch (e) {
-      console.error("Gardener returned invalid JSON", e);
-      return { issues: [], raw: resultJson };
-    }
-  }
-
-  /**
-   * ASK: The Synthesis Layer (RAG/KAG)
-   * Combines Retrieval with Generation to answer a user question.
-   */
-  async ask(query: string, treeId: string = 'notes'): Promise<{ answer: string; references: string[] }> {
-    console.log(`\n🧠 [Synthesis] Asking: "${query}"`);
-
-    // 1. RETRIEVE (The Explorer)
-    const retrieval = await this.retrieve({
-      query,
-      treeId,
-      maxDepth: 5,
-      resolution: 'L2' // High fidelity content needed for answers
-    });
-
-    if (retrieval.nodes.length === 0) {
-      return {
-        answer: "I explored the knowledge tree but found no relevant information to answer your question.",
-        references: []
-      };
-    }
-
-    // 2. CONTEXT PREPARATION
-    const contextPromises = retrieval.nodes.map(async (node, i) => {
-      // Fetch the Tree Node to get its Gist/Name
-      const treeNode = await this.treeStore.getNode(node.nodeId);
-      const title = treeNode?.l0Gist || "Untitled Segment";
-
-      // Also fetch metadata from Content Atom if possible?
-      // Actually, node.contentId is on the RetrievedNode.
-      let sourceInfo = "";
-      if (node.contentId) {
-        const atom = await this.contentStore.get(node.contentId);
-        if (atom?.sourceUri) {
-          const filename = atom.sourceUri.split('/').pop();
-          sourceInfo = `(File: ${filename})`;
-        }
-      }
-
-      // PRINT TO CONSOLE (The "First Glance" for the user)
-      console.log(`   📄 [${i+1}] ${title.slice(0, 160)}${title.length > 160 ? '...' : ''} ${sourceInfo}`);
-
-      return `--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`;
-    });
-
-    const contextBlocks = await Promise.all(contextPromises);
-    const context = contextBlocks.join('\n\n');
-
-    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
-    
-    Guidelines:
-    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
-    - Use the Titles provided in the context to explain where information comes from.
-    - If the context mentions specific terms, define them as the text does.
-    - Do not use outside knowledge. If the answer isn't in the text, say so.
-    
-    Context:
-    ${context}
-    
-    Question: ${query}
-    
-    Answer:`;
-
-    // 3. GENERATION
-    console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
-
-    const answer = await this.smartLlm.complete(
-        prompt,
-        {}
-    );
-
-    return {
-      answer,
-      references: retrieval.nodes.map(n => n.path)
-    };
-  }
-
-  /**
-   * Reset a tree to empty state.
-   * @param treeId - The ID of the tree to reset
-   * @param options.pruneContent - If true, deletes generated chunk atoms
-   */
-  async reset(treeId: string, options: { pruneContent?: boolean } = {}): Promise<void> {
-    const treeConfig = this.config.trees.find(t => t.id === treeId);
-    if (!treeConfig) throw new Error(`Tree ${treeId} not configured.`);
-
-    console.log(`🔥 Resetting Tree: ${treeId}`);
-
-    // 1. Delete Tree Data
-    await this.treeStore.deleteTree(treeId);
-
-    // 2. Delete Vector Index
-    await this.vectorStore.deleteIndex(treeId);
-
-    // 3. Re-create Empty Tree
-    await this.treeStore.createTree(treeConfig);
-
-    // 4. Prune Content if requested
-    if (options.pruneContent) {
-      console.log(`   🧹 Pruning derived chunks...`);
-      const count = await this.contentStore.pruneDerived();
-      console.log(`   ✅ Removed ${count} generated fragments.`);
-    }
-
-    console.log(`✅ Tree ${treeId} reset to factory settings.`);
-  }
-
-  /**
-   * Clear internal caches (useful for live-reloading)
-   */
-  clearCache(treeId?: string) {
-    this.treeStore.clearCache(treeId);
-  }
-
-  /**
-   * Execute a specific fix operation
-   */
-  async applyFix(treeId: string, operation: TreeOperation): Promise<string> {
-    return await this.arborist.execute(treeId, operation);
-  }
-
-  /**
-   * Export the full tree structure (Config + All Nodes)
-   * Used for UI Visualization.
-   */
-  async getFullTree(treeId: string): Promise<{ config: any, nodes: Record<string, any> }> {
-    // We need to access the private treeStore.
-    // Since we are inside the class, we can use a helper on TreeStore
-    // or just assume we add a public method to TreeStore.
-
-    // Let's add the method to TreeStore first (see Step 1b below), then call it here.
-    return await this.treeStore.getTreeFile(treeId);
   }
 }
 

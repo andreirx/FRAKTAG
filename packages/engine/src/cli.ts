@@ -1,253 +1,444 @@
 #!/usr/bin/env node
+// packages/engine/src/cli.ts
+// FRAKTAG CLI - Strict Taxonomy Edition
+
+import { readFile, readdir, stat, access, writeFile, mkdir } from 'fs/promises';
+import { join, resolve } from 'path';
+import { existsSync } from 'fs';
 import { Fraktag } from './index.js';
-import {readFile, readdir, stat, access, writeFile, mkdir} from 'fs/promises';
-import {join, resolve} from 'path';
-import { FileProcessor } from './utils/FileProcessor.js'; // Import the new processor
+import { FileProcessor } from './utils/FileProcessor.js';
 
 const COMMAND = process.argv[2];
 const ARG1 = process.argv[3];
 const ARG2 = process.argv[4];
+const ARG3 = process.argv[5];
+const ARG4 = process.argv[6];
+
+async function findConfig(): Promise<string> {
+  // 1. Environment variable
+  if (process.env.FRAKTAG_CONFIG) {
+    return process.env.FRAKTAG_CONFIG;
+  }
+
+  // 2. Current directory data/config.json
+  const localConfig = resolve(process.cwd(), 'data', 'config.json');
+  if (existsSync(localConfig)) return localConfig;
+
+  // 3. Packages directory (dev mode)
+  const devConfig = resolve(process.cwd(), 'packages', 'engine', 'data', 'config.json');
+  if (existsSync(devConfig)) return devConfig;
+
+  // 4. Fallback
+  return './data/config.json';
+}
 
 async function main() {
-    // Load Config
-    const fraktag = await Fraktag.fromConfigFile('./data/config.json');
-    const processor = new FileProcessor();
+  if (!COMMAND || COMMAND === 'help' || COMMAND === '--help') {
+    console.log(`
+FRAKTAG CLI - Strict Taxonomy Edition
 
-    switch (COMMAND) {
-        case 'setup':
-            console.log('Initializing Trees...');
-            // Just loading the config initializes the trees defined in it
-            console.log('Done.');
-            break;
+TREE MANAGEMENT:
+  setup              Initialize trees from config (with seed folders)
+  tree [treeId]      Print visual tree structure
+  folders [treeId]   List all leaf folders (where documents can be placed)
+  stats [treeId]     Show tree statistics
 
-        case 'init':
-            const targetDir = resolve(process.cwd(), '.fraktag');
+FOLDER OPERATIONS:
+  create-folder <treeId> <parentId> <title> <gist>
+                     Create a new folder
 
-            // 1. Create Structure
-            await mkdir(join(targetDir, 'content'), { recursive: true });
-            await mkdir(join(targetDir, 'trees'), { recursive: true });
-            await mkdir(join(targetDir, 'indexes'), { recursive: true });
+INGESTION (Human-Assisted):
+  analyze <file>     Analyze file for split points (no ingestion)
+  ingest <file> <treeId> <folderId> [title]
+                     Ingest file into specific folder
 
-            // 2. Create Default Config (Safe for Git)
-            const defaultConfig = {
-                instanceId: "local-repo",
-                storagePath: ".", // Relative to config.json, so it points to .fraktag/
-                llm: {
-                    adapter: "openai", // or ollama
-                    model: "gpt-4o",
-                    basicModel: "gpt-4o-mini",
-                    // NO API KEY HERE - Use Env Vars
-                },
-                trees: [
-                    {
-                        id: "project",
-                        name: "Project Knowledge",
-                        organizingPrinciple: "Organize by Module, Feature, and Architecture Layer.",
-                        autoPlace: true,
-                        dogma: { strictness: "strict" }
-                    }
-                ],
-                ingestion: {
-                    splitThreshold: 1500,
-                    maxDepth: 5,
-                    chunkOverlap: 100
-                }
-            };
+RETRIEVAL:
+  retrieve <query> [treeId]
+                     Query-driven retrieval
+  ask <query> [treeId]
+                     RAG synthesis with sources
+  browse [treeId] [nodeId]
+                     Browse tree structure
 
-            const configPath = join(targetDir, 'config.json');
+MAINTENANCE:
+  verify [treeId]    Check tree integrity
+  audit [treeId]     AI-powered structure audit
+  reset [treeId] [--prune]
+                     Reset tree to empty state
 
-            // Check if exists
-            try {
-                await access(configPath);
-                console.log('⚠️  .fraktag/config.json already exists. Skipping overwrite.');
-            } catch {
-                await writeFile(configPath, JSON.stringify(defaultConfig, null, 2));
-                console.log('✅ Created .fraktag/config.json');
-            }
+Examples:
+  fkt setup
+  fkt tree notes
+  fkt folders notes
+  fkt analyze ./document.pdf
+  fkt ingest ./document.pdf notes root-notes-general "My Document"
+  fkt ask "What is the main topic?" notes
+`);
+    return;
+  }
 
-            console.log('\nFractal Brain initialized in .fraktag/');
-            console.log('👉 Tip: Add .env to .gitignore and put FRAKTAG_OPENAI_KEY=... there.');
-            break;
+  const configPath = await findConfig();
+  console.log(`📁 Config: ${configPath}`);
 
-        case 'ingest-file':
-            if (!ARG1) throw new Error('Usage: ingest-file <path> [treeId]');
-            await handleIngest(fraktag, processor, ARG1, ARG2);
-            break;
+  // Handle init before loading fraktag
+  if (COMMAND === 'init') {
+    const targetDir = resolve(process.cwd(), '.fraktag');
 
-        case 'ingest-dir':
-            if (!ARG1) throw new Error('Usage: ingest-dir <path> [treeId]');
-            const files = await readdir(ARG1);
-            for (const f of files) {
-                if (f.startsWith('.')) continue;
-                const path = join(ARG1, f);
-                if ((await stat(path)).isDirectory()) continue;
+    await mkdir(join(targetDir, 'content'), { recursive: true });
+    await mkdir(join(targetDir, 'trees'), { recursive: true });
+    await mkdir(join(targetDir, 'indexes'), { recursive: true });
 
-                await handleIngest(fraktag, processor, path, ARG2);
-            }
-            console.log('Batch ingestion complete.');
-            break;
+    const defaultConfig = {
+      instanceId: "local-repo",
+      storagePath: ".",
+      llm: {
+        adapter: "openai",
+        model: "gpt-4o",
+        basicModel: "gpt-4o-mini",
+      },
+      trees: [
+        {
+          id: "project",
+          name: "Project Knowledge",
+          organizingPrinciple: "Organize by Module, Feature, and Architecture Layer.",
+          autoPlace: false,
+          seedFolders: [
+            { title: "Architecture", gist: "System design, patterns, and structure" },
+            { title: "Features", gist: "Feature specifications and implementations" },
+            { title: "API", gist: "API documentation and endpoints" },
+            { title: "Notes", gist: "General notes and observations" }
+          ]
+        }
+      ],
+      ingestion: {
+        splitThreshold: 1500,
+        maxDepth: 5,
+        chunkOverlap: 100
+      }
+    };
 
-        case 'browse':
-            const treeId = ARG1 || 'default';
-            const root = await fraktag.browse({ treeId, resolution: 'L1' });
-            printTree(root, 0);
-            break;
+    const confPath = join(targetDir, 'config.json');
 
-        case 'retrieve':
-            if (!ARG1) throw new Error('Usage: retrieve <query> [treeId]');
-            const query = ARG1;
-            const searchTreeId = ARG2 || 'notes';
-
-            const results = await fraktag.retrieve({
-                treeId: searchTreeId,
-                query: query,
-                maxDepth: 5,
-                resolution: 'L2' // We want high fidelity content
-            });
-
-            console.log('\n=========================================');
-            console.log(`RESULTS FOR: "${query}"`);
-            console.log('=========================================');
-
-            results.nodes.forEach((res, i) => {
-                console.log(`\n[Result ${i+1}] Path: ${res.path}`);
-                console.log('-----------------------------------------');
-                console.log(res.content.trim());
-            });
-            break;
-
-        case 'ask':
-            if (!ARG1) throw new Error('Usage: ask <query> [treeId]');
-            const q = ARG1;
-            const tId = ARG2 || 'notes';
-
-            const response = await fraktag.ask(q, tId);
-
-            console.log('\n=========================================');
-            console.log('🤖 ORACLE ANSWER');
-            console.log('=========================================\n');
-            console.log(response.answer);
-            console.log('\n-----------------------------------------');
-            console.log('📚 References:', response.references.length);
-            break;
-
-        case 'verify':
-            const vId = ARG1 || 'default';
-            const res = await fraktag.verifyTree(vId);
-            console.log(res);
-            break;
-
-        case 'tree':
-            const tIdTree = ARG1 || 'notes';
-            console.log(await fraktag.printTree(tIdTree));
-            break;
-
-        case 'audit':
-            const tIdAudit = ARG1 || 'notes';
-            const applyFlag = process.argv.includes('--apply');
-
-            console.log('Running Audit...');
-            const report = await fraktag.audit(tIdAudit);
-
-            if (!report.issues || report.issues.length === 0) {
-                console.log("✅ The tree looks healthy.");
-                break;
-            }
-
-            console.log('\n=========================================');
-            console.log(`🌿 GARDENER FOUND ${report.issues.length} ISSUES`);
-            console.log('=========================================\n');
-
-            const operations: any[] = [];
-
-            report.issues.forEach((issue: any, index: number) => {
-                const icon = issue.severity === 'HIGH' ? '🔴' : '🟡';
-                console.log(`${index + 1}. ${icon} [${issue.type}] ${issue.description}`);
-                if (issue.operation) {
-                    console.log(`   🛠️  Proposed Action: ${issue.operation.action}`);
-                    if (issue.operation.newParentName) console.log(`       -> Create Parent: "${issue.operation.newParentName}"`);
-                    if (issue.operation.newName) console.log(`       -> Rename to: "${issue.operation.newName}"`);
-                    if (issue.operation.newParentId) console.log(`       -> Move to Parent ID: "${issue.operation.newParentId}"`);
-
-                    operations.push(issue.operation);
-                }
-                console.log('');
-            });
-
-            if (operations.length === 0) break;
-
-            if (applyFlag) {
-                console.log('🚀 Auto-applying fixes (--apply)...');
-                for (const op of operations) {
-                    const res = await fraktag.applyFix(tIdAudit, op);
-                    console.log(`   ✅ ${res}`);
-                }
-            } else {
-                console.log('\nTo apply these fixes, run:');
-                console.log(`fkt audit ${tIdAudit} --apply`);
-                // Alternatively, implement interactive readline here if you prefer
-            }
-            break;
-
-        case 'reset':
-            if (!ARG1) throw new Error('Usage: reset <treeId> [--prune]');
-            const treeToReset = ARG1;
-            const prune = process.argv.includes('--prune');
-
-            await fraktag.reset(treeToReset, { pruneContent: prune });
-            break;
-
-
-        default:
-            console.log('Commands: \n  setup, \n  init,  \n  ingest-file <file>, \n  ingest-dir <dir>, \n  browse <treeId>, \n  retrieve "topic" <treeId>, \n  ask "question" <treeId>, \n  verify <treeId>, \n  tree <treeId>, \n  audit <treeId> [--apply], \n  reset <treeId> [--prune]');
-    }
-}
-
-// Helper to DRY up file/dir ingestion logic
-async function handleIngest(fraktag: Fraktag, processor: FileProcessor, filePath: string, treeId?: string) {
     try {
-        console.log(`Processing ${filePath}...`);
-
-        // 1. Read as Binary Buffer
-        const buffer = await readFile(filePath);
-
-        // 2. Convert to Text (or null if binary/unsupported)
-        const text = await processor.process(filePath, buffer);
-
-        if (!text) {
-            console.log(`   ⏭️  Skipped (Binary or Unsupported)`);
-            return;
-        }
-
-        if (text.trim().length === 0) {
-            console.log(`   ⏭️  Skipped (Empty)`);
-            return;
-        }
-
-        // 3. Ingest Text
-        const result = await fraktag.upsert({
-            content: text,
-            externalId: filePath,
-            sourceUri: filePath,
-            targetTrees: treeId ? [treeId] : undefined
-        });
-
-        console.log(`   ✅ Ingested. Placements: ${result.placements.length}`);
-    } catch (e) {
-        console.error(`   ❌ Failed to ingest ${filePath}:`, e);
+      await access(confPath);
+      console.log('⚠️  .fraktag/config.json already exists. Skipping overwrite.');
+    } catch {
+      await writeFile(confPath, JSON.stringify(defaultConfig, null, 2));
+      console.log('✅ Created .fraktag/config.json');
     }
+
+    console.log('\nFractal Brain initialized in .fraktag/');
+    console.log('👉 Tip: Set FRAKTAG_OPENAI_KEY in your environment.');
+    return;
+  }
+
+  // Load Fraktag for all other commands
+  const fraktag = await Fraktag.fromConfigFile(configPath);
+  const processor = new FileProcessor();
+
+  switch (COMMAND) {
+    case 'setup': {
+      const trees = await fraktag.listTrees();
+      console.log(`\n🌲 Trees initialized: ${trees.length}`);
+      for (const tree of trees) {
+        const fullTree = await fraktag.getFullTree(tree.id);
+        const nodeCount = Object.keys(fullTree.nodes).length;
+        console.log(`   - ${tree.name} (${tree.id}): ${nodeCount} nodes`);
+      }
+      break;
+    }
+
+    case 'tree': {
+      const treeId = ARG1 || 'notes';
+      const visual = await fraktag.printTree(treeId);
+      console.log('\n' + visual);
+      break;
+    }
+
+    case 'folders': {
+      const treeId = ARG1 || 'notes';
+      const leafFolders = await fraktag.getLeafFolders(treeId);
+      console.log(`\n📂 Leaf Folders in ${treeId} (${leafFolders.length} total):\n`);
+      for (const folder of leafFolders) {
+        console.log(`  ID: ${folder.id}`);
+        console.log(`  Title: ${folder.title}`);
+        console.log(`  Gist: ${folder.gist}`);
+        console.log(`  Path: ${folder.path}`);
+        console.log('');
+      }
+      break;
+    }
+
+    case 'stats': {
+      const treeId = ARG1 || 'notes';
+      const fullTree = await fraktag.getFullTree(treeId);
+      const nodes = Object.values(fullTree.nodes);
+
+      let folderCount = 0, docCount = 0, fragCount = 0;
+      for (const node of nodes) {
+        if ((node as any).type === 'folder') folderCount++;
+        else if ((node as any).type === 'document') docCount++;
+        else if ((node as any).type === 'fragment') fragCount++;
+      }
+
+      console.log(`\n📊 Tree Stats for ${treeId}:`);
+      console.log(`   Total Nodes: ${nodes.length}`);
+      console.log(`   Folders: ${folderCount}`);
+      console.log(`   Documents: ${docCount}`);
+      console.log(`   Fragments: ${fragCount}`);
+      break;
+    }
+
+    case 'create-folder': {
+      if (!ARG1 || !ARG2 || !ARG3 || !ARG4) {
+        console.error('Usage: fkt create-folder <treeId> <parentId> <title> <gist>');
+        process.exit(1);
+      }
+      const folder = await fraktag.createFolder(ARG1, ARG2, ARG3, ARG4);
+      console.log(`\n✅ Created folder: ${folder.id}`);
+      console.log(`   Title: ${folder.title}`);
+      console.log(`   Path: ${folder.path}`);
+      break;
+    }
+
+    case 'analyze': {
+      if (!ARG1) {
+        console.error('Usage: fkt analyze <file>');
+        process.exit(1);
+      }
+
+      const absPath = resolve(ARG1);
+      console.log(`\n🔍 Analyzing: ${absPath}`);
+
+      const buffer = await readFile(absPath);
+      const text = await processor.process(absPath, buffer);
+
+      if (!text) {
+        console.error('❌ Could not read file');
+        process.exit(1);
+      }
+
+      const analysis = fraktag.analyzeSplits(text, absPath);
+
+      console.log(`\n📄 Suggested Title: ${analysis.suggestedTitle}`);
+      console.log(`📏 Total Length: ${analysis.fullText.length} chars`);
+      console.log(`🔪 Split Method: ${analysis.splitMethod}`);
+      console.log(`📑 Detected Splits: ${analysis.detectedSplits.length}`);
+
+      if (analysis.detectedSplits.length > 0) {
+        console.log('\n--- Detected Sections ---\n');
+        for (let i = 0; i < analysis.detectedSplits.length; i++) {
+          const split = analysis.detectedSplits[i];
+          console.log(`[${i + 1}] "${split.title}" (${split.text.length} chars, confidence: ${split.confidence.toFixed(2)})`);
+          console.log(`    Preview: ${split.text.slice(0, 100).replace(/\n/g, ' ')}...`);
+          console.log('');
+        }
+      }
+      break;
+    }
+
+    case 'ingest': {
+      if (!ARG1 || !ARG2 || !ARG3) {
+        console.error('Usage: fkt ingest <file> <treeId> <folderId> [title]');
+        console.error('\nFirst run "fkt folders <treeId>" to see available folder IDs.');
+        process.exit(1);
+      }
+
+      const filePath = ARG1;
+      const treeId = ARG2;
+      const folderId = ARG3;
+      const customTitle = ARG4;
+
+      const absPath = resolve(filePath);
+      console.log(`\n📥 Ingesting: ${absPath}`);
+      console.log(`   Tree: ${treeId}`);
+      console.log(`   Folder: ${folderId}`);
+
+      const buffer = await readFile(absPath);
+      const text = await processor.process(absPath, buffer);
+
+      if (!text || text.trim().length === 0) {
+        console.error('❌ Could not read file or file is empty');
+        process.exit(1);
+      }
+
+      const title = customTitle || await fraktag.generateTitle(text, treeId);
+      console.log(`   Title: ${title}`);
+
+      const doc = await fraktag.ingestDocument(text, treeId, folderId, title);
+
+      console.log(`\n✅ Document created:`);
+      console.log(`   ID: ${doc.id}`);
+      console.log(`   Path: ${doc.path}`);
+      console.log(`   Gist: ${doc.gist.slice(0, 100)}...`);
+      break;
+    }
+
+    // Legacy command - deprecated
+    case 'ingest-file': {
+      console.warn('⚠️  ingest-file is deprecated. Use: fkt ingest <file> <treeId> <folderId>');
+      if (!ARG1) throw new Error('Usage: ingest-file <path> [treeId]');
+      const buffer = await readFile(resolve(ARG1));
+      const text = await processor.process(ARG1, buffer);
+      if (!text) {
+        console.log('   ⏭️  Skipped (Binary or Unsupported)');
+        break;
+      }
+      const result = await fraktag.ingest({
+        content: text,
+        sourceUri: ARG1,
+        targetTrees: ARG2 ? [ARG2] : undefined
+      });
+      console.log(`   ✅ Ingested. Placements: ${result.placements.length}`);
+      break;
+    }
+
+    case 'retrieve': {
+      if (!ARG1) {
+        console.error('Usage: fkt retrieve <query> [treeId]');
+        process.exit(1);
+      }
+      const query = ARG1;
+      const treeId = ARG2 || 'notes';
+
+      const results = await fraktag.retrieve({
+        treeId,
+        query,
+        maxDepth: 5,
+        resolution: 'L2'
+      });
+
+      console.log(`\n📌 Found ${results.nodes.length} relevant nodes:\n`);
+      for (const node of results.nodes) {
+        console.log(`[${node.nodeId}] ${node.path}`);
+        console.log(`   ${node.content.slice(0, 200)}...`);
+        console.log('');
+      }
+      break;
+    }
+
+    case 'ask': {
+      if (!ARG1) {
+        console.error('Usage: fkt ask <query> [treeId]');
+        process.exit(1);
+      }
+      const query = ARG1;
+      const treeId = ARG2 || 'notes';
+
+      const response = await fraktag.ask(query, treeId);
+
+      console.log('\n🔮 Answer:\n');
+      console.log(response.answer);
+      console.log('\n📚 References:');
+      response.references.forEach((ref, i) => console.log(`   [${i + 1}] ${ref}`));
+      break;
+    }
+
+    case 'browse': {
+      const treeId = ARG1 || 'notes';
+      const nodeId = ARG2;
+
+      const result = await fraktag.browse({ treeId, nodeId, resolution: 'L0' });
+
+      console.log(`\n📍 Current: ${result.node.title} (${result.node.type})`);
+      console.log(`   Path: ${result.node.path}`);
+      console.log(`   Gist: ${result.node.gist}`);
+
+      if (result.parent) {
+        console.log(`\n⬆️  Parent: ${result.parent.title} (${result.parent.id})`);
+      }
+
+      if (result.children.length > 0) {
+        console.log(`\n📂 Children (${result.children.length}):`);
+        for (const child of result.children) {
+          const icon = child.type === 'folder' ? '📂' : (child.type === 'document' ? '📄' : '🧩');
+          console.log(`   ${icon} ${child.title} (${child.id})`);
+        }
+      }
+      break;
+    }
+
+    case 'verify': {
+      const treeId = ARG1 || 'notes';
+      const result = await fraktag.verifyTree(treeId);
+
+      if (result.valid) {
+        console.log(`\n✅ Tree ${treeId} is valid!`);
+      } else {
+        console.log(`\n❌ Tree ${treeId} has issues:`);
+        if (result.orphanNodes.length > 0) {
+          console.log(`   Orphan nodes: ${result.orphanNodes.join(', ')}`);
+        }
+        if (result.missingContentRefs.length > 0) {
+          console.log(`   Missing content refs: ${result.missingContentRefs.join(', ')}`);
+        }
+        if (result.constraintViolations.length > 0) {
+          console.log(`   Constraint violations:`);
+          result.constraintViolations.forEach(v => console.log(`      - ${v}`));
+        }
+        if (result.errors.length > 0) {
+          console.log(`   Errors: ${result.errors.join(', ')}`);
+        }
+      }
+      break;
+    }
+
+    case 'audit': {
+      const treeId = ARG1 || 'notes';
+      const applyFlag = process.argv.includes('--apply');
+
+      console.log('Running Audit...');
+      const report = await fraktag.audit(treeId);
+
+      if (!report.issues || report.issues.length === 0) {
+        console.log('✅ The tree looks healthy.');
+        break;
+      }
+
+      console.log(`\n🌿 GARDENER FOUND ${report.issues.length} ISSUES\n`);
+
+      const operations: any[] = [];
+
+      report.issues.forEach((issue: any, index: number) => {
+        const icon = issue.severity === 'HIGH' ? '🔴' : '🟡';
+        console.log(`${index + 1}. ${icon} [${issue.type}] ${issue.description}`);
+        if (issue.operation) {
+          console.log(`   🛠️  Proposed: ${issue.operation.action}`);
+          operations.push(issue.operation);
+        }
+        console.log('');
+      });
+
+      if (operations.length > 0 && applyFlag) {
+        console.log('🚀 Auto-applying fixes...');
+        for (const op of operations) {
+          const res = await fraktag.applyFix(treeId, op);
+          console.log(`   ✅ ${res}`);
+        }
+      } else if (operations.length > 0) {
+        console.log('\nTo apply fixes, run:');
+        console.log(`fkt audit ${treeId} --apply`);
+      }
+      break;
+    }
+
+    case 'reset': {
+      const treeId = ARG1 || 'notes';
+      const prune = process.argv.includes('--prune');
+
+      console.log(`\n⚠️  Resetting tree: ${treeId}${prune ? ' (with content prune)' : ''}`);
+      await fraktag.reset(treeId, { pruneContent: prune });
+      break;
+    }
+
+    default:
+      console.error(`Unknown command: ${COMMAND}`);
+      console.error('Run "fkt help" for usage.');
+      process.exit(1);
+  }
 }
 
-function printTree(nodeResult: any, depth: number) {
-    const indent = '  '.repeat(depth);
-    console.log(`${indent}📂 ${nodeResult.node.gist} (${nodeResult.node.id})`);
-    if (nodeResult.node.summary) console.log(`${indent}   📝 ${nodeResult.node.summary.slice(0, 50)}...`);
-
-    if (nodeResult.children) {
-        for (const child of nodeResult.children) {
-            console.log(`${indent}  - ${child.gist} (${child.id})`);
-        }
-    }
-}
-
-main().catch(console.error);
+main().catch(err => {
+  console.error(`\n❌ Error: ${err.message}`);
+  process.exit(1);
+});
