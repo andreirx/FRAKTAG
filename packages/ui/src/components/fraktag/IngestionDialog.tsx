@@ -124,6 +124,9 @@ export function IngestionDialog({
   const [committed, setCommitted] = useState(false);
   const [committedNodeId, setCommittedNodeId] = useState<string>("");
 
+  // Loading state for transition to placement (AI calls happen here)
+  const [transitioningToPlacement, setTransitioningToPlacement] = useState(false);
+
   // Audit Log
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const auditLogRef = useRef<HTMLDivElement>(null);
@@ -161,6 +164,7 @@ export function IngestionDialog({
     setCommitted(false);
     setCommittedNodeId("");
     setAuditLog([]);
+    setTransitioningToPlacement(false);
   };
 
   // Reset when dialog closes
@@ -671,6 +675,9 @@ export function IngestionDialog({
       "human"
     );
 
+    // Show loading indicator on the button while AI is working
+    setTransitioningToPlacement(true);
+
     // Load leaf folders
     setPlacementLoading(true);
     try {
@@ -718,6 +725,7 @@ export function IngestionDialog({
       console.error("Failed to load folders:", err);
     } finally {
       setPlacementLoading(false);
+      setTransitioningToPlacement(false);
     }
   };
 
@@ -857,6 +865,108 @@ export function IngestionDialog({
     a.download = `ingestion-audit-${documentTitle.replace(/\s+/g, "-")}-${Date.now()}.log`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // ============ RENDER HELPERS ============
+
+  // Generate a color for each split based on index
+  const getSplitColor = (index: number) => {
+    const colors = [
+      "bg-purple-400",
+      "bg-blue-400",
+      "bg-emerald-400",
+      "bg-amber-400",
+      "bg-rose-400",
+      "bg-cyan-400",
+      "bg-indigo-400",
+      "bg-orange-400",
+      "bg-teal-400",
+      "bg-pink-400",
+    ];
+    return colors[index % colors.length];
+  };
+
+  // Render the document minimap showing where splits fall
+  const renderDocumentMinimap = () => {
+    if (!fileContent || splits.length === 0) return null;
+
+    const totalLength = fileContent.length;
+
+    // Calculate positions for each split in the document
+    // We need to find where each split's text appears in the original content
+    const splitPositions: { startPercent: number; endPercent: number; title: string; charCount: number }[] = [];
+    let searchStart = 0;
+
+    for (const split of splits) {
+      // Find where this split's text starts in the original document
+      const startIdx = fileContent.indexOf(split.text.slice(0, 100), searchStart);
+      const actualStart = startIdx >= 0 ? startIdx : searchStart;
+      const endIdx = actualStart + split.text.length;
+
+      splitPositions.push({
+        startPercent: (actualStart / totalLength) * 100,
+        endPercent: (endIdx / totalLength) * 100,
+        title: split.title,
+        charCount: split.text.length,
+      });
+
+      searchStart = endIdx;
+    }
+
+    return (
+      <div className="w-16 shrink-0 flex flex-col gap-2">
+        <div className="text-[10px] text-zinc-400 uppercase tracking-wider text-center font-medium">
+          Map
+        </div>
+        {/* The minimap container */}
+        <div className="relative flex-1 min-h-[200px] bg-zinc-100 rounded-lg overflow-hidden border border-zinc-200">
+          {/* Tiny text preview background - simulating code minimap look */}
+          <div className="absolute inset-0 opacity-20">
+            {fileContent.slice(0, 5000).split('\n').slice(0, 100).map((line, i) => (
+              <div
+                key={i}
+                className="h-[2px] bg-zinc-400 my-[1px] mx-1"
+                style={{ width: `${Math.min(100, (line.length / 80) * 100)}%` }}
+              />
+            ))}
+          </div>
+
+          {/* Split regions overlay */}
+          {splitPositions.map((pos, index) => (
+            <div
+              key={index}
+              className={`absolute left-0 right-0 ${getSplitColor(index)} opacity-60 hover:opacity-90 transition-opacity cursor-pointer group`}
+              style={{
+                top: `${pos.startPercent}%`,
+                height: `${Math.max(pos.endPercent - pos.startPercent, 1)}%`,
+              }}
+              title={`${pos.title} (${pos.charCount.toLocaleString()} chars)`}
+            >
+              {/* Split number badge */}
+              <div className="absolute -left-0.5 top-0 w-4 h-4 rounded-full bg-white shadow-sm flex items-center justify-center text-[8px] font-bold text-zinc-600 border">
+                {index + 1}
+              </div>
+            </div>
+          ))}
+
+          {/* Split boundary lines */}
+          {splitPositions.map((pos, index) => (
+            index > 0 && (
+              <div
+                key={`line-${index}`}
+                className="absolute left-0 right-0 h-px bg-zinc-600"
+                style={{ top: `${pos.startPercent}%` }}
+              />
+            )
+          ))}
+        </div>
+
+        {/* Legend */}
+        <div className="text-[9px] text-zinc-400 text-center">
+          {splits.length} splits
+        </div>
+      </div>
+    );
   };
 
   // ============ RENDER STEPS ============
@@ -1027,21 +1137,28 @@ export function IngestionDialog({
         </div>
       </div>
 
-      {/* Splits List */}
-      <ScrollArea className="flex-1 min-h-[300px] pr-4">
+      {/* Main content area with minimap */}
+      <div className="flex-1 flex gap-4 min-h-[300px]">
+        {/* Document Minimap */}
+        {renderDocumentMinimap()}
+
+        {/* Splits List */}
+        <ScrollArea className="flex-1 pr-4">
         <div className="space-y-3">
           {splits.map((split, index) => (
             <div
               key={index}
-              className="border rounded-lg p-4 bg-white hover:shadow-sm transition-shadow"
+              className="border rounded-lg p-4 bg-white hover:shadow-sm transition-shadow relative overflow-hidden"
             >
-              <div className="flex items-start gap-3">
+              {/* Color bar matching minimap */}
+              <div className={`absolute left-0 top-0 bottom-0 w-1 ${getSplitColor(index)}`} />
+              <div className="flex items-start gap-3 pl-2">
                 <div className="pt-2 text-zinc-300 cursor-grab">
                   <GripVertical className="w-4 h-4" />
                 </div>
                 <div className="flex-1 space-y-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded">
+                    <span className={`text-xs font-bold text-white px-2 py-0.5 rounded ${getSplitColor(index)}`}>
                       {index + 1}
                     </span>
                     <Input
@@ -1141,6 +1258,7 @@ export function IngestionDialog({
           ))}
         </div>
       </ScrollArea>
+      </div>
 
       {/* Navigation */}
       <div className="flex justify-between pt-4 border-t">
@@ -1148,9 +1266,21 @@ export function IngestionDialog({
           <ChevronLeft className="w-4 h-4" />
           Back
         </Button>
-        <Button onClick={proceedToPlacement} disabled={splits.length === 0}>
-          Continue to Placement
-          <ChevronRight className="w-4 h-4" />
+        <Button
+          onClick={proceedToPlacement}
+          disabled={splits.length === 0 || transitioningToPlacement}
+        >
+          {transitioningToPlacement ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              AI analyzing placement...
+            </>
+          ) : (
+            <>
+              Continue to Placement
+              <ChevronRight className="w-4 h-4" />
+            </>
+          )}
         </Button>
       </div>
     </div>
@@ -1204,47 +1334,60 @@ export function IngestionDialog({
             </label>
             <ScrollArea className="h-[300px] border rounded-lg">
               <div className="p-2 space-y-1">
-                {leafFolders.map((folder) => (
-                  <div
-                    key={folder.id}
-                    onClick={() => handleFolderChange(folder.id)}
-                    className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                      selectedFolderId === folder.id
-                        ? "bg-purple-50 border border-purple-200"
-                        : "hover:bg-zinc-50 border border-transparent"
-                    }`}
-                  >
-                    <Folder
-                      className={`w-5 h-5 mt-0.5 shrink-0 ${
+                {leafFolders.map((folder) => {
+                  // Split path into parent path and folder name
+                  const pathSegments = folder.path.split(" > ");
+                  const folderName = folder.title; // Use actual title, not last path segment
+                  const parentPath = pathSegments.slice(0, -1); // All except the last
+
+                  return (
+                    <div
+                      key={folder.id}
+                      onClick={() => handleFolderChange(folder.id)}
+                      className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
                         selectedFolderId === folder.id
-                          ? "text-purple-600"
-                          : "text-blue-500"
+                          ? "bg-purple-50 border border-purple-200"
+                          : "hover:bg-zinc-50 border border-transparent"
                       }`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      {/* Path shown prominently first */}
-                      <div className="text-xs font-mono text-zinc-600 mb-1 flex items-center gap-1 flex-wrap">
-                        {folder.path.split(" > ").map((segment, i, arr) => (
-                          <span key={i} className="flex items-center gap-1">
-                            <span className={i === arr.length - 1 ? "font-bold text-zinc-900" : ""}>
-                              {segment}
+                    >
+                      <Folder
+                        className={`w-5 h-5 mt-0.5 shrink-0 ${
+                          selectedFolderId === folder.id
+                            ? "text-purple-600"
+                            : "text-blue-500"
+                        }`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        {/* Folder name shown prominently */}
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-semibold text-zinc-900">{folderName}</span>
+                          {proposedPlacement?.folderId === folder.id && (
+                            <span className="text-[10px] text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded-full font-medium">
+                              AI suggested
                             </span>
-                            {i < arr.length - 1 && <ChevronRight className="w-3 h-3 text-zinc-300" />}
-                          </span>
-                        ))}
-                        {proposedPlacement?.folderId === folder.id && (
-                          <span className="ml-1 text-[10px] text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded-full font-sans font-medium">
-                            AI suggested
-                          </span>
+                          )}
+                        </div>
+                        {/* Parent path shown below */}
+                        {parentPath.length > 0 && (
+                          <div className="text-xs font-mono text-zinc-400 mb-1 flex items-center gap-1 flex-wrap">
+                            {parentPath.map((segment, i) => (
+                              <span key={i} className="flex items-center gap-1">
+                                <span>{segment}</span>
+                                {i < parentPath.length - 1 && (
+                                  <ChevronRight className="w-3 h-3 text-zinc-300" />
+                                )}
+                              </span>
+                            ))}
+                          </div>
                         )}
-                      </div>
-                      {/* Gist description */}
-                      <div className="text-xs text-zinc-500">
-                        {folder.gist}
+                        {/* Gist description */}
+                        <div className="text-xs text-zinc-500">
+                          {folder.gist}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </ScrollArea>
           </div>
