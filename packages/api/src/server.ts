@@ -125,6 +125,21 @@ app.patch('/api/nodes/:id', async (req, res) => {
   }
 });
 
+// Move node to new parent
+app.patch('/api/nodes/:id/move', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { newParentId } = req.body;
+    if (!newParentId) {
+      return res.status(400).json({ error: 'newParentId is required' });
+    }
+    const updated = await fraktag.moveNode(req.params.id, newParentId);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ CONTENT ENDPOINTS ============
 
 app.get('/api/content/:id', async (req, res) => {
@@ -295,6 +310,23 @@ app.post('/api/browse', async (req, res) => {
       resolution: resolution || 'L0'
     });
     res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ AUDIT ENDPOINTS ============
+
+// Append audit entries to tree audit log
+app.post('/api/trees/:id/audit-log', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { entries, sessionId } = req.body;
+    if (!entries || !Array.isArray(entries)) {
+      return res.status(400).json({ error: 'entries array is required' });
+    }
+    await fraktag.appendAuditBatch(req.params.id, entries, sessionId);
+    res.json({ success: true, count: entries.length });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

@@ -105,6 +105,7 @@ export function IngestionDialog({
   const [splits, setSplits] = useState<{ title: string; text: string }[]>([]);
   const [documentTitle, setDocumentTitle] = useState("");
   const [aiSplitLoading, setAiSplitLoading] = useState(false);
+  const [sectionSplitLoading, setSectionSplitLoading] = useState<number | null>(null);
 
   // Placement State
   const [leafFolders, setLeafFolders] = useState<LeafFolder[]>([]);
@@ -353,6 +354,69 @@ export function IngestionDialog({
     setSplits([{ title: documentTitle, text: fileContent }]);
   };
 
+  // Helper: Extract real title from content when header is a repeated delimiter
+  // e.g., "## Point\nAdversity as the Ultimate Attitude Test" -> "Adversity as the Ultimate Attitude Test"
+  const extractRealTitle = (text: string, headerTitle: string): string => {
+    // Remove the header line itself from text
+    const lines = text.split("\n");
+    const headerLineIndex = lines.findIndex(l => l.trim().endsWith(headerTitle) || l.includes(`# ${headerTitle}`));
+
+    // Look at lines after the header for the real title
+    for (let i = headerLineIndex + 1; i < lines.length && i < headerLineIndex + 5; i++) {
+      const line = lines[i].trim();
+      // Skip empty lines and common section markers
+      if (!line || line.startsWith("#") || line === "---") continue;
+      // Found a non-empty content line - use it as title (truncate if too long)
+      if (line.length > 5 && line.length < 150) {
+        return line;
+      }
+      break;
+    }
+    return headerTitle;
+  };
+
+  // Helper: Post-process splits to detect and fix repeated delimiter titles
+  const smartifyTitles = (rawSplits: { title: string; text: string }[]): { title: string; text: string; wasSmartified?: boolean }[] => {
+    if (rawSplits.length < 2) return rawSplits;
+
+    // Count title occurrences
+    const titleCounts: Record<string, number> = {};
+    rawSplits.forEach(s => {
+      const t = s.title.toLowerCase();
+      titleCounts[t] = (titleCounts[t] || 0) + 1;
+    });
+
+    // Find titles that appear in more than 30% of sections (likely delimiters)
+    const repeatedTitles = Object.entries(titleCounts)
+      .filter(([_, count]) => count >= Math.max(2, rawSplits.length * 0.3))
+      .map(([title]) => title);
+
+    if (repeatedTitles.length === 0) return rawSplits;
+
+    // Replace repeated delimiter titles with actual content titles
+    let smartifiedCount = 0;
+    const result = rawSplits.map(split => {
+      if (repeatedTitles.includes(split.title.toLowerCase())) {
+        const realTitle = extractRealTitle(split.text, split.title);
+        if (realTitle !== split.title) {
+          smartifiedCount++;
+          return { ...split, title: realTitle, wasSmartified: true };
+        }
+      }
+      return split;
+    });
+
+    if (smartifiedCount > 0) {
+      addAuditEntry(
+        "SMART_TITLES_DETECTED",
+        `Auto-extracted ${smartifiedCount} real titles from repeated delimiter headers (e.g., "${repeatedTitles[0]}")`,
+        "system"
+      );
+    }
+
+    return result;
+  };
+
   // Programmatic re-split with specific method
   const resplitWithMethod = (method: "h1" | "h2" | "h3" | "hr" | "none") => {
     if (!fileContent) return;
@@ -370,10 +434,22 @@ export function IngestionDialog({
     } else if (method === "hr") {
       // Split by horizontal rules (---)
       const parts = fileContent.split(/^\s*---\s*$/m).filter(p => p.trim());
-      newSplits = parts.map((text, i) => ({
-        title: `Section ${i + 1}`,
-        text: text.trim(),
-      }));
+      // For HR splits, try to extract title from first non-empty line
+      newSplits = parts.map((text, i) => {
+        const lines = text.trim().split("\n");
+        // Find first substantive line for title
+        let title = `Section ${i + 1}`;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          // Skip headers and empty lines
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          if (trimmed.length > 5 && trimmed.length < 150) {
+            title = trimmed;
+            break;
+          }
+        }
+        return { title, text: text.trim() };
+      });
     } else {
       // Split by headers (h1, h2, h3)
       const headerLevel = method === "h1" ? 1 : method === "h2" ? 2 : 3;
@@ -406,6 +482,9 @@ export function IngestionDialog({
         const text = fileContent.slice(startIndex, endIndex).trim();
         newSplits.push({ title, text });
       }
+
+      // Smart title detection: if many titles are the same, they're probably delimiters
+      newSplits = smartifyTitles(newSplits);
     }
 
     if (newSplits.length > 0) {
@@ -415,6 +494,144 @@ export function IngestionDialog({
         `Created ${newSplits.length} splits using ${method.toUpperCase()} method`,
         "system"
       );
+    }
+  };
+
+  // Split a SINGLE section with specific method (nested splitting)
+  const splitSingleSection = (index: number, method: "h2" | "h3" | "hr") => {
+    const section = splits[index];
+    if (!section) return;
+
+    addAuditEntry(
+      "SECTION_SPLIT_REQUESTED",
+      `User requested to split section ${index + 1} ("${section.title}") with method: ${method.toUpperCase()}`,
+      "human"
+    );
+
+    let subSplits: { title: string; text: string }[] = [];
+
+    if (method === "hr") {
+      // Split by horizontal rules (---)
+      const parts = section.text.split(/^\s*---\s*$/m).filter(p => p.trim());
+      if (parts.length <= 1) {
+        addAuditEntry(
+          "SECTION_SPLIT_EMPTY",
+          `No HR separators found in section ${index + 1}`,
+          "system"
+        );
+        return;
+      }
+      // For HR splits, try to extract title from first substantive line
+      subSplits = parts.map((text, i) => {
+        const lines = text.trim().split("\n");
+        let title = `${section.title} - Part ${i + 1}`;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          // Skip headers and empty lines
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          if (trimmed.length > 5 && trimmed.length < 150) {
+            title = trimmed;
+            break;
+          }
+        }
+        return { title, text: text.trim() };
+      });
+    } else {
+      // Split by headers (h2, h3)
+      const headerLevel = method === "h2" ? 2 : 3;
+      const headerRegex = new RegExp(`^(${"#".repeat(headerLevel)}\\s+.+)$`, "gm");
+      const matches = [...section.text.matchAll(headerRegex)];
+
+      if (matches.length === 0) {
+        addAuditEntry(
+          "SECTION_SPLIT_EMPTY",
+          `No ${method.toUpperCase()} headers found in section ${index + 1}`,
+          "system"
+        );
+        return;
+      }
+
+      // Content before first header
+      if (matches[0].index! > 0) {
+        const preamble = section.text.slice(0, matches[0].index).trim();
+        if (preamble.length > 0) {
+          subSplits.push({ title: `${section.title} - Introduction`, text: preamble });
+        }
+      }
+
+      // Each header section
+      for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const title = match[1].replace(/^#+\s*/, "").trim();
+        const startIndex = match.index!;
+        const endIndex = matches[i + 1]?.index ?? section.text.length;
+        const text = section.text.slice(startIndex, endIndex).trim();
+        subSplits.push({ title, text });
+      }
+
+      // Apply smart title detection
+      subSplits = smartifyTitles(subSplits);
+    }
+
+    if (subSplits.length > 1) {
+      // Replace the single section with its sub-sections
+      setSplits((prev) => {
+        const updated = [...prev];
+        updated.splice(index, 1, ...subSplits);
+        return updated;
+      });
+      addAuditEntry(
+        "SECTION_SPLIT_COMPLETE",
+        `Split section ${index + 1} into ${subSplits.length} sub-sections using ${method.toUpperCase()}`,
+        "system"
+      );
+    }
+  };
+
+  // AI split a SINGLE section
+  const aiSplitSingleSection = async (index: number) => {
+    const section = splits[index];
+    if (!section) return;
+
+    setSectionSplitLoading(index);
+    addAuditEntry(
+      "SECTION_AI_SPLIT_REQUESTED",
+      `User requested AI-assisted split for section ${index + 1} ("${section.title}")`,
+      "human"
+    );
+
+    try {
+      const res = await axios.post("/api/generate/splits", {
+        content: section.text,
+        treeId,
+      });
+
+      const aiSplits = res.data.splits || [];
+
+      if (aiSplits.length > 1) {
+        // Replace the single section with AI-generated sub-sections
+        setSplits((prev) => {
+          const updated = [...prev];
+          updated.splice(index, 1, ...aiSplits);
+          return updated;
+        });
+        addAuditEntry(
+          "SECTION_AI_SPLIT_COMPLETE",
+          `AI split section ${index + 1} into ${aiSplits.length} sub-sections`,
+          "ai"
+        );
+      } else {
+        addAuditEntry(
+          "SECTION_AI_SPLIT_SINGLE",
+          `AI determined section ${index + 1} should remain as a single unit`,
+          "ai"
+        );
+      }
+    } catch (err: any) {
+      console.error("AI section split failed:", err);
+      addAuditEntry("SECTION_AI_SPLIT_ERROR", err.message || "Failed", "ai");
+    } finally {
+      setSectionSplitLoading(null);
     }
   };
 
@@ -547,11 +764,50 @@ export function IngestionDialog({
         "system"
       );
 
+      // Auto-save audit log to tree
+      const finalAuditLog = [
+        ...auditLog,
+        {
+          timestamp: new Date().toISOString(),
+          action: "COMMIT_COMPLETE",
+          details: `Successfully ingested document with ${splits.length} fragment(s)`,
+          actor: "system" as const,
+        },
+      ];
+
+      try {
+        await axios.post(`/api/trees/${treeId}/audit-log`, {
+          entries: finalAuditLog,
+          sessionId: `ingestion-${Date.now()}`,
+        });
+        addAuditEntry("AUDIT_SAVED", "Audit log persisted to tree", "system");
+      } catch (auditErr) {
+        console.error("Failed to save audit log:", auditErr);
+      }
+
       setCommitted(true);
       onComplete?.();
     } catch (err: any) {
       console.error("Commit failed:", err);
       addAuditEntry("COMMIT_ERROR", err.message || "Unknown error", "system");
+
+      // Save audit log even on error
+      try {
+        await axios.post(`/api/trees/${treeId}/audit-log`, {
+          entries: [
+            ...auditLog,
+            {
+              timestamp: new Date().toISOString(),
+              action: "COMMIT_ERROR",
+              details: err.message || "Unknown error",
+              actor: "system" as const,
+            },
+          ],
+          sessionId: `ingestion-${Date.now()}`,
+        });
+      } catch (auditErr) {
+        console.error("Failed to save audit log:", auditErr);
+      }
     } finally {
       setCommitting(false);
     }
@@ -765,6 +1021,43 @@ export function IngestionDialog({
                       placeholder="Section title..."
                       className="text-sm font-medium h-8"
                     />
+                    {/* Split this section further */}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={sectionSplitLoading === index}
+                          className="text-zinc-400 hover:text-purple-500"
+                          title="Split this section"
+                        >
+                          {sectionSplitLoading === index ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Scissors className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "h2")}>
+                          <Hash className="w-4 h-4 mr-2" />
+                          Split by H2 (##)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "h3")}>
+                          <Hash className="w-4 h-4 mr-2" />
+                          Split by H3 (###)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => splitSingleSection(index, "hr")}>
+                          <Minus className="w-4 h-4 mr-2" />
+                          Split by HR (---)
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => aiSplitSingleSection(index)}>
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          AI Split
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     {/* Merge with previous */}
                     <Button
                       variant="ghost"
@@ -804,8 +1097,14 @@ export function IngestionDialog({
                     className="w-full text-xs font-mono bg-zinc-50 border rounded p-2 resize-none h-24"
                     placeholder="Section content..."
                   />
-                  <div className="text-xs text-zinc-400">
-                    {split.text.length} characters
+                  <div className="flex items-center gap-2 text-xs text-zinc-400">
+                    <span>{split.text.length.toLocaleString()} characters</span>
+                    {split.text.length > 5000 && (
+                      <span className="text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded text-[10px] font-medium flex items-center gap-1">
+                        <Scissors className="w-3 h-3" />
+                        Large section - consider splitting
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -883,30 +1182,36 @@ export function IngestionDialog({
                     className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
                       selectedFolderId === folder.id
                         ? "bg-purple-50 border border-purple-200"
-                        : "hover:bg-zinc-50"
+                        : "hover:bg-zinc-50 border border-transparent"
                     }`}
                   >
                     <Folder
-                      className={`w-5 h-5 mt-0.5 ${
+                      className={`w-5 h-5 mt-0.5 shrink-0 ${
                         selectedFolderId === folder.id
                           ? "text-purple-600"
                           : "text-blue-500"
                       }`}
                     />
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-sm truncate">
-                        {folder.title}
+                      {/* Path shown prominently first */}
+                      <div className="text-xs font-mono text-zinc-600 mb-1 flex items-center gap-1 flex-wrap">
+                        {folder.path.split(" > ").map((segment, i, arr) => (
+                          <span key={i} className="flex items-center gap-1">
+                            <span className={i === arr.length - 1 ? "font-bold text-zinc-900" : ""}>
+                              {segment}
+                            </span>
+                            {i < arr.length - 1 && <ChevronRight className="w-3 h-3 text-zinc-300" />}
+                          </span>
+                        ))}
                         {proposedPlacement?.folderId === folder.id && (
-                          <span className="ml-2 text-xs text-purple-500">
-                            (AI suggested)
+                          <span className="ml-1 text-[10px] text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                            AI suggested
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-zinc-400 truncate">
+                      {/* Gist description */}
+                      <div className="text-xs text-zinc-500">
                         {folder.gist}
-                      </div>
-                      <div className="text-[10px] text-zinc-300 font-mono mt-1">
-                        {folder.path}
                       </div>
                     </div>
                   </div>
