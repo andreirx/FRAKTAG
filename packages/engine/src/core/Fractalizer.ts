@@ -66,10 +66,156 @@ export class Fractalizer {
   }
 
   private determineSplitMethod(content: string): 'TOC' | 'PDF_PAGE' | 'HEADER' | 'HR' | 'NONE' {
+    // Check for TOC first (for PDFs with table of contents)
+    if (this.hasToc(content)) return 'TOC';
     if (/---=== PAGE \d+ ===---/.test(content)) return 'PDF_PAGE';
     if (/^##?\s+.+$/m.test(content)) return 'HEADER';
     if (/^\s*---\s*$/m.test(content)) return 'HR';
     return 'NONE';
+  }
+
+  /**
+   * Check if content has a detectable Table of Contents
+   */
+  private hasToc(content: string): boolean {
+    // Look for TOC header patterns
+    const tocHeaderPattern = /^(table\s+of\s+contents|contents|toc)\s*$/im;
+    if (!tocHeaderPattern.test(content)) return false;
+
+    // Check if there are TOC-style entries (title followed by dots/spaces and page number)
+    const tocEntryPattern = /^.{3,80}[.\s]{3,}\d+\s*$/m;
+    const tocMatches = content.match(new RegExp(tocEntryPattern.source, 'gm'));
+
+    return tocMatches !== null && tocMatches.length >= 3;
+  }
+
+  /**
+   * Split content based on Table of Contents entries.
+   * This is the preferred method for PDFs as it uses semantic structure.
+   */
+  private splitByToc(content: string): DetectedSplit[] {
+    // 1. Find the TOC section
+    const tocHeaderMatch = content.match(/^(table\s+of\s+contents|contents|toc)\s*$/im);
+    if (!tocHeaderMatch || tocHeaderMatch.index === undefined) return [];
+
+    const tocStartIndex = tocHeaderMatch.index;
+
+    // 2. Find where TOC ends (usually before a page marker or substantial content)
+    // Look for first page marker, or substantial paragraph after TOC entries end
+    const afterTocHeader = content.slice(tocStartIndex + tocHeaderMatch[0].length);
+
+    // TOC entries typically look like: "Chapter 1: Introduction ..... 5" or "1.1 Background   15"
+    const tocEntryPattern = /^(.{3,80}?)\s*[.\s]{2,}(\d+)\s*$/gm;
+    const tocEntries: { title: string; pageNum: number; originalLine: string }[] = [];
+
+    let match;
+    let lastMatchEnd = 0;
+    while ((match = tocEntryPattern.exec(afterTocHeader)) !== null) {
+      // Stop if we hit a page marker (end of TOC)
+      const textBetween = afterTocHeader.slice(lastMatchEnd, match.index);
+      if (/---=== PAGE \d+ ===---/.test(textBetween) && tocEntries.length > 0) {
+        break;
+      }
+
+      const title = match[1].trim()
+        .replace(/^[\d.]+\s*/, '')  // Remove leading numbers like "1.1 " or "Chapter 1: "
+        .replace(/^(chapter|section|part)\s*\d*:?\s*/i, '') // Remove chapter/section prefixes
+        .trim();
+
+      if (title.length >= 3 && title.length <= 100) {
+        tocEntries.push({
+          title,
+          pageNum: parseInt(match[2], 10),
+          originalLine: match[0].trim()
+        });
+      }
+      lastMatchEnd = match.index + match[0].length;
+    }
+
+    if (tocEntries.length < 2) return [];
+
+    console.log(`📑 Found TOC with ${tocEntries.length} entries`);
+
+    // 3. Find where each TOC entry appears in the document body
+    // We'll look for the titles after the TOC section
+    const bodyContent = content.slice(tocStartIndex + 500); // Skip past TOC itself
+    const splits: DetectedSplit[] = [];
+    const foundPositions: { title: string; index: number; globalIndex: number }[] = [];
+
+    for (const entry of tocEntries) {
+      // Try to find this title in the body - it might be in various formats
+      const escapedTitle = entry.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      // Try multiple patterns to find the title in the body
+      let bestMatch: { index: number; length: number } | null = null;
+
+      // Pattern 1: Exact match (possibly with leading number)
+      const pattern1 = new RegExp(`^[\\d.]*\\s*${escapedTitle}\\s*$`, 'im');
+      const match1 = bodyContent.match(pattern1);
+      if (match1 && match1.index !== undefined) {
+        bestMatch = { index: match1.index, length: match1[0].length };
+      }
+
+      // Pattern 2: With chapter/section prefix (only if pattern 1 didn't match)
+      if (!bestMatch) {
+        const pattern2 = new RegExp(`^(chapter|section|part)?\\s*[\\d.]*\\s*:?\\s*${escapedTitle}`, 'im');
+        const match2 = bodyContent.match(pattern2);
+        if (match2 && match2.index !== undefined) {
+          bestMatch = { index: match2.index, length: match2[0].length };
+        }
+      }
+
+      // Pattern 3: Just the title starting a line (fallback)
+      if (!bestMatch) {
+        const pattern3 = new RegExp(`^${escapedTitle}`, 'im');
+        const match3 = bodyContent.match(pattern3);
+        if (match3 && match3.index !== undefined) {
+          bestMatch = { index: match3.index, length: match3[0].length };
+        }
+      }
+
+      if (bestMatch) {
+        const globalIndex = tocStartIndex + 500 + bestMatch.index;
+        foundPositions.push({ title: entry.title, index: bestMatch.index, globalIndex });
+      }
+    }
+
+    // Sort by position in document
+    foundPositions.sort((a, b) => a.index - b.index);
+
+    // 4. Create splits at found positions
+    // Add preamble if there's content before the first found section
+    const firstSectionIndex = foundPositions[0]?.globalIndex;
+    if (firstSectionIndex && firstSectionIndex > tocStartIndex + 1000) {
+      // There might be some content between TOC and first section (front matter, etc.)
+      // We'll skip this as it's usually formatting cruft from PDF extraction
+    }
+
+    for (let i = 0; i < foundPositions.length; i++) {
+      const current = foundPositions[i];
+      const next = foundPositions[i + 1];
+
+      const startIndex = current.globalIndex;
+      const endIndex = next?.globalIndex ?? content.length;
+      const text = content.slice(startIndex, endIndex).trim();
+
+      if (text.length > 50) { // Skip very short sections
+        splits.push({
+          title: current.title,
+          text,
+          startIndex,
+          endIndex,
+          confidence: 0.9 // High confidence for TOC-based splits
+        });
+      }
+    }
+
+    if (splits.length >= 2) {
+      console.log(`✅ TOC-based split created ${splits.length} sections`);
+      return splits;
+    }
+
+    return [];
   }
 
   private detectSplitPoints(content: string): DetectedSplit[] {
@@ -78,7 +224,11 @@ export class Fractalizer {
 
     if (len < 500) return []; // Too short to split
 
-    // Try PDF pages first
+    // Try TOC-based splitting first (for PDFs with table of contents)
+    const tocSplits = this.splitByToc(content);
+    if (tocSplits.length > 1) return tocSplits;
+
+    // Try PDF pages (fallback for PDFs without good TOC)
     const pdfSplits = this.splitByPdfPages(content);
     if (pdfSplits.length > 1) return pdfSplits;
 

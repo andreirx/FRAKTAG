@@ -194,11 +194,40 @@ export function IngestionDialog({
 
   const processFile = async (selectedFile: File) => {
     setUploading(true);
-    addAuditEntry("FILE_SELECTED", `File: ${selectedFile.name}`, "human");
+    addAuditEntry("FILE_SELECTED", `File: ${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)`, "human");
 
     try {
-      // Read file content
-      const text = await selectedFile.text();
+      let text: string;
+
+      // Check if file needs binary parsing (PDF, etc.)
+      const needsBinaryParsing = selectedFile.name.toLowerCase().endsWith('.pdf');
+
+      if (needsBinaryParsing) {
+        addAuditEntry("PARSING_BINARY", `Parsing binary file: ${selectedFile.name}`, "system");
+
+        // Read as ArrayBuffer and convert to base64
+        const arrayBuffer = await selectedFile.arrayBuffer();
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        );
+
+        // Send to parse endpoint
+        const parseRes = await axios.post("/api/parse", {
+          fileName: selectedFile.name,
+          content: base64,
+        });
+
+        text = parseRes.data.text;
+        addAuditEntry(
+          "PARSING_COMPLETE",
+          `Extracted ${parseRes.data.textLength.toLocaleString()} characters from ${selectedFile.name}`,
+          "system"
+        );
+      } else {
+        // Read as text directly
+        text = await selectedFile.text();
+      }
+
       setFileContent(text);
 
       // Analyze for splits

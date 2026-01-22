@@ -155,6 +155,33 @@ app.get('/api/content/:id', async (req, res) => {
   }
 });
 
+// ============ FILE PARSING ENDPOINTS ============
+
+// Parse file (PDF, text, etc.) and extract text content
+app.post('/api/parse', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { fileName, content } = req.body;
+    if (!fileName || !content) {
+      return res.status(400).json({ error: 'fileName and content (base64) are required' });
+    }
+
+    // Decode base64 content to Buffer
+    const buffer = Buffer.from(content, 'base64');
+
+    // Parse the file
+    const text = await fraktag.parseFile(fileName, buffer);
+
+    if (text === null) {
+      return res.status(400).json({ error: 'Could not parse file. Unsupported format or corrupted content.' });
+    }
+
+    res.json({ text, fileName, originalSize: buffer.length, textLength: text.length });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ INGESTION ENDPOINTS ============
 
 // Analyze content for splits (no ingestion)

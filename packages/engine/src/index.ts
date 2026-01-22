@@ -36,6 +36,7 @@ import { OllamaEmbeddingAdapter } from './adapters/embeddings/OllamaEmbeddingAda
 import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAdapter.js';
 import { VectorStore } from './core/VectorStore.js';
 import { Arborist, TreeOperation } from './core/Arborist.js';
+import { FileProcessor } from './utils/FileProcessor.js';
 
 /**
  * Fraktag Engine - Strict Taxonomy Knowledge Management
@@ -48,6 +49,7 @@ export class Fraktag {
   private fractalizer: Fractalizer;
   private navigator: Navigator;
   private embedder: IEmbeddingAdapter;
+  private fileProcessor: FileProcessor;
   private vectorStore: VectorStore;
   private arborist: Arborist;
 
@@ -84,6 +86,7 @@ export class Fraktag {
     this.vectorStore = new VectorStore(storage, this.embedder);
 
     this.arborist = new Arborist(this.treeStore, this.vectorStore);
+    this.fileProcessor = new FileProcessor();
 
     // Merge custom prompts with defaults
     const prompts = {
@@ -420,6 +423,23 @@ export class Fraktag {
       await this.appendAudit(treeId, { ...entry, sessionId });
     }
     console.log(`📋 Appended ${entries.length} audit entries to ${treeId}`);
+  }
+
+  // ============ FILE PARSING ============
+
+  /**
+   * Parse a file (PDF, text, etc.) and extract text content
+   * Uses the FileProcessor with appropriate parsers
+   */
+  async parseFile(fileName: string, buffer: Buffer): Promise<string | null> {
+    console.log(`📄 Parsing file: ${fileName} (${buffer.length} bytes)`);
+    const result = await this.fileProcessor.process(fileName, buffer);
+    if (result) {
+      console.log(`✅ Parsed ${fileName}: ${result.length} characters extracted`);
+    } else {
+      console.warn(`⚠️ Could not parse ${fileName}`);
+    }
+    return result;
   }
 
   // ============ ASK (RAG/KAG Synthesis) ============
