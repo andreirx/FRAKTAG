@@ -1,6 +1,6 @@
 // src/adapters/storage/JsonStorage.ts
 
-import { readFile, writeFile, mkdir, readdir, rm, access, stat } from 'fs/promises';
+import { readFile, writeFile, appendFile, mkdir, readdir, rm, access, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { IStorage } from './IStorage.js';
 
@@ -125,6 +125,24 @@ export class JsonStorage implements IStorage {
       await mkdir(fullPath, { recursive: true });
     } catch (error) {
       throw new Error(`Failed to create directory ${dirPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Append a line to a text file (creates file if doesn't exist)
+   */
+  async appendLine(filePath: string, line: string): Promise<void> {
+    try {
+      const fullPath = join(this.basePath, filePath);
+      const dir = dirname(fullPath);
+
+      // Ensure directory exists
+      await mkdir(dir, { recursive: true });
+
+      // Append line with newline
+      await appendFile(fullPath, line + '\n', 'utf-8');
+    } catch (error) {
+      throw new Error(`Failed to append to file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

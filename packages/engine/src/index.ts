@@ -354,6 +354,74 @@ export class Fraktag {
     return node;
   }
 
+  /**
+   * Move node to a new parent folder
+   * Enforces rules:
+   * - Folders can move anywhere
+   * - Documents/fragments can only move to leaf folders (no folder children)
+   */
+  async moveNode(nodeId: string, newParentId: string): Promise<TreeNode> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) throw new Error(`Node ${nodeId} not found`);
+
+    const newParent = await this.treeStore.getNode(newParentId);
+    if (!newParent) throw new Error(`Target parent ${newParentId} not found`);
+    if (!isFolder(newParent)) throw new Error(`Target ${newParentId} is not a folder`);
+
+    // Check if newParent is valid for this node type
+    if (node.type !== 'folder') {
+      // Documents/fragments can only go into leaf folders (no folder children)
+      const siblings = await this.treeStore.getChildren(newParentId);
+      const hasSubfolders = siblings.some(s => s.type === 'folder');
+      if (hasSubfolders) {
+        throw new Error(`Cannot move ${node.type} into a folder that has subfolders`);
+      }
+    }
+
+    // Update parent
+    const oldParentId = node.parentId;
+    node.parentId = newParentId;
+    node.updatedAt = new Date().toISOString();
+
+    await this.treeStore.saveNode(node);
+
+    console.log(`📦 Moved node ${nodeId} from ${oldParentId} to ${newParentId}`);
+
+    return node;
+  }
+
+  // ============ AUDIT LOG ============
+
+  /**
+   * Append an entry to the tree's audit log
+   * Audit logs are stored as text files in trees/{treeId}.audit.log
+   */
+  async appendAudit(treeId: string, entry: {
+    timestamp: string;
+    action: string;
+    details: string;
+    actor: 'system' | 'ai' | 'human';
+    sessionId?: string;
+  }): Promise<void> {
+    const logLine = `[${entry.timestamp}] [${entry.actor.toUpperCase()}] ${entry.action}: ${entry.details}${entry.sessionId ? ` (session: ${entry.sessionId})` : ''}`;
+    await this.storage.appendLine(`trees/${treeId}.audit.log`, logLine);
+  }
+
+  /**
+   * Append multiple audit entries at once (batch append)
+   */
+  async appendAuditBatch(treeId: string, entries: Array<{
+    timestamp: string;
+    action: string;
+    details: string;
+    actor: 'system' | 'ai' | 'human';
+  }>, sessionId?: string): Promise<void> {
+    for (const entry of entries) {
+      await this.appendAudit(treeId, { ...entry, sessionId });
+    }
+    console.log(`📋 Appended ${entries.length} audit entries to ${treeId}`);
+  }
+
   // ============ ASK (RAG/KAG Synthesis) ============
 
   async ask(query: string, treeId: string = 'notes'): Promise<{ answer: string; references: string[] }> {

@@ -3,10 +3,11 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, Pencil, Check, XCircle } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
@@ -23,11 +24,24 @@ export default function KnowledgeTree() {
     // Ingestion Dialog
     const [ingestionOpen, setIngestionOpen] = useState(false);
 
-    // Edit Mode State
-    const [isEditing, setIsEditing] = useState(false);
+    // Auto-save Edit State
     const [editTitle, setEditTitle] = useState("");
     const [editGist, setEditGist] = useState("");
-    const [saving, setSaving] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+    const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Folder Creation Dialog
+    const [createFolderOpen, setCreateFolderOpen] = useState(false);
+    const [newFolderTitle, setNewFolderTitle] = useState("");
+    const [newFolderGist, setNewFolderGist] = useState("");
+    const [createFolderParentId, setCreateFolderParentId] = useState<string>("");
+    const [creatingFolder, setCreatingFolder] = useState(false);
+
+    // Move Dialog
+    const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+    const [moveNodeId, setMoveNodeId] = useState<string>("");
+    const [moveNodeType, setMoveNodeType] = useState<string>("");
+    const [moveTargetId, setMoveTargetId] = useState<string>("");
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(400);
@@ -68,40 +82,33 @@ export default function KnowledgeTree() {
         if (activeTreeId) loadTreeStructure(activeTreeId);
     }, [activeTreeId]);
 
-    // Content Fetching & Reset Edit Mode
+    // Content Fetching & Initialize Edit Fields
     useEffect(() => {
         setContentPayload(null);
         setContentError(false);
         setContentLoading(false);
-        setIsEditing(false);
+        setSaveStatus("idle");
+        // Initialize edit fields with selected node's values
+        if (selectedNode) {
+            setEditTitle(selectedNode.title);
+            setEditGist(selectedNode.gist);
+        }
         if (selectedNode?.contentId) {
             fetchContent(selectedNode.contentId);
         }
     }, [selectedNode]);
 
-    // Enter edit mode
-    const startEditing = () => {
+    // Auto-save with debounce
+    const autoSave = useCallback(async (title: string, gist: string) => {
         if (!selectedNode) return;
-        setEditTitle(selectedNode.title);
-        setEditGist(selectedNode.gist);
-        setIsEditing(true);
-    };
+        // Don't save if nothing changed
+        if (title === selectedNode.title && gist === selectedNode.gist) return;
 
-    // Cancel editing
-    const cancelEditing = () => {
-        setIsEditing(false);
-        setEditTitle("");
-        setEditGist("");
-    };
-
-    // Save changes
-    const saveChanges = async () => {
-        if (!selectedNode) return;
-        setSaving(true);
+        setSaveStatus("saving");
         try {
             const res = await axios.patch(`/api/nodes/${selectedNode.id}`, {
-                title: editTitle,
-                gist: editGist,
+                title,
+                gist,
             });
             // Update selected node with new data
             setSelectedNode(res.data);
@@ -115,11 +122,76 @@ export default function KnowledgeTree() {
                     },
                 });
             }
-            setIsEditing(false);
+            setSaveStatus("saved");
+            // Clear saved status after 2s
+            setTimeout(() => setSaveStatus("idle"), 2000);
         } catch (e) {
             console.error("Failed to save:", e);
+            setSaveStatus("error");
+        }
+    }, [selectedNode, rawData]);
+
+    // Debounced save on title/gist changes
+    const handleTitleChange = (newTitle: string) => {
+        setEditTitle(newTitle);
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+            autoSave(newTitle, editGist);
+        }, 800);
+    };
+
+    const handleGistChange = (newGist: string) => {
+        setEditGist(newGist);
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+            autoSave(editTitle, newGist);
+        }, 800);
+    };
+
+    // Folder Creation
+    const openCreateFolderDialog = (parentId: string) => {
+        setCreateFolderParentId(parentId);
+        setNewFolderTitle("");
+        setNewFolderGist("");
+        setCreateFolderOpen(true);
+    };
+
+    const createFolder = async () => {
+        if (!newFolderTitle.trim() || !newFolderGist.trim()) return;
+        setCreatingFolder(true);
+        try {
+            await axios.post(`/api/trees/${activeTreeId}/folders`, {
+                parentId: createFolderParentId,
+                title: newFolderTitle,
+                gist: newFolderGist,
+            });
+            setCreateFolderOpen(false);
+            loadTreeStructure(activeTreeId);
+        } catch (e) {
+            console.error("Failed to create folder:", e);
         } finally {
-            setSaving(false);
+            setCreatingFolder(false);
+        }
+    };
+
+    // Move operations
+    const openMoveDialog = (nodeId: string, nodeType: string) => {
+        setMoveNodeId(nodeId);
+        setMoveNodeType(nodeType);
+        setMoveTargetId("");
+        setMoveDialogOpen(true);
+    };
+
+    const executeMove = async () => {
+        if (!moveNodeId || !moveTargetId) return;
+        try {
+            await axios.patch(`/api/nodes/${moveNodeId}/move`, {
+                newParentId: moveTargetId,
+            });
+            setMoveDialogOpen(false);
+            loadTreeStructure(activeTreeId);
+        } catch (e) {
+            console.error("Failed to move node:", e);
         }
     };
 
@@ -167,6 +239,47 @@ export default function KnowledgeTree() {
 
         return { rootNode: root, childrenMap: map, flatList: nodes };
     }, [rawData]);
+
+    // Check if folder can have new subfolder (must have no content children)
+    const canCreateSubfolder = useCallback((nodeId: string): boolean => {
+        const children = childrenMap[nodeId] || [];
+        // Can create subfolder if: no children, or all children are folders
+        return children.every(c => c.type === 'folder');
+    }, [childrenMap]);
+
+    // Check if folder can receive content (must be a leaf folder - no folder children)
+    const canReceiveContent = useCallback((nodeId: string): boolean => {
+        const children = childrenMap[nodeId] || [];
+        // Can receive content if no children, or no folder children
+        return children.every(c => c.type !== 'folder');
+    }, [childrenMap]);
+
+    // Get valid move targets
+    const getValidMoveTargets = useMemo(() => {
+        if (!moveNodeType || !flatList) return [];
+
+        // For folders: can move to any folder
+        // For documents/fragments: can only move to leaf folders (no folder children)
+        return flatList.filter(n => {
+            if (n.type !== 'folder') return false;
+            if (n.id === moveNodeId) return false; // Can't move to self
+
+            // Check if this is the node being moved or its descendant
+            let current: TreeNode | null = n;
+            while (current) {
+                if (current.id === moveNodeId) return false;
+                current = flatList.find(p => p.id === current?.parentId) || null;
+            }
+
+            if (moveNodeType === 'folder') {
+                // Folders can move anywhere
+                return true;
+            } else {
+                // Documents/fragments can only go to leaf folders
+                return canReceiveContent(n.id);
+            }
+        });
+    }, [moveNodeType, moveNodeId, flatList, canReceiveContent]);
 
     // Filter Logic - search both title and gist
     const filteredNodes = useMemo(() => {
@@ -347,76 +460,64 @@ export default function KnowledgeTree() {
                                                 {selectedNode.id}
                                             </span>
                                             {getTypeBadge(selectedNode.type)}
+                                            {/* Auto-save status indicator */}
+                                            {saveStatus === "saving" && (
+                                                <span className="text-[10px] text-zinc-400 flex items-center gap-1">
+                                                    <Loader2 className="w-3 h-3 animate-spin" /> Saving...
+                                                </span>
+                                            )}
+                                            {saveStatus === "saved" && (
+                                                <span className="text-[10px] text-emerald-500 flex items-center gap-1">
+                                                    <Check className="w-3 h-3" /> Saved
+                                                </span>
+                                            )}
+                                            {saveStatus === "error" && (
+                                                <span className="text-[10px] text-red-500">Save failed</span>
+                                            )}
                                         </div>
-                                        {!isEditing ? (
+                                        <div className="flex items-center gap-2">
+                                            {selectedNode.type === 'folder' && canCreateSubfolder(selectedNode.id) && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => openCreateFolderDialog(selectedNode.id)}
+                                                    className="gap-1"
+                                                >
+                                                    <FolderPlus className="w-3 h-3" />
+                                                    New Subfolder
+                                                </Button>
+                                            )}
                                             <Button
                                                 variant="outline"
                                                 size="sm"
-                                                onClick={startEditing}
+                                                onClick={() => openMoveDialog(selectedNode.id, selectedNode.type)}
                                                 className="gap-1"
                                             >
-                                                <Pencil className="w-3 h-3" />
-                                                Edit
+                                                <Move className="w-3 h-3" />
+                                                Move
                                             </Button>
-                                        ) : (
-                                            <div className="flex items-center gap-2">
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={cancelEditing}
-                                                    disabled={saving}
-                                                >
-                                                    <XCircle className="w-4 h-4" />
-                                                    Cancel
-                                                </Button>
-                                                <Button
-                                                    variant="default"
-                                                    size="sm"
-                                                    onClick={saveChanges}
-                                                    disabled={saving}
-                                                    className="bg-emerald-600 hover:bg-emerald-700"
-                                                >
-                                                    {saving ? (
-                                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                                    ) : (
-                                                        <Check className="w-4 h-4" />
-                                                    )}
-                                                    Save
-                                                </Button>
-                                            </div>
-                                        )}
+                                        </div>
                                     </div>
-                                    {isEditing ? (
-                                        <Input
-                                            value={editTitle}
-                                            onChange={(e) => setEditTitle(e.target.value)}
-                                            className="text-2xl font-bold h-auto py-2"
-                                            placeholder="Title..."
-                                        />
-                                    ) : (
-                                        <h1 className="text-3xl font-bold leading-tight text-zinc-900">
-                                            {selectedNode.title}
-                                        </h1>
-                                    )}
+                                    {/* Always editable title */}
+                                    <Input
+                                        value={editTitle}
+                                        onChange={(e) => handleTitleChange(e.target.value)}
+                                        className="text-2xl font-bold h-auto py-2 border-transparent hover:border-zinc-200 focus:border-purple-300 bg-transparent"
+                                        placeholder="Title..."
+                                    />
                                 </div>
 
-                                {/* Gist Card (The "Readme") */}
+                                {/* Gist Card (The "Readme") - Always editable */}
                                 <div className="bg-zinc-50 rounded-xl border p-6">
                                     <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3">
                                         Summary
                                     </h3>
-                                    {isEditing ? (
-                                        <textarea
-                                            value={editGist}
-                                            onChange={(e) => setEditGist(e.target.value)}
-                                            className="w-full min-h-[120px] p-3 text-sm border rounded-lg resize-y bg-white"
-                                            placeholder="Summary/gist..."
-                                        />
-                                    ) : (
-                                        <div className="prose prose-sm max-w-none text-zinc-700 whitespace-pre-wrap">
-                                            {selectedNode.gist}
-                                        </div>
-                                    )}
+                                    <textarea
+                                        value={editGist}
+                                        onChange={(e) => handleGistChange(e.target.value)}
+                                        className="w-full min-h-[120px] p-3 text-sm border border-transparent hover:border-zinc-200 focus:border-purple-300 rounded-lg resize-y bg-white"
+                                        placeholder="Summary/gist..."
+                                    />
                                 </div>
 
                                 {/* Content Payload (for Documents and Fragments) */}
@@ -486,6 +587,133 @@ export default function KnowledgeTree() {
                 treeName={activeTreeName}
                 onComplete={() => loadTreeStructure(activeTreeId)}
             />
+
+            {/* Create Folder Dialog */}
+            <Dialog open={createFolderOpen} onOpenChange={setCreateFolderOpen}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <FolderPlus className="w-5 h-5 text-blue-500" />
+                            Create New Folder
+                        </DialogTitle>
+                        <DialogDescription>
+                            Create a new subfolder. Folders organize content but contain no direct payload.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 pt-4">
+                        <div>
+                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                Folder Title
+                            </label>
+                            <Input
+                                value={newFolderTitle}
+                                onChange={(e) => setNewFolderTitle(e.target.value)}
+                                placeholder="Enter folder title..."
+                                className="mt-1"
+                            />
+                        </div>
+                        <div>
+                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                Description (Gist)
+                            </label>
+                            <textarea
+                                value={newFolderGist}
+                                onChange={(e) => setNewFolderGist(e.target.value)}
+                                placeholder="What does this folder contain?"
+                                className="w-full mt-1 min-h-[80px] p-3 text-sm border rounded-lg resize-y"
+                            />
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <Button variant="outline" onClick={() => setCreateFolderOpen(false)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={createFolder}
+                                disabled={!newFolderTitle.trim() || !newFolderGist.trim() || creatingFolder}
+                                className="bg-blue-600 hover:bg-blue-700"
+                            >
+                                {creatingFolder ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <FolderPlus className="w-4 h-4" />
+                                )}
+                                Create Folder
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Move Dialog */}
+            <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+                <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Move className="w-5 h-5 text-purple-500" />
+                            Move {moveNodeType === 'folder' ? 'Folder' : moveNodeType === 'document' ? 'Document' : 'Fragment'}
+                        </DialogTitle>
+                        <DialogDescription>
+                            {moveNodeType === 'folder'
+                                ? "Select a folder to move this folder into (along with all its contents)."
+                                : "Select a leaf folder (without subfolders) to move this content into."}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex-1 overflow-hidden pt-4">
+                        <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2 block">
+                            Select Target Folder ({getValidMoveTargets.length} valid targets)
+                        </label>
+                        <ScrollArea className="h-[300px] border rounded-lg">
+                            <div className="p-2 space-y-1">
+                                {getValidMoveTargets.map((folder) => (
+                                    <div
+                                        key={folder.id}
+                                        onClick={() => setMoveTargetId(folder.id)}
+                                        className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                                            moveTargetId === folder.id
+                                                ? "bg-purple-50 border border-purple-200"
+                                                : "hover:bg-zinc-50 border border-transparent"
+                                        }`}
+                                    >
+                                        <Folder
+                                            className={`w-5 h-5 mt-0.5 shrink-0 ${
+                                                moveTargetId === folder.id
+                                                    ? "text-purple-600"
+                                                    : "text-blue-500"
+                                            }`}
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                            <div className="font-medium text-sm truncate">
+                                                {folder.title}
+                                            </div>
+                                            <div className="text-xs text-zinc-400 truncate">
+                                                {folder.gist}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {getValidMoveTargets.length === 0 && (
+                                    <div className="p-4 text-center text-zinc-400 text-sm">
+                                        No valid target folders available
+                                    </div>
+                                )}
+                            </div>
+                        </ScrollArea>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-4 border-t mt-4">
+                        <Button variant="outline" onClick={() => setMoveDialogOpen(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={executeMove}
+                            disabled={!moveTargetId}
+                            className="bg-purple-600 hover:bg-purple-700"
+                        >
+                            <Move className="w-4 h-4" />
+                            Move Here
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
