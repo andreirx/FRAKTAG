@@ -108,10 +108,15 @@ export function IngestionDialog({
   const [aiSplitLoading, setAiSplitLoading] = useState(false);
   const [sectionSplitLoading, setSectionSplitLoading] = useState<number | null>(null);
 
-  // Custom Split State
+  // Custom Split State (for whole document)
   const [showCustomSplit, setShowCustomSplit] = useState(false);
   const [customSplitPattern, setCustomSplitPattern] = useState("");
   const [customSplitError, setCustomSplitError] = useState<string | null>(null);
+  const [customSplitIsRegex, setCustomSplitIsRegex] = useState(false); // false = literal string, true = regex
+
+  // Section-level custom split state
+  const [sectionCustomSplitIndex, setSectionCustomSplitIndex] = useState<number | null>(null);
+  const [sectionCustomSplitString, setSectionCustomSplitString] = useState("");
 
   // Placement State
   const [leafFolders, setLeafFolders] = useState<LeafFolder[]>([]);
@@ -174,6 +179,9 @@ export function IngestionDialog({
     setShowCustomSplit(false);
     setCustomSplitPattern("");
     setCustomSplitError(null);
+    setCustomSplitIsRegex(false);
+    setSectionCustomSplitIndex(null);
+    setSectionCustomSplitString("");
   };
 
   // Reset when dialog closes
@@ -655,15 +663,18 @@ export function IngestionDialog({
 
   // Helper: Build regex for numbered/lettered section markers
   // Matches patterns like: 1. | A. | I. | 1.1. | A.1. | 1.1.1. | IV.2.3. etc.
+  // IMPORTANT: Uses negative lookahead to ensure exact depth matching
+  // e.g., 1.1. should NOT match 1.1.1.1.
   const buildNumberedSectionRegex = (maxDepth: number): RegExp => {
     // A segment can be: digits, single letter, or roman numeral
     const segment = "(?:[0-9]+|[A-Za-z]|[IVXLCDM]+|[ivxlcdm]+)";
     // Build pattern for 1 to maxDepth segments separated by dots
-    // e.g., for depth 2: (segment\.)?(segment\.)\s+ matches "1." or "1.1." or "A.1."
+    // Each pattern includes a negative lookahead to prevent matching deeper sections
     const patterns: string[] = [];
     for (let depth = 1; depth <= maxDepth; depth++) {
-      // Pattern: segment followed by dot, repeated 'depth' times, then space and title text
-      const depthPattern = `${segment}\\.`.repeat(depth);
+      // Pattern: segment followed by dot, repeated 'depth' times
+      // Then negative lookahead to ensure no more segment.dot follows
+      const depthPattern = `${segment}\\.`.repeat(depth) + `(?!${segment}\\.)`;
       patterns.push(depthPattern);
     }
     // Match any of the depth patterns at start of line, followed by space and title
@@ -812,28 +823,43 @@ export function IngestionDialog({
     }
   };
 
-  // Custom split by user-defined pattern/regex
+  // Custom split by user-defined pattern (string or regex)
   const applyCustomSplit = () => {
     if (!fileContent || !customSplitPattern.trim()) return;
 
     setCustomSplitError(null);
 
+    const modeLabel = customSplitIsRegex ? "regex" : "string";
     addAuditEntry(
       "CUSTOM_SPLIT_REQUESTED",
-      `User requested custom split with pattern: "${customSplitPattern}"`,
+      `User requested custom split with ${modeLabel}: "${customSplitPattern}"`,
       "human"
     );
 
     try {
-      // Try to parse as regex (with multiline flag)
-      const regex = new RegExp(`(${customSplitPattern})`, "gm");
-      const matches = [...fileContent.matchAll(regex)];
+      let matchIndices: { index: number; match: string }[] = [];
 
-      if (matches.length === 0) {
-        setCustomSplitError(`No matches found for pattern: "${customSplitPattern}"`);
+      if (customSplitIsRegex) {
+        // Regex mode
+        const regex = new RegExp(`(${customSplitPattern})`, "gm");
+        const matches = [...fileContent.matchAll(regex)];
+        matchIndices = matches.map(m => ({ index: m.index!, match: m[1] }));
+      } else {
+        // Literal string mode - find all occurrences
+        let searchStart = 0;
+        while (true) {
+          const foundIndex = fileContent.indexOf(customSplitPattern, searchStart);
+          if (foundIndex === -1) break;
+          matchIndices.push({ index: foundIndex, match: customSplitPattern });
+          searchStart = foundIndex + customSplitPattern.length;
+        }
+      }
+
+      if (matchIndices.length === 0) {
+        setCustomSplitError(`No matches found for ${modeLabel}: "${customSplitPattern}"`);
         addAuditEntry(
           "CUSTOM_SPLIT_EMPTY",
-          `No matches found for pattern`,
+          `No matches found for ${modeLabel}`,
           "system"
         );
         return;
@@ -842,19 +868,17 @@ export function IngestionDialog({
       const newSplits: { title: string; text: string }[] = [];
 
       // Content before first match
-      if (matches[0].index! > 0) {
-        const preamble = fileContent.slice(0, matches[0].index).trim();
+      if (matchIndices[0].index > 0) {
+        const preamble = fileContent.slice(0, matchIndices[0].index).trim();
         if (preamble.length > 0) {
           newSplits.push({ title: "Introduction", text: preamble });
         }
       }
 
       // Each matched section
-      for (let i = 0; i < matches.length; i++) {
-        const match = matches[i];
-        const matchedDelimiter = match[1];
-        const startIndex = match.index!;
-        const endIndex = matches[i + 1]?.index ?? fileContent.length;
+      for (let i = 0; i < matchIndices.length; i++) {
+        const { index: startIndex, match: matchedDelimiter } = matchIndices[i];
+        const endIndex = matchIndices[i + 1]?.index ?? fileContent.length;
         const text = fileContent.slice(startIndex, endIndex).trim();
 
         // Try to extract a title from the matched delimiter or first line
@@ -879,9 +903,11 @@ export function IngestionDialog({
       if (newSplits.length > 0) {
         setSplits(newSplits);
         setShowCustomSplit(false);
+        setCustomSplitPattern("");
+        setCustomSplitIsRegex(false);
         addAuditEntry(
           "CUSTOM_SPLIT_COMPLETE",
-          `Created ${newSplits.length} splits using custom pattern`,
+          `Created ${newSplits.length} splits using custom ${modeLabel}`,
           "system"
         );
       }
@@ -997,6 +1023,112 @@ export function IngestionDialog({
         "system"
       );
     }
+  };
+
+  // Split a SINGLE section by custom string
+  const splitSingleSectionByString = (index: number, splitString: string) => {
+    const section = splits[index];
+    if (!section || !splitString) return;
+
+    addAuditEntry(
+      "SECTION_STRING_SPLIT_REQUESTED",
+      `User requested to split section ${index + 1} ("${section.title}") by string: "${splitString}"`,
+      "human"
+    );
+
+    // Find all occurrences of the string in the section text
+    const parts: string[] = [];
+    let searchStart = 0;
+    let lastSplitEnd = 0;
+
+    while (true) {
+      const foundIndex = section.text.indexOf(splitString, searchStart);
+      if (foundIndex === -1) break;
+
+      // Add content before this match (if any)
+      if (foundIndex > lastSplitEnd) {
+        const beforeText = section.text.slice(lastSplitEnd, foundIndex).trim();
+        if (beforeText.length > 0 && parts.length === 0) {
+          parts.push(beforeText);
+        }
+      }
+
+      // Start new section from this match
+      searchStart = foundIndex + splitString.length;
+      lastSplitEnd = foundIndex;
+    }
+
+    // Now split the text at each occurrence
+    const occurrences: number[] = [];
+    searchStart = 0;
+    while (true) {
+      const foundIndex = section.text.indexOf(splitString, searchStart);
+      if (foundIndex === -1) break;
+      occurrences.push(foundIndex);
+      searchStart = foundIndex + splitString.length;
+    }
+
+    if (occurrences.length === 0) {
+      addAuditEntry(
+        "SECTION_STRING_SPLIT_EMPTY",
+        `String "${splitString}" not found in section ${index + 1}`,
+        "system"
+      );
+      return;
+    }
+
+    const subSplits: { title: string; text: string }[] = [];
+
+    // Content before first occurrence
+    if (occurrences[0] > 0) {
+      const preamble = section.text.slice(0, occurrences[0]).trim();
+      if (preamble.length > 0) {
+        subSplits.push({ title: `${section.title} - Introduction`, text: preamble });
+      }
+    }
+
+    // Each occurrence becomes a new section
+    for (let i = 0; i < occurrences.length; i++) {
+      const startIndex = occurrences[i];
+      const endIndex = occurrences[i + 1] ?? section.text.length;
+      const text = section.text.slice(startIndex, endIndex).trim();
+
+      // Try to extract title from first substantive line
+      let title = `${section.title} - Part ${i + 1}`;
+      const lines = text.split("\n");
+      for (const line of lines.slice(0, 5)) {
+        const trimmed = line.replace(/^[#\-*=\s]+/, "").trim();
+        if (trimmed.length > 3 && trimmed.length < 150 && trimmed !== splitString) {
+          title = trimmed;
+          break;
+        }
+      }
+
+      subSplits.push({ title, text });
+    }
+
+    if (subSplits.length > 1) {
+      setSplits((prev) => {
+        const updated = [...prev];
+        updated.splice(index, 1, ...subSplits);
+        return updated;
+      });
+      addAuditEntry(
+        "SECTION_STRING_SPLIT_COMPLETE",
+        `Split section ${index + 1} into ${subSplits.length} sub-sections using string "${splitString}"`,
+        "system"
+      );
+    } else {
+      addAuditEntry(
+        "SECTION_STRING_SPLIT_SINGLE",
+        `String found but section remains as single unit`,
+        "system"
+      );
+    }
+
+    // Reset the custom split state
+    setSectionCustomSplitIndex(null);
+    setSectionCustomSplitString("");
   };
 
   // AI split a SINGLE section
@@ -1570,7 +1702,7 @@ export function IngestionDialog({
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-amber-700">
-              <Regex className="w-4 h-4" />
+              <Scissors className="w-4 h-4" />
               <span className="text-sm font-medium">Custom Split Pattern</span>
             </div>
             <Button
@@ -1579,18 +1711,48 @@ export function IngestionDialog({
               onClick={() => {
                 setShowCustomSplit(false);
                 setCustomSplitError(null);
+                setCustomSplitPattern("");
+                setCustomSplitIsRegex(false);
               }}
               className="text-amber-600 hover:text-amber-800"
             >
               Cancel
             </Button>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-3">
+            {/* Mode Toggle */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCustomSplitIsRegex(false)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-l-lg border transition-colors ${
+                  !customSplitIsRegex
+                    ? "bg-amber-600 text-white border-amber-600"
+                    : "bg-white text-amber-700 border-amber-300 hover:bg-amber-50"
+                }`}
+              >
+                Simple String
+              </button>
+              <button
+                onClick={() => setCustomSplitIsRegex(true)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-r-lg border-t border-r border-b transition-colors flex items-center gap-1 ${
+                  customSplitIsRegex
+                    ? "bg-amber-600 text-white border-amber-600"
+                    : "bg-white text-amber-700 border-amber-300 hover:bg-amber-50"
+                }`}
+              >
+                <Regex className="w-3 h-3" />
+                Regex
+              </button>
+            </div>
+
             <Input
               value={customSplitPattern}
               onChange={(e) => setCustomSplitPattern(e.target.value)}
-              placeholder="Enter regex pattern (e.g., ^## .+ or ^Page \d+ or ^Chapter)"
-              className="font-mono text-sm"
+              placeholder={customSplitIsRegex
+                ? "Enter regex pattern (e.g., ^## .+ or ^Page \\d+)"
+                : "Enter exact text to split on (e.g., --- or CHAPTER or ***)"
+              }
+              className={`text-sm ${customSplitIsRegex ? "font-mono" : ""}`}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -1600,7 +1762,10 @@ export function IngestionDialog({
             />
             <div className="flex items-center justify-between">
               <p className="text-xs text-amber-600">
-                Regex pattern to match section headers. The document will split at each match.
+                {customSplitIsRegex
+                  ? "Regex pattern to match section headers. The document will split at each match."
+                  : "Exact text string to split on. The document will split at each occurrence."
+                }
               </p>
               <Button
                 size="sm"
@@ -1618,11 +1783,21 @@ export function IngestionDialog({
               </div>
             )}
             <div className="text-xs text-amber-600 bg-amber-100/50 px-3 py-2 rounded">
-              <span className="font-medium">Examples:</span>{" "}
-              <code className="bg-white px-1 rounded">^## .+</code> (H2 headers),{" "}
-              <code className="bg-white px-1 rounded">^Page \d+</code> (page markers),{" "}
-              <code className="bg-white px-1 rounded">^CHAPTER</code> (chapter starts),{" "}
-              <code className="bg-white px-1 rounded">^\*\*\*.+\*\*\*$</code> (bold separators)
+              {customSplitIsRegex ? (
+                <>
+                  <span className="font-medium">Regex Examples:</span>{" "}
+                  <code className="bg-white px-1 rounded">^## .+</code> (H2 headers),{" "}
+                  <code className="bg-white px-1 rounded">^Page \d+</code> (page markers),{" "}
+                  <code className="bg-white px-1 rounded">^CHAPTER</code> (chapter starts)
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">String Examples:</span>{" "}
+                  <code className="bg-white px-1 rounded">---</code> (horizontal rule),{" "}
+                  <code className="bg-white px-1 rounded">***</code> (asterisk separator),{" "}
+                  <code className="bg-white px-1 rounded">SECTION</code> (section marker)
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1713,6 +1888,11 @@ export function IngestionDialog({
                           Sub-subsections (1.1.1.)
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setSectionCustomSplitIndex(index)}>
+                          <Scissors className="w-4 h-4 mr-2" />
+                          Custom String...
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => aiSplitSingleSection(index)}>
                           <Sparkles className="w-4 h-4 mr-2" />
                           AI Split
@@ -1767,6 +1947,54 @@ export function IngestionDialog({
                       </span>
                     )}
                   </div>
+
+                  {/* Custom string split input for this section */}
+                  {sectionCustomSplitIndex === index && (
+                    <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2">
+                      <div className="flex items-center gap-2 text-amber-700 text-xs font-medium">
+                        <Scissors className="w-3 h-3" />
+                        Split by custom string
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={sectionCustomSplitString}
+                          onChange={(e) => setSectionCustomSplitString(e.target.value)}
+                          placeholder="Enter text to split on (e.g., --- or *** or SECTION)"
+                          className="flex-1 text-sm h-8"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && sectionCustomSplitString.trim()) {
+                              e.preventDefault();
+                              splitSingleSectionByString(index, sectionCustomSplitString);
+                            }
+                            if (e.key === "Escape") {
+                              setSectionCustomSplitIndex(null);
+                              setSectionCustomSplitString("");
+                            }
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => splitSingleSectionByString(index, sectionCustomSplitString)}
+                          disabled={!sectionCustomSplitString.trim()}
+                          className="bg-amber-600 hover:bg-amber-700 h-8"
+                        >
+                          Split
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setSectionCustomSplitIndex(null);
+                            setSectionCustomSplitString("");
+                          }}
+                          className="h-8 text-amber-600"
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

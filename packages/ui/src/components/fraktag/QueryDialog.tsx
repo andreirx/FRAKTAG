@@ -30,6 +30,10 @@ interface StreamingSource {
   path: string;
   sourceInfo: string;
   preview: string;
+  gist: string;
+  nodeId: string;
+  contentId: string;
+  fullContent: string;
 }
 
 interface QueryDialogProps {
@@ -60,6 +64,10 @@ export function QueryDialog({
   // Auto-scroll ref
   const answerRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Source hover/click state
+  const [hoveredSource, setHoveredSource] = useState<StreamingSource | null>(null);
+  const [selectedSource, setSelectedSource] = useState<StreamingSource | null>(null);
 
   // Auto-scroll as answer streams
   useEffect(() => {
@@ -317,8 +325,10 @@ export function QueryDialog({
                         {streamingSources.map((source, i) => (
                           <div
                             key={i}
-                            className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs animate-in fade-in slide-in-from-left-2 duration-300"
-                            title={source.preview}
+                            className="relative bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs animate-in fade-in slide-in-from-left-2 duration-300 cursor-pointer hover:bg-emerald-100 hover:border-emerald-300 transition-colors"
+                            onMouseEnter={() => setHoveredSource(source)}
+                            onMouseLeave={() => setHoveredSource(null)}
+                            onClick={() => setSelectedSource(source)}
                           >
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-emerald-700">[{source.index}]</span>
@@ -329,6 +339,14 @@ export function QueryDialog({
                             {source.sourceInfo && (
                               <div className="text-emerald-600 text-[10px] mt-0.5">
                                 {source.sourceInfo}
+                              </div>
+                            )}
+                            {/* Hover Tooltip showing gist */}
+                            {hoveredSource === source && source.gist && (
+                              <div className="absolute z-50 bottom-full left-0 mb-2 w-72 p-3 bg-zinc-900 text-white text-xs rounded-lg shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                                <div className="font-semibold text-emerald-300 mb-1">Summary:</div>
+                                <div className="text-zinc-200 leading-relaxed">{source.gist}</div>
+                                <div className="absolute bottom-0 left-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-zinc-900"></div>
                               </div>
                             )}
                           </div>
@@ -431,6 +449,48 @@ export function QueryDialog({
           </ScrollArea>
         </div>
       </DialogContent>
+
+      {/* Source Content Popup */}
+      {selectedSource && (
+        <Dialog open={!!selectedSource} onOpenChange={(open) => !open && setSelectedSource(null)}>
+          <DialogContent className="w-[80vw] max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-emerald-600" />
+                <span className="text-emerald-700">[{selectedSource.index}]</span>
+                {selectedSource.title}
+              </DialogTitle>
+              <DialogDescription>
+                {selectedSource.path}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex-1 min-h-0 space-y-4 pt-4 overflow-hidden flex flex-col">
+              {/* Gist */}
+              {selectedSource.gist && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                  <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-2">Summary</div>
+                  <div className="text-sm text-emerald-800">{selectedSource.gist}</div>
+                </div>
+              )}
+              {/* Full Content */}
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Full Content</div>
+                <ScrollArea className="flex-1 min-h-0 border rounded-lg bg-white">
+                  <pre className="p-4 text-sm font-mono text-zinc-700 whitespace-pre-wrap leading-relaxed">
+                    {selectedSource.fullContent}
+                  </pre>
+                </ScrollArea>
+              </div>
+              {/* Source Info */}
+              {selectedSource.sourceInfo && (
+                <div className="text-xs text-zinc-500">
+                  <span className="font-medium">Source:</span> {selectedSource.sourceInfo}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </Dialog>
   );
 }

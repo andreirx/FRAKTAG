@@ -1,11 +1,23 @@
 // src/core/KnowledgeBase.ts
 // Self-contained, portable knowledge base
 
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { resolve, join } from 'path';
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { resolve, join, basename } from 'path';
 import { existsSync } from 'fs';
 import { KnowledgeBaseConfig, SeedFolder, TreeConfig } from './types.js';
 import { JsonStorage } from '../adapters/storage/JsonStorage.js';
+
+/**
+ * Info about a discovered knowledge base (before loading)
+ */
+export interface DiscoveredKB {
+  id: string;
+  name: string;
+  path: string;
+  folderName: string;
+  organizingPrinciple: string;
+  isLoaded: boolean;
+}
 
 /**
  * Represents a self-contained, portable knowledge base.
@@ -222,9 +234,74 @@ export class KnowledgeBase {
 export class KnowledgeBaseManager {
   private knowledgeBases: Map<string, KnowledgeBase> = new Map();
   private basePath: string;
+  private kbStoragePath: string;
 
-  constructor(basePath: string) {
+  constructor(basePath: string, kbStoragePath?: string) {
     this.basePath = resolve(basePath);
+    // Default KB storage path is basePath/knowledge-bases
+    this.kbStoragePath = kbStoragePath
+      ? resolve(kbStoragePath)
+      : resolve(basePath, 'knowledge-bases');
+  }
+
+  /**
+   * Get the KB storage path
+   */
+  getKbStoragePath(): string {
+    return this.kbStoragePath;
+  }
+
+  /**
+   * Ensure the KB storage directory exists
+   */
+  async ensureStorageDir(): Promise<void> {
+    if (!existsSync(this.kbStoragePath)) {
+      await mkdir(this.kbStoragePath, { recursive: true });
+      console.log(`📁 Created KB storage directory: ${this.kbStoragePath}`);
+    }
+  }
+
+  /**
+   * Discover all knowledge bases in the storage path
+   * Returns info about each KB, including whether it's currently loaded
+   */
+  async discover(): Promise<DiscoveredKB[]> {
+    await this.ensureStorageDir();
+
+    const discovered: DiscoveredKB[] = [];
+
+    try {
+      const entries = await readdir(this.kbStoragePath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+
+        const kbPath = join(this.kbStoragePath, entry.name);
+        const configPath = join(kbPath, 'kb.json');
+
+        if (!existsSync(configPath)) continue;
+
+        try {
+          const configContent = await readFile(configPath, 'utf-8');
+          const config: KnowledgeBaseConfig = JSON.parse(configContent);
+
+          discovered.push({
+            id: config.id,
+            name: config.name,
+            path: kbPath,
+            folderName: entry.name,
+            organizingPrinciple: config.organizingPrinciple,
+            isLoaded: this.knowledgeBases.has(config.id),
+          });
+        } catch (err: any) {
+          console.warn(`⚠️ Invalid KB at ${kbPath}: ${err.message}`);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`⚠️ Failed to scan KB storage: ${err.message}`);
+    }
+
+    return discovered;
   }
 
   /**
@@ -244,7 +321,64 @@ export class KnowledgeBaseManager {
   }
 
   /**
-   * Create a new KB and add it to the manager
+   * Load a KB by its path
+   */
+  async load(kbPath: string): Promise<KnowledgeBase> {
+    const absolutePath = resolve(kbPath);
+    const kb = await KnowledgeBase.load(absolutePath);
+    this.knowledgeBases.set(kb.id, kb);
+    console.log(`📚 Loaded KB: ${kb.name} (${kb.id})`);
+    return kb;
+  }
+
+  /**
+   * Create a new KB in the storage path with a simple name
+   * Auto-generates the folder name and ID from the name
+   */
+  async createInStorage(options: {
+    name: string;
+    organizingPrinciple: string;
+    seedFolders?: SeedFolder[];
+    dogma?: KnowledgeBaseConfig['dogma'];
+  }): Promise<KnowledgeBase> {
+    await this.ensureStorageDir();
+
+    // Generate folder name from name (lowercase, replace spaces with dashes, remove special chars)
+    const folderName = options.name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 50);
+
+    // Generate unique ID
+    const id = `kb-${folderName}-${Date.now().toString(36)}`;
+
+    // Full path in storage
+    const kbPath = join(this.kbStoragePath, folderName);
+
+    // Check if folder already exists, append number if needed
+    let finalPath = kbPath;
+    let counter = 1;
+    while (existsSync(finalPath)) {
+      finalPath = `${kbPath}-${counter}`;
+      counter++;
+    }
+
+    const kb = await KnowledgeBase.create(finalPath, {
+      id,
+      name: options.name,
+      organizingPrinciple: options.organizingPrinciple,
+      seedFolders: options.seedFolders,
+      dogma: options.dogma,
+    });
+
+    this.knowledgeBases.set(kb.id, kb);
+    return kb;
+  }
+
+  /**
+   * Create a new KB and add it to the manager (legacy method with explicit path)
    */
   async create(
     relativePath: string,

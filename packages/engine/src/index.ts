@@ -39,7 +39,7 @@ import { OpenAIEmbeddingAdapter } from './adapters/embeddings/OpenAIEmbeddingAda
 import { VectorStore } from './core/VectorStore.js';
 import { Arborist, TreeOperation } from './core/Arborist.js';
 import { FileProcessor } from './utils/FileProcessor.js';
-import { KnowledgeBase, KnowledgeBaseManager } from './core/KnowledgeBase.js';
+import { KnowledgeBase, KnowledgeBaseManager, DiscoveredKB } from './core/KnowledgeBase.js';
 
 /**
  * Fraktag Engine - Strict Taxonomy Knowledge Management
@@ -152,11 +152,15 @@ export class Fraktag {
       const instance = new Fraktag(config, storage);
       instance.configPath = absolutePath;
 
+      // Initialize KB manager (always, to allow discovery and creation)
+      const configDir = dirname(absolutePath);
+      const kbStoragePath = config.kbStoragePath
+        ? resolve(configDir, config.kbStoragePath)
+        : resolve(configDir, 'knowledge-bases');
+      instance.kbManager = new KnowledgeBaseManager(configDir, kbStoragePath);
+
       // Load knowledge bases if configured
       if (config.knowledgeBases && config.knowledgeBases.length > 0) {
-        const configDir = dirname(absolutePath);
-        instance.kbManager = new KnowledgeBaseManager(configDir);
-
         const kbPaths = config.knowledgeBases
           .filter(kb => kb.enabled !== false)
           .map(kb => kb.path);
@@ -746,7 +750,11 @@ export class Fraktag {
             title,
             path: node.path,
             sourceInfo,
-            preview: node.content.slice(0, 200) + (node.content.length > 200 ? '...' : '')
+            preview: node.content.slice(0, 200) + (node.content.length > 200 ? '...' : ''),
+            gist: treeNode?.gist || '',
+            nodeId: node.nodeId,
+            contentId: node.contentId,
+            fullContent: node.content
           }
         });
 
@@ -960,6 +968,22 @@ export class Fraktag {
   }
 
   /**
+   * Discover all knowledge bases in the storage path
+   * Returns both loaded and unloaded KBs
+   */
+  async discoverKnowledgeBases(): Promise<DiscoveredKB[]> {
+    if (!this.kbManager) return [];
+    return this.kbManager.discover();
+  }
+
+  /**
+   * Get the KB storage path
+   */
+  getKbStoragePath(): string | null {
+    return this.kbManager?.getKbStoragePath() || null;
+  }
+
+  /**
    * Get a knowledge base by ID
    */
   getKnowledgeBase(id: string): KnowledgeBase | undefined {
@@ -967,7 +991,7 @@ export class Fraktag {
   }
 
   /**
-   * Create a new knowledge base
+   * Create a new knowledge base (legacy method with explicit path)
    */
   async createKnowledgeBase(
     relativePath: string,
@@ -996,6 +1020,32 @@ export class Fraktag {
   }
 
   /**
+   * Create a new knowledge base in the default storage path
+   * Simpler API - just provide name and organizing principle
+   */
+  async createKnowledgeBaseInStorage(options: {
+    name: string;
+    organizingPrinciple: string;
+    seedFolders?: KnowledgeBaseConfig['seedFolders'];
+    dogma?: KnowledgeBaseConfig['dogma'];
+  }): Promise<KnowledgeBase> {
+    if (!this.kbManager) {
+      // Initialize KB manager if not present
+      const configDir = this.configPath ? dirname(this.configPath) : process.cwd();
+      this.kbManager = new KnowledgeBaseManager(configDir);
+    }
+
+    const kb = await this.kbManager.createInStorage(options);
+
+    // Create the default tree for this KB
+    const treeConfig = kb.getTreeConfig();
+    await this.treeStore.createTree(treeConfig);
+    console.log(`🌱 Created tree for new KB "${kb.name}": ${treeConfig.name}`);
+
+    return kb;
+  }
+
+  /**
    * Load an existing knowledge base from a path
    */
   async loadKnowledgeBase(kbPath: string): Promise<KnowledgeBase> {
@@ -1005,16 +1055,8 @@ export class Fraktag {
       this.kbManager = new KnowledgeBaseManager(configDir);
     }
 
-    // Load the KB
-    const absolutePath = resolve(
-      this.configPath ? dirname(this.configPath) : process.cwd(),
-      kbPath
-    );
-    const kb = await KnowledgeBase.load(absolutePath);
-
-    // Add to manager
-    (this.kbManager as any).knowledgeBases.set(kb.id, kb);
-    console.log(`📚 Loaded KB: ${kb.name} (${kb.id})`);
+    // Load the KB using manager
+    const kb = await this.kbManager.load(kbPath);
 
     // Initialize trees from this KB
     const treeIds = await kb.listTrees();
@@ -1077,3 +1119,4 @@ export class Fraktag {
 
 // Export all types
 export * from './core/types.js';
+export { DiscoveredKB } from './core/KnowledgeBase.js';

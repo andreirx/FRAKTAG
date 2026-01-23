@@ -33,6 +33,7 @@ export interface KnowledgeBaseRef {
 export interface FraktagConfig {
   instanceId: string;
   storagePath: string;
+  kbStoragePath?: string;               // Root path for knowledge bases (default: storagePath/knowledge-bases)
   llm: LLMConfig;
   embedding?: EmbeddingConfig;
   trees: TreeConfig[];                  // Legacy: inline tree definitions

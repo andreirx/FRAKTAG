@@ -41,12 +41,24 @@ function findConfig(): string {
 
 // ============ KNOWLEDGE BASE ENDPOINTS ============
 
-// List all knowledge bases
+// List all loaded knowledge bases
 app.get('/api/knowledge-bases', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
     const kbs = fraktag.listKnowledgeBases();
     res.json(kbs);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Discover all knowledge bases in the storage path (both loaded and unloaded)
+app.get('/api/knowledge-bases/discover', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const discovered = await fraktag.discoverKnowledgeBases();
+    const storagePath = fraktag.getKbStoragePath();
+    res.json({ storagePath, knowledgeBases: discovered });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -70,25 +82,35 @@ app.get('/api/knowledge-bases/:id', async (req, res) => {
   }
 });
 
-// Create a new knowledge base
+// Create a new knowledge base (simplified - no path needed)
 app.post('/api/knowledge-bases', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const { path: kbPath, name, organizingPrinciple, seedFolders, dogma } = req.body;
-    if (!kbPath || !name || !organizingPrinciple) {
-      return res.status(400).json({ error: 'path, name, and organizingPrinciple are required' });
+    const { name, organizingPrinciple, seedFolders, dogma, path: kbPath } = req.body;
+    if (!name || !organizingPrinciple) {
+      return res.status(400).json({ error: 'name and organizingPrinciple are required' });
     }
 
-    // Generate ID from name
-    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-
-    const kb = await fraktag.createKnowledgeBase(kbPath, {
-      id,
-      name,
-      organizingPrinciple,
-      seedFolders,
-      dogma
-    });
+    let kb;
+    if (kbPath) {
+      // Legacy: explicit path provided
+      const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      kb = await fraktag.createKnowledgeBase(kbPath, {
+        id,
+        name,
+        organizingPrinciple,
+        seedFolders,
+        dogma
+      });
+    } else {
+      // New: create in storage path (no path needed)
+      kb = await fraktag.createKnowledgeBaseInStorage({
+        name,
+        organizingPrinciple,
+        seedFolders,
+        dogma
+      });
+    }
 
     res.json(kb.toJSON());
   } catch (e: any) {
