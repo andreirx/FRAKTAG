@@ -105,6 +105,13 @@ export interface PromptSet {
 
 // ============ CONTENT LAYER ============
 
+/**
+ * Content editability mode:
+ * - 'editable': User can directly edit the content in the UI
+ * - 'readonly': Content is immutable; can only be replaced with a new version
+ */
+export type ContentEditMode = 'editable' | 'readonly';
+
 export interface ContentAtom {
   id: string;
   hash: string;
@@ -113,7 +120,10 @@ export interface ContentAtom {
   sourceUri?: string;
   createdAt: string;
   createdBy: string;
-  supersedes?: string;
+  updatedAt?: string;           // For editable content - last edit time
+  supersedes?: string;          // For versioning - ID of previous version
+  supersededBy?: string;        // For versioning - ID of newer version (set when replaced)
+  editMode: ContentEditMode;    // Whether content is editable or readonly
   metadata: Record<string, unknown>;
 }
 
@@ -163,7 +173,8 @@ export interface FolderNode extends BaseNode {
  */
 export interface DocumentNode extends BaseNode {
   type: 'document';
-  contentId: string;   // Reference to the full text in ContentStore
+  contentId: string;           // Reference to the full text in ContentStore
+  editMode: ContentEditMode;   // Whether content is editable or readonly
 }
 
 /**
@@ -176,7 +187,8 @@ export interface DocumentNode extends BaseNode {
  */
 export interface FragmentNode extends BaseNode {
   type: 'fragment';
-  contentId: string;   // Reference to the chunk text in ContentStore
+  contentId: string;           // Reference to the chunk text in ContentStore
+  editMode: ContentEditMode;   // Whether content is editable or readonly
 }
 
 /**

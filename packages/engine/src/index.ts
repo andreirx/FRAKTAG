@@ -21,6 +21,7 @@ import {
   BrowseRequest,
   BrowseResult,
   ContentAtom,
+  ContentEditMode,
   Tree,
   TreeNode,
   FolderNode,
@@ -235,9 +236,10 @@ export class Fraktag {
     treeId: string,
     parentFolderId: string,
     title: string,
-    gist?: string
+    gist?: string,
+    editMode: ContentEditMode = 'readonly'
   ): Promise<DocumentNode> {
-    return await this.fractalizer.ingestDocument(content, treeId, parentFolderId, title, gist);
+    return await this.fractalizer.ingestDocument(content, treeId, parentFolderId, title, gist, editMode);
   }
 
   /**
@@ -248,9 +250,10 @@ export class Fraktag {
     treeId: string,
     parentDocumentId: string,
     title: string,
-    gist?: string
+    gist?: string,
+    editMode: ContentEditMode = 'readonly'
   ) {
-    return await this.fractalizer.createFragment(content, treeId, parentDocumentId, title, gist);
+    return await this.fractalizer.createFragment(content, treeId, parentDocumentId, title, gist, editMode);
   }
 
   /**
@@ -283,6 +286,104 @@ export class Fraktag {
     confidence: number;
   }> {
     return await this.fractalizer.proposePlacement(treeId, documentTitle, documentGist);
+  }
+
+  // ============ EDITABLE CONTENT ============
+
+  /**
+   * Create an editable document (user-created note)
+   * Content can be edited directly in the UI
+   */
+  async createEditableDocument(
+    treeId: string,
+    parentFolderId: string,
+    title: string,
+    content: string = '',
+    gist: string = ''
+  ): Promise<DocumentNode> {
+    return await this.fractalizer.ingestDocument(
+      content,
+      treeId,
+      parentFolderId,
+      title,
+      gist || undefined,  // Will skip gist generation if empty
+      'editable'
+    );
+  }
+
+  /**
+   * Update the content of an editable document or fragment
+   * Returns the updated content atom, or throws if not editable
+   */
+  async updateEditableContent(contentId: string, newPayload: string): Promise<ContentAtom> {
+    const updated = await this.contentStore.updatePayload(contentId, newPayload);
+    if (!updated) {
+      throw new Error(`Content not found: ${contentId}`);
+    }
+    return updated;
+  }
+
+  /**
+   * Replace a read-only document's content with a new version
+   * This creates a new content atom that supersedes the old one
+   * and updates the node to point to the new content
+   */
+  async replaceContentVersion(
+    nodeId: string,
+    newContent: string,
+    createdBy: string = 'user'
+  ): Promise<{ node: TreeNode; newContent: ContentAtom }> {
+    // Find the node across all trees
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    if (!hasContent(node)) {
+      throw new Error(`Node ${nodeId} is a folder and has no content`);
+    }
+
+    // Create new version of content
+    const newContentAtom = await this.contentStore.createVersion(
+      node.contentId,
+      newContent,
+      createdBy
+    );
+
+    // Update node to point to new content
+    (node as DocumentNode).contentId = newContentAtom.id;
+    node.updatedAt = new Date().toISOString();
+    await this.treeStore.saveNode(node);
+
+    // Re-index the node with new content
+    await this.vectorStore.add(
+      nodeId,
+      `${node.title}\n${node.gist}\n${newContent.slice(0, 500)}`
+    );
+    await this.vectorStore.save(node.treeId);
+
+    return { node, newContent: newContentAtom };
+  }
+
+  /**
+   * Get the version history of a content atom
+   */
+  async getContentHistory(contentId: string): Promise<ContentAtom[]> {
+    return await this.contentStore.getHistory(contentId);
+  }
+
+  /**
+   * Get the latest version of content (in case node points to old version)
+   */
+  async getLatestContent(contentId: string): Promise<ContentAtom | null> {
+    return await this.contentStore.getLatestVersion(contentId);
+  }
+
+  /**
+   * Check if content has been superseded by a newer version
+   */
+  async isContentSuperseded(contentId: string): Promise<boolean> {
+    return await this.contentStore.isSuperseded(contentId);
   }
 
   // ============ LEGACY INGESTION (Deprecated) ============

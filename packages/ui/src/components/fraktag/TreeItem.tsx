@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 
 // Matches the new strict taxonomy types
 export type NodeType = 'folder' | 'document' | 'fragment';
+export type ContentEditMode = 'editable' | 'readonly';
 
 export interface TreeNode {
     id: string;
@@ -13,6 +14,7 @@ export interface TreeNode {
     title: string;           // User-facing label
     gist: string;            // AI summary / readme
     contentId?: string;      // Only for document/fragment
+    editMode?: ContentEditMode;  // Whether content is editable
     sortOrder?: number;
 }
 

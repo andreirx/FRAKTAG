@@ -209,6 +209,38 @@ The tree enforces a strict taxonomy:
 
 Every node has both a **title** (human-readable label) and a **gist** (semantic summary).
 
+### Content Editing Modes
+
+Content in FRAKTAG can be either **editable** or **read-only**:
+
+- **Editable Content:** User-created notes that can be edited directly in the UI with auto-save
+- **Read-Only Content:** Ingested documents that preserve the original source; can only be replaced with new versions
+
+#### Creating Editable Notes
+
+1. Select a leaf folder (folder that can contain documents)
+2. Click **"Create Note"** button in the Folder Info panel
+3. Enter a title for your note
+4. The note is created with editable content - write directly in the UI
+5. Changes auto-save as you type (1 second debounce)
+
+#### Versioning Read-Only Content
+
+Read-only content (from file ingestion) cannot be edited directly to preserve source integrity. Instead:
+
+1. Select a document with read-only content
+2. Click **"Replace Version"** button
+3. Edit the content in the dialog
+4. Submit to create a new version
+
+The old version is preserved in history (via `supersedes` chain), and the node points to the new version.
+
+#### AI-Generated Summaries
+
+- Click **"Generate Summary"** on any document to create an AI-generated gist
+- Auto-generates when navigating away from a node that has content but no summary
+- Only triggers if content has at least 10 characters
+
 ---
 
 ## 3. Tech Stack
@@ -261,7 +293,10 @@ Responsible for structural health.
 *   **Operations:** Can execute `CLUSTER`, `PRUNE`, `RENAME`, and `MOVE` commands to reorganize the graph automatically.
 
 #### 4. The Stores
-*   **`ContentStore`:** Manages immutable blobs (`uuid.json`). Uses SHA-256 hashing for deduplication.
+*   **`ContentStore`:** Manages content atoms (`uuid.json`). Uses SHA-256 hashing for deduplication.
+    - **Edit modes:** `editable` (user notes, direct editing) or `readonly` (ingested files, versioning only)
+    - **Versioning:** Content can supersede previous versions via `supersedes` chain
+    - **History:** Full version history accessible via `getHistory()`
 *   **`TreeStore`:** Manages the hierarchy (`treeId.json`). Supports monolithic loading/saving for portability.
 *   **`VectorStore`:** Manages the embedding index.
 
@@ -278,7 +313,13 @@ A lightweight Express bridge.
 A "God's Eye View" of the knowledge base with human-supervised ingestion.
 
 *   **Tree Visualizer:** A recursive sidebar that renders the entire hierarchy with auto-expansion to content level.
-*   **Content Inspector:** Edit titles and gists with auto-save. View raw text/markdown payload.
+*   **Content Inspector:** Edit titles and gists with auto-save. View and edit content based on edit mode.
+*   **Inline Content Editing:**
+    - **Editable content:** Direct editing with auto-save (1s debounce)
+    - **Read-only content:** View with "Replace Version" option for creating new versions
+    - **Edit mode badges:** Visual indicators showing EDITABLE (green) or READ-ONLY (gray)
+    - **Create Note:** Button in leaf folders to create editable documents
+    - **Generate Summary:** AI-powered gist generation on demand or auto-trigger on navigate away
 *   **Ingestion Dialog (`IngestionDialog.tsx`):** Multi-step wizard with:
     - Document minimap showing split positions visually
     - Programmatic splitting (H1/H2/H3, HR, numbered sections, custom regex)
@@ -290,6 +331,7 @@ A "God's Eye View" of the knowledge base with human-supervised ingestion.
     - **Retrieve mode:** Vector + graph search returning relevant fragments
     - **Ask mode:** Full RAG synthesis with live streaming via Server-Sent Events
 *   **Move Dialog (`MoveDialog.tsx`):** Relocate nodes with full path visibility and inline folder creation.
+*   **KB Manager Dialog:** Create and load portable knowledge bases, add trees to KBs.
 *   **Folder Management:** Create subfolders (enforcing rules), move content and folders.
 
 ### D. Parsing Adapters (`src/adapters/parsing`)
@@ -458,8 +500,10 @@ Within each KB:
 
 4.  **`content/*.json`**: The Memories.
     *   Flat list of JSON files containing the raw text.
-    *   Immutable and Deduplicated via SHA-256.
+    *   Deduplicated via SHA-256.
     *   Shared across all trees in the KB.
+    *   **Edit modes:** `editable` for user notes, `readonly` for ingested files.
+    *   **Versioning:** `supersedes` and `supersededBy` fields link version history.
 
 5.  **`indexes/*.vectors.json`**: The Semantic Index.
     *   JSON-based vector store for similarity search.
@@ -487,8 +531,9 @@ fkt kb migrate notes ./knowledge-bases/notes
 
 *   **Ingestion:** Human-supervised with full audit trail. AI proposes, humans approve.
 *   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach.
+*   **Content Editing:** Inline editing for user notes, version replacement for ingested content.
 *   **Maintenance:** Manual folder/content management with rule enforcement.
-*   **UI:** Functional with auto-save, resizable panels, and ingestion wizard.
+*   **UI:** Functional with auto-save, resizable panels, ingestion wizard, and KB management.
 
 ---
 
@@ -504,10 +549,9 @@ fkt kb migrate notes ./knowledge-bases/notes
 
 ## 8. Next Steps
 
-*   **Inline Content Editing:** Edit document/fragment content directly in the UI.
-*   **Batch Ingestion:** Process multiple files with consistent rules.
-*   **Version History:** Track changes to content over time (supersedes chain).
-*   **Cloud Deployment:** AWS CDK infrastructure.
+*   **Fix Splitting:** Splitting by section returns the same result whatever the section depth. Splitting by custom applies only to the overall doc - I want to split individual sections by string not regex. Add an option to SPLIT SECTION AT CURSOR.
 *   **Conversation Memory:** Multi-turn Q&A with context retention.
 *   **Question and Answer Caching:** Some questions have been asked before, why not answer from a cache.
-*   **Fix Splitting:** Splitting by section returns the same result whatever the section depth. Splitting by custom applies only to the overall doc, it should also help split individual sections. Add an option to SPLIT SECTION AT CURSOR.
+*   **Cloud Deployment:** AWS CDK infrastructure.
+*   **Batch Ingestion:** Process multiple files with consistent rules.
+*   **Version History UI:** View and navigate content version history in the UI (backend complete).

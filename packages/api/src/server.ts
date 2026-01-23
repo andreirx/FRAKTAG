@@ -281,6 +281,61 @@ app.get('/api/content/:id', async (req, res) => {
   }
 });
 
+// Update editable content payload
+app.patch('/api/content/:id', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { payload } = req.body;
+    if (payload === undefined) {
+      return res.status(400).json({ error: 'payload is required' });
+    }
+    const updated = await fraktag.updateEditableContent(req.params.id, payload);
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get content version history
+app.get('/api/content/:id/history', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const history = await fraktag.getContentHistory(req.params.id);
+    res.json(history);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get latest version of content
+app.get('/api/content/:id/latest', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const latest = await fraktag.getLatestContent(req.params.id);
+    if (!latest) {
+      return res.status(404).json({ error: 'Content not found' });
+    }
+    res.json(latest);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Replace node content with new version (for readonly content)
+app.post('/api/nodes/:id/replace-version', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { content } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: 'content is required' });
+    }
+    const result = await fraktag.replaceContentVersion(req.params.id, content, 'user');
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ FILE PARSING ENDPOINTS ============
 
 // Parse file (PDF, text, etc.) and extract text content
@@ -325,15 +380,43 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
-// Ingest document into specific folder
+// Ingest document into specific folder (readonly by default)
 app.post('/api/trees/:treeId/documents', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const { folderId, content, title, gist } = req.body;
+    const { folderId, content, title, gist, editMode } = req.body;
     if (!folderId || !content || !title) {
       return res.status(400).json({ error: 'folderId, content, and title are required' });
     }
-    const doc = await fraktag.ingestDocument(content, req.params.treeId, folderId, title, gist);
+    const doc = await fraktag.ingestDocument(
+      content,
+      req.params.treeId,
+      folderId,
+      title,
+      gist,
+      editMode || 'readonly'
+    );
+    res.json(doc);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create editable document (user note)
+app.post('/api/trees/:treeId/editable-documents', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { folderId, title, content, gist } = req.body;
+    if (!folderId || !title) {
+      return res.status(400).json({ error: 'folderId and title are required' });
+    }
+    const doc = await fraktag.createEditableDocument(
+      req.params.treeId,
+      folderId,
+      title,
+      content || '',
+      gist || ''
+    );
     res.json(doc);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

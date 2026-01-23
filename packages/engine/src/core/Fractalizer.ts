@@ -13,6 +13,7 @@ import {
   PromptSet,
   SplitAnalysis,
   DetectedSplit,
+  ContentEditMode,
   hasContent
 } from './types.js';
 import { VectorStore } from './VectorStore.js';
@@ -376,13 +377,15 @@ export class Fractalizer {
     treeId: string,
     parentFolderId: string,
     title: string,
-    gist?: string
+    gist?: string,
+    editMode: ContentEditMode = 'readonly'
   ): Promise<DocumentNode> {
     // 1. Create content atom
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
-      createdBy: 'fractalizer'
+      createdBy: 'fractalizer',
+      editMode
     });
 
     // 2. Generate gist if not provided
@@ -394,7 +397,8 @@ export class Fractalizer {
       parentFolderId,
       title,
       finalGist,
-      contentAtom.id
+      contentAtom.id,
+      editMode
     );
 
     // 4. Index for retrieval
@@ -412,13 +416,15 @@ export class Fractalizer {
     treeId: string,
     parentDocumentId: string,
     title: string,
-    gist?: string
+    gist?: string,
+    editMode: ContentEditMode = 'readonly'
   ): Promise<FragmentNode> {
     // 1. Create content atom
     const contentAtom = await this.contentStore.create({
       payload: content,
       mediaType: 'text/plain',
-      createdBy: 'fractalizer'
+      createdBy: 'fractalizer',
+      editMode
     });
 
     // 2. Generate gist if not provided
@@ -430,7 +436,8 @@ export class Fractalizer {
       parentDocumentId,
       title,
       finalGist,
-      contentAtom.id
+      contentAtom.id,
+      editMode
     );
 
     // 4. Index for retrieval

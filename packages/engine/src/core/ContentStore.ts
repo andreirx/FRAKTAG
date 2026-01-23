@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
-import { ContentAtom } from './types.js';
+import { ContentAtom, ContentEditMode } from './types.js';
 import { JsonStorage } from '../adapters/storage/JsonStorage.js';
 
 export interface CreateContentOptions {
@@ -11,6 +11,7 @@ export interface CreateContentOptions {
   sourceUri?: string;
   createdBy: string;
   supersedes?: string;
+  editMode?: ContentEditMode;  // Default: 'readonly'
   metadata?: Record<string, unknown>;
 }
 
@@ -30,6 +31,7 @@ export class ContentStore {
   async create(options: CreateContentOptions & { customId?: string }): Promise<ContentAtom> {
     const id = options.customId || randomUUID();
     const hash = this.calculateHash(options.payload);
+    const now = new Date().toISOString();
 
     const atom: ContentAtom = {
       id,
@@ -37,11 +39,22 @@ export class ContentStore {
       payload: options.payload,
       mediaType: options.mediaType,
       sourceUri: options.sourceUri,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
       createdBy: options.createdBy,
+      updatedAt: now,
       supersedes: options.supersedes,
+      editMode: options.editMode || 'readonly',
       metadata: options.metadata || {},
     };
+
+    // If this supersedes another atom, mark that atom as superseded
+    if (options.supersedes) {
+      const oldAtom = await this.get(options.supersedes);
+      if (oldAtom) {
+        oldAtom.supersededBy = id;
+        await this.storage.write(`content/${options.supersedes}.json`, oldAtom);
+      }
+    }
 
     await this.storage.write(`content/${id}.json`, atom);
     return atom;
@@ -129,5 +142,132 @@ export class ContentStore {
     const hash = createHash('sha256');
     hash.update(content, 'utf-8');
     return `sha256:${hash.digest('hex')}`;
+  }
+
+  // ============ EDITABLE CONTENT ============
+
+  /**
+   * Update the payload of an editable content atom
+   * Returns null if content doesn't exist or is not editable
+   */
+  async updatePayload(id: string, newPayload: string): Promise<ContentAtom | null> {
+    const atom = await this.get(id);
+    if (!atom) {
+      return null;
+    }
+
+    if (atom.editMode !== 'editable') {
+      throw new Error(`Content ${id} is read-only. Use createVersion() to replace it.`);
+    }
+
+    atom.payload = newPayload;
+    atom.hash = this.calculateHash(newPayload);
+    atom.updatedAt = new Date().toISOString();
+
+    await this.storage.write(`content/${id}.json`, atom);
+    return atom;
+  }
+
+  // ============ VERSIONING ============
+
+  /**
+   * Create a new version of content that supersedes an existing one
+   * The old content is marked as superseded but not deleted
+   * Returns the new content atom
+   */
+  async createVersion(
+    oldContentId: string,
+    newPayload: string,
+    createdBy: string
+  ): Promise<ContentAtom> {
+    const oldAtom = await this.get(oldContentId);
+    if (!oldAtom) {
+      throw new Error(`Content not found: ${oldContentId}`);
+    }
+
+    // Create new atom that supersedes the old one
+    const newAtom = await this.create({
+      payload: newPayload,
+      mediaType: oldAtom.mediaType,
+      sourceUri: oldAtom.sourceUri,
+      createdBy,
+      supersedes: oldContentId,
+      editMode: oldAtom.editMode,  // Preserve edit mode
+      metadata: {
+        ...oldAtom.metadata,
+        versionNumber: ((oldAtom.metadata.versionNumber as number) || 1) + 1,
+      },
+    });
+
+    return newAtom;
+  }
+
+  /**
+   * Get the version history of a content atom
+   * Returns array from oldest to newest, with the queried content's lineage
+   */
+  async getHistory(contentId: string): Promise<ContentAtom[]> {
+    const history: ContentAtom[] = [];
+    const visited = new Set<string>();
+
+    // First, walk backwards to find the original
+    let current = await this.get(contentId);
+    const forwardChain: ContentAtom[] = [];
+
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      forwardChain.unshift(current);  // Add to front
+
+      if (current.supersedes) {
+        current = await this.get(current.supersedes);
+      } else {
+        break;
+      }
+    }
+
+    history.push(...forwardChain);
+
+    // Then walk forwards from the queried content to find newer versions
+    current = await this.get(contentId);
+    if (current?.supersededBy) {
+      current = await this.get(current.supersededBy);
+
+      while (current && !visited.has(current.id)) {
+        visited.add(current.id);
+        history.push(current);
+
+        if (current.supersededBy) {
+          current = await this.get(current.supersededBy);
+        } else {
+          break;
+        }
+      }
+    }
+
+    return history;
+  }
+
+  /**
+   * Get the latest version of a content atom
+   * Follows the supersededBy chain to the end
+   */
+  async getLatestVersion(contentId: string): Promise<ContentAtom | null> {
+    let current = await this.get(contentId);
+
+    while (current?.supersededBy) {
+      const next = await this.get(current.supersededBy);
+      if (!next) break;
+      current = next;
+    }
+
+    return current;
+  }
+
+  /**
+   * Check if a content atom has been superseded
+   */
+  async isSuperseded(contentId: string): Promise<boolean> {
+    const atom = await this.get(contentId);
+    return atom?.supersededBy !== undefined;
   }
 }

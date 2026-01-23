@@ -10,6 +10,7 @@ import {
   FragmentNode,
   NodeType,
   SeedFolder,
+  ContentEditMode,
   isFolder,
   isDocument,
   isFragment,
@@ -434,7 +435,8 @@ export class TreeStore {
     parentId: string,
     title: string,
     gist: string,
-    contentId: string
+    contentId: string,
+    editMode: ContentEditMode = 'readonly'
   ): Promise<DocumentNode> {
     // Validate parent can accept a document
     await this.validateParentChild(parentId, 'document', treeId);
@@ -456,6 +458,7 @@ export class TreeStore {
       title,
       gist,
       contentId,
+      editMode,
       sortOrder: siblings.length,
       createdAt: now,
       updatedAt: now,
@@ -476,7 +479,8 @@ export class TreeStore {
     parentId: string,
     title: string,
     gist: string,
-    contentId: string
+    contentId: string,
+    editMode: ContentEditMode = 'readonly'
   ): Promise<FragmentNode> {
     // Validate parent can accept a fragment
     await this.validateParentChild(parentId, 'fragment', treeId);
@@ -498,6 +502,7 @@ export class TreeStore {
       title,
       gist,
       contentId,
+      editMode,
       sortOrder: siblings.length,
       createdAt: now,
       updatedAt: now,
