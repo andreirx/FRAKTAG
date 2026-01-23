@@ -110,7 +110,9 @@ export class TreeStore {
 
     for (let i = 0; i < seeds.length; i++) {
       const seed = seeds[i];
-      const nodeId = `${parentId}-${seed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      // Use just the title slug for the nodeId, not concatenated with parentId
+      const titleSlug = seed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const nodeId = `seed-${titleSlug}-${randomUUID().slice(0, 8)}`;
       const path = `${parentPath}${nodeId}/`;
 
       const folderNode: FolderNode = {

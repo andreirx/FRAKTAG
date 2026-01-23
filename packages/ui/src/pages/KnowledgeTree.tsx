@@ -1022,6 +1022,7 @@ export default function KnowledgeTree() {
                 open={kbManagerOpen}
                 onOpenChange={setKbManagerOpen}
                 knowledgeBases={knowledgeBases}
+                trees={trees}
                 onKBCreated={() => {
                     reloadKnowledgeBases();
                     reloadTrees();

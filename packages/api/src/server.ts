@@ -134,6 +134,32 @@ app.post('/api/knowledge-bases/:id/trees', async (req, res) => {
   }
 });
 
+// Export trees to a new portable knowledge base
+app.post('/api/knowledge-bases/export', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { treeIds, name, organizingPrinciple } = req.body;
+    if (!treeIds || !Array.isArray(treeIds) || treeIds.length === 0) {
+      return res.status(400).json({ error: 'treeIds array is required' });
+    }
+    if (!name || !organizingPrinciple) {
+      return res.status(400).json({ error: 'name and organizingPrinciple are required' });
+    }
+
+    const result = await fraktag.exportTreesToNewKB(treeIds, {
+      name,
+      organizingPrinciple
+    });
+
+    res.json({
+      kb: result.kb.toJSON(),
+      stats: result.stats
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Load an existing knowledge base from a path
 app.post('/api/knowledge-bases/load', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });

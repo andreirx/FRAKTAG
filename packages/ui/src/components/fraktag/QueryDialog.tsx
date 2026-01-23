@@ -341,12 +341,12 @@ export function QueryDialog({
                                 {source.sourceInfo}
                               </div>
                             )}
-                            {/* Hover Tooltip showing gist */}
+                            {/* Hover Tooltip showing gist - positioned below */}
                             {hoveredSource === source && source.gist && (
-                              <div className="absolute z-50 bottom-full left-0 mb-2 w-72 p-3 bg-zinc-900 text-white text-xs rounded-lg shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                              <div className="absolute z-50 top-full left-0 mt-2 w-72 p-3 bg-zinc-900 text-white text-xs rounded-lg shadow-xl pointer-events-none animate-in fade-in zoom-in-95 duration-150">
+                                <div className="absolute top-0 left-4 transform -translate-y-1/2 rotate-45 w-2 h-2 bg-zinc-900"></div>
                                 <div className="font-semibold text-emerald-300 mb-1">Summary:</div>
                                 <div className="text-zinc-200 leading-relaxed">{source.gist}</div>
-                                <div className="absolute bottom-0 left-4 transform translate-y-1/2 rotate-45 w-2 h-2 bg-zinc-900"></div>
                               </div>
                             )}
                           </div>
@@ -453,37 +453,38 @@ export function QueryDialog({
       {/* Source Content Popup */}
       {selectedSource && (
         <Dialog open={!!selectedSource} onOpenChange={(open) => !open && setSelectedSource(null)}>
-          <DialogContent className="w-[80vw] max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
-            <DialogHeader>
+          <DialogContent className="w-[80vw] max-w-4xl h-[80vh] flex flex-col">
+            <DialogHeader className="shrink-0">
               <DialogTitle className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-emerald-600" />
                 <span className="text-emerald-700">[{selectedSource.index}]</span>
                 {selectedSource.title}
               </DialogTitle>
               <DialogDescription>
-                {selectedSource.path}
+                {/* Show source info if available, otherwise show a simplified indicator */}
+                {selectedSource.sourceInfo || `Source ${selectedSource.index}`}
               </DialogDescription>
             </DialogHeader>
-            <div className="flex-1 min-h-0 space-y-4 pt-4 overflow-hidden flex flex-col">
+            <div className="flex-1 min-h-0 flex flex-col gap-4 pt-4 overflow-hidden">
               {/* Gist */}
               {selectedSource.gist && (
-                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                <div className="shrink-0 bg-emerald-50 border border-emerald-200 rounded-lg p-4">
                   <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-2">Summary</div>
                   <div className="text-sm text-emerald-800">{selectedSource.gist}</div>
                 </div>
               )}
-              {/* Full Content */}
-              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Full Content</div>
-                <ScrollArea className="flex-1 min-h-0 border rounded-lg bg-white">
+              {/* Full Content - scrollable */}
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                <div className="shrink-0 text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Full Content</div>
+                <div className="flex-1 min-h-0 border rounded-lg bg-white overflow-auto">
                   <pre className="p-4 text-sm font-mono text-zinc-700 whitespace-pre-wrap leading-relaxed">
                     {selectedSource.fullContent}
                   </pre>
-                </ScrollArea>
+                </div>
               </div>
               {/* Source Info */}
               {selectedSource.sourceInfo && (
-                <div className="text-xs text-zinc-500">
+                <div className="shrink-0 text-xs text-zinc-500">
                   <span className="font-medium">Source:</span> {selectedSource.sourceInfo}
                 </div>
               )}

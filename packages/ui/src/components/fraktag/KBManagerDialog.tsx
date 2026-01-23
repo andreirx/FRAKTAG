@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Library, Plus, FolderOpen, TreeDeciduous, Check, AlertCircle, RefreshCw, Database, CheckCircle } from "lucide-react";
+import { Loader2, Library, Plus, FolderOpen, TreeDeciduous, Check, AlertCircle, RefreshCw, Database, CheckCircle, PackageOpen, ArrowRight } from "lucide-react";
 
 interface KnowledgeBase {
     id: string;
@@ -24,20 +24,29 @@ interface DiscoveredKB {
     isLoaded: boolean;
 }
 
+interface TreeInfo {
+    id: string;
+    name: string;
+    organizingPrinciple: string;
+    nodeCount?: number;
+}
+
 interface KBManagerDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     knowledgeBases: KnowledgeBase[];
+    trees: TreeInfo[];
     onKBCreated: () => void;
     onTreeCreated: () => void;
 }
 
-type Tab = "browse" | "create" | "add-tree";
+type Tab = "browse" | "create" | "export" | "add-tree";
 
 export function KBManagerDialog({
     open,
     onOpenChange,
     knowledgeBases,
+    trees,
     onKBCreated,
     onTreeCreated,
 }: KBManagerDialogProps) {
@@ -55,6 +64,13 @@ export function KBManagerDialog({
     // Create KB state
     const [newKbName, setNewKbName] = useState("");
     const [newKbPrinciple, setNewKbPrinciple] = useState("");
+
+    // Export KB state
+    const [selectedTreeIds, setSelectedTreeIds] = useState<string[]>([]);
+    const [exportKbName, setExportKbName] = useState("");
+    const [exportKbPrinciple, setExportKbPrinciple] = useState("");
+    const [exporting, setExporting] = useState(false);
+    const [exportResult, setExportResult] = useState<{ trees: number; nodes: number; content: number } | null>(null);
 
     // Add Tree state
     const [selectedKbId, setSelectedKbId] = useState("");
@@ -88,8 +104,52 @@ export function KBManagerDialog({
         setSelectedKbId("");
         setNewTreeId("");
         setNewTreeName("");
+        setSelectedTreeIds([]);
+        setExportKbName("");
+        setExportKbPrinciple("");
+        setExportResult(null);
         setError(null);
         setSuccess(null);
+    };
+
+    const toggleTreeSelection = (treeId: string) => {
+        setSelectedTreeIds(prev =>
+            prev.includes(treeId)
+                ? prev.filter(id => id !== treeId)
+                : [...prev, treeId]
+        );
+    };
+
+    const handleExportTrees = async () => {
+        if (selectedTreeIds.length === 0) {
+            setError("Select at least one tree to export");
+            return;
+        }
+        if (!exportKbName.trim() || !exportKbPrinciple.trim()) {
+            setError("Name and organizing principle are required");
+            return;
+        }
+
+        setExporting(true);
+        setError(null);
+        setSuccess(null);
+        setExportResult(null);
+
+        try {
+            const res = await axios.post("/api/knowledge-bases/export", {
+                treeIds: selectedTreeIds,
+                name: exportKbName,
+                organizingPrinciple: exportKbPrinciple,
+            });
+            setSuccess(`Exported to new KB "${res.data.kb.name}"`);
+            setExportResult(res.data.stats);
+            onKBCreated();
+            await discoverKBs();
+        } catch (e: any) {
+            setError(e.response?.data?.error || e.message);
+        } finally {
+            setExporting(false);
+        }
     };
 
     const handleLoadKB = async (kb: DiscoveredKB) => {
@@ -180,7 +240,7 @@ export function KBManagerDialog({
                 </DialogHeader>
 
                 {/* Tabs */}
-                <div className="flex gap-1 border-b pb-2 mt-2">
+                <div className="flex gap-1 border-b pb-2 mt-2 flex-wrap">
                     <Button
                         variant={activeTab === "browse" ? "default" : "ghost"}
                         size="sm"
@@ -196,6 +256,15 @@ export function KBManagerDialog({
                         className="gap-1"
                     >
                         <Plus className="w-3 h-3" /> Create New
+                    </Button>
+                    <Button
+                        variant={activeTab === "export" ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => { setActiveTab("export"); setError(null); setSuccess(null); setExportResult(null); }}
+                        className="gap-1"
+                        disabled={trees.length === 0}
+                    >
+                        <PackageOpen className="w-3 h-3" /> Export Trees
                     </Button>
                     <Button
                         variant={activeTab === "add-tree" ? "default" : "ghost"}
@@ -360,6 +429,102 @@ export function KBManagerDialog({
                             >
                                 {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
                                 Create Knowledge Base
+                            </Button>
+                        </div>
+                    )}
+
+                    {activeTab === "export" && (
+                        <div className="space-y-4">
+                            {/* Tree Selection */}
+                            <div>
+                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                    Select Trees to Export
+                                </label>
+                                <div className="mt-2 space-y-2 max-h-40 overflow-y-auto border rounded-lg p-2">
+                                    {trees.map((tree) => (
+                                        <label
+                                            key={tree.id}
+                                            className={`flex items-center gap-3 p-2 rounded cursor-pointer transition-colors ${
+                                                selectedTreeIds.includes(tree.id)
+                                                    ? "bg-purple-50 border border-purple-200"
+                                                    : "hover:bg-zinc-50 border border-transparent"
+                                            }`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedTreeIds.includes(tree.id)}
+                                                onChange={() => toggleTreeSelection(tree.id)}
+                                                className="w-4 h-4 text-purple-600 rounded"
+                                            />
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2">
+                                                    <TreeDeciduous className="w-4 h-4 text-emerald-600" />
+                                                    <span className="font-medium text-sm">{tree.name}</span>
+                                                </div>
+                                                <div className="text-xs text-zinc-500 truncate">{tree.id}</div>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                                <p className="text-[10px] text-zinc-400 mt-1">
+                                    {selectedTreeIds.length} tree(s) selected
+                                </p>
+                            </div>
+
+                            {/* Arrow indicator */}
+                            {selectedTreeIds.length > 0 && (
+                                <div className="flex items-center justify-center text-zinc-300">
+                                    <ArrowRight className="w-6 h-6" />
+                                </div>
+                            )}
+
+                            {/* New KB Details */}
+                            <div>
+                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                    New Knowledge Base Name
+                                </label>
+                                <Input
+                                    value={exportKbName}
+                                    onChange={(e) => setExportKbName(e.target.value)}
+                                    placeholder="My Portable Knowledge Base"
+                                    className="mt-1"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                    Organizing Principle
+                                </label>
+                                <textarea
+                                    value={exportKbPrinciple}
+                                    onChange={(e) => setExportKbPrinciple(e.target.value)}
+                                    placeholder="Describe the purpose and organization of this knowledge base..."
+                                    className="w-full mt-1 min-h-[80px] p-3 text-sm border rounded-lg resize-y"
+                                />
+                            </div>
+
+                            {/* Export Result */}
+                            {exportResult && (
+                                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm">
+                                    <div className="font-medium text-emerald-700 mb-1">Export Complete!</div>
+                                    <div className="text-emerald-600 text-xs space-y-1">
+                                        <div>{exportResult.trees} tree(s) exported</div>
+                                        <div>{exportResult.nodes} node(s) copied</div>
+                                        <div>{exportResult.content} content atom(s) copied</div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <Button
+                                onClick={handleExportTrees}
+                                disabled={exporting || selectedTreeIds.length === 0 || !exportKbName.trim() || !exportKbPrinciple.trim()}
+                                className="w-full bg-purple-600 hover:bg-purple-700"
+                            >
+                                {exporting ? (
+                                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                                ) : (
+                                    <PackageOpen className="w-4 h-4 mr-2" />
+                                )}
+                                Export to New Knowledge Base
                             </Button>
                         </div>
                     )}

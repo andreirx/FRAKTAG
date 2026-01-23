@@ -1096,6 +1096,143 @@ export class Fraktag {
     console.log(`🌱 Created new tree "${treeId}" in KB "${kb.name}"`);
   }
 
+  /**
+   * Export selected trees to a new portable knowledge base.
+   * Copies trees, their content atoms, and vector indexes.
+   */
+  async exportTreesToNewKB(
+    treeIds: string[],
+    options: {
+      name: string;
+      organizingPrinciple: string;
+    }
+  ): Promise<{ kb: KnowledgeBase; stats: { trees: number; nodes: number; content: number } }> {
+    if (!this.kbManager) {
+      const configDir = this.configPath ? dirname(this.configPath) : process.cwd();
+      this.kbManager = new KnowledgeBaseManager(configDir);
+    }
+
+    if (treeIds.length === 0) {
+      throw new Error('At least one tree must be selected for export');
+    }
+
+    console.log(`📦 Exporting ${treeIds.length} tree(s) to new KB "${options.name}"...`);
+
+    // 1. Collect all content IDs from the selected trees
+    const contentIds = new Set<string>();
+    let totalNodes = 0;
+
+    for (const treeId of treeIds) {
+      const tree = await this.treeStore.getTree(treeId);
+      if (!tree) {
+        throw new Error(`Tree not found: ${treeId}`);
+      }
+
+      const allNodes = await this.treeStore.getAllNodes(treeId);
+      totalNodes += allNodes.length;
+
+      for (const node of allNodes) {
+        if (hasContent(node)) {
+          contentIds.add(node.contentId);
+        }
+      }
+    }
+
+    console.log(`   Found ${totalNodes} nodes with ${contentIds.size} content atoms`);
+
+    // 2. Create the new KB (without default tree - we'll copy the selected ones)
+    await this.kbManager.ensureStorageDir();
+
+    // Generate folder name from name
+    const folderName = options.name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 50);
+
+    const id = `kb-${folderName}-${Date.now().toString(36)}`;
+    const kbPath = resolve(this.kbManager.getKbStoragePath(), folderName);
+
+    // Check if folder already exists
+    let finalPath = kbPath;
+    let counter = 1;
+    const { existsSync } = await import('fs');
+    while (existsSync(finalPath)) {
+      finalPath = `${kbPath}-${counter}`;
+      counter++;
+    }
+
+    // Create KB structure manually (without default tree)
+    const { mkdir, writeFile, copyFile } = await import('fs/promises');
+    const { join } = await import('path');
+
+    await mkdir(finalPath, { recursive: true });
+    await mkdir(join(finalPath, 'content'), { recursive: true });
+    await mkdir(join(finalPath, 'indexes'), { recursive: true });
+    await mkdir(join(finalPath, 'trees'), { recursive: true });
+
+    // Write kb.json
+    const kbConfig: KnowledgeBaseConfig = {
+      id,
+      name: options.name,
+      organizingPrinciple: options.organizingPrinciple,
+      defaultTreeId: treeIds[0], // First tree becomes default
+    };
+    await writeFile(join(finalPath, 'kb.json'), JSON.stringify(kbConfig, null, 2), 'utf-8');
+
+    // 3. Copy tree files
+    const sourcePath = this.storage.getBasePath();
+    for (const treeId of treeIds) {
+      const sourceTreePath = join(sourcePath, 'trees', `${treeId}.json`);
+      const destTreePath = join(finalPath, 'trees', `${treeId}.json`);
+      await copyFile(sourceTreePath, destTreePath);
+      console.log(`   📄 Copied tree: ${treeId}`);
+    }
+
+    // 4. Copy content atoms
+    let copiedContent = 0;
+    for (const contentId of contentIds) {
+      const sourceContentPath = join(sourcePath, 'content', `${contentId}.json`);
+      const destContentPath = join(finalPath, 'content', `${contentId}.json`);
+      try {
+        await copyFile(sourceContentPath, destContentPath);
+        copiedContent++;
+      } catch (err: any) {
+        console.warn(`   ⚠️ Could not copy content ${contentId}: ${err.message}`);
+      }
+    }
+    console.log(`   📦 Copied ${copiedContent} content atoms`);
+
+    // 5. Copy vector indexes
+    for (const treeId of treeIds) {
+      const sourceIndexPath = join(sourcePath, 'indexes', `${treeId}.vectors.json`);
+      const destIndexPath = join(finalPath, 'indexes', `${treeId}.vectors.json`);
+      try {
+        await copyFile(sourceIndexPath, destIndexPath);
+        console.log(`   🔍 Copied vector index: ${treeId}`);
+      } catch (err: any) {
+        // Index might not exist yet
+        console.log(`   ℹ️ No vector index for ${treeId} (will be built on first query)`);
+      }
+    }
+
+    // 6. Load and register the new KB
+    const kb = await KnowledgeBase.load(finalPath);
+    (this.kbManager as any).knowledgeBases.set(kb.id, kb);
+
+    console.log(`✅ Export complete! New KB "${kb.name}" at ${finalPath}`);
+
+    return {
+      kb,
+      stats: {
+        trees: treeIds.length,
+        nodes: totalNodes,
+        content: copiedContent
+      }
+    };
+  }
+
   private createLLMAdapter(config: FraktagConfig['llm']): ILLMAdapter {
     switch (config.adapter) {
       case 'ollama':
