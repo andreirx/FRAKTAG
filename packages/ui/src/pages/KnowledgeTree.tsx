@@ -3,7 +3,7 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2 } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, AlertTriangle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
@@ -81,6 +81,10 @@ export default function KnowledgeTree() {
     // Gist Generation
     const [generatingGist, setGeneratingGist] = useState(false);
     const previousNodeRef = useRef<TreeNode | null>(null);
+
+    // Delete Node Dialog
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [deletingNode, setDeletingNode] = useState(false);
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(400);
@@ -390,6 +394,26 @@ export default function KnowledgeTree() {
         setMoveNodeId(nodeId);
         setMoveNodeType(nodeType);
         setMoveDialogOpen(true);
+    };
+
+    // Delete Node
+    const openDeleteDialog = () => {
+        setDeleteDialogOpen(true);
+    };
+
+    const deleteNode = async () => {
+        if (!selectedNode) return;
+        setDeletingNode(true);
+        try {
+            await axios.delete(`/api/nodes/${selectedNode.id}`);
+            setDeleteDialogOpen(false);
+            setSelectedNode(null);
+            await loadTreeStructure(activeTreeId);
+        } catch (e) {
+            console.error("Failed to delete node:", e);
+        } finally {
+            setDeletingNode(false);
+        }
     };
 
     async function loadTreeStructure(id: string) {
@@ -733,6 +757,18 @@ export default function KnowledgeTree() {
                                                 <Move className="w-3 h-3" />
                                                 Move
                                             </Button>
+                                            {/* Delete button for content nodes */}
+                                            {selectedNode.contentId && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={openDeleteDialog}
+                                                    className="gap-1 text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+                                                >
+                                                    <Trash2 className="w-3 h-3" />
+                                                    Delete
+                                                </Button>
+                                            )}
                                         </div>
                                     </div>
                                     {/* Always editable title */}
@@ -804,7 +840,8 @@ export default function KnowledgeTree() {
                                                 )}
                                             </h3>
                                             <div className="flex items-center gap-2">
-                                                {contentEditMode === 'readonly' && contentPayload && (
+                                                {/* Only show Replace Version for documents, not fragments */}
+                                                {contentEditMode === 'readonly' && contentPayload && selectedNode.type === 'document' && (
                                                     <Button
                                                         variant="outline"
                                                         size="sm"
@@ -1032,6 +1069,53 @@ export default function KnowledgeTree() {
                                     <FilePlus className="w-4 h-4" />
                                 )}
                                 Create Note
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Delete Confirmation Dialog */}
+            <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-red-600">
+                            <AlertTriangle className="w-5 h-5" />
+                            Delete Content
+                        </DialogTitle>
+                        <DialogDescription>
+                            This action cannot be undone.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 pt-4">
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                            <p className="text-sm text-red-800 font-medium mb-2">
+                                Are you sure you want to delete this {selectedNode?.type}?
+                            </p>
+                            <p className="text-sm text-red-700">
+                                <strong>"{selectedNode?.title}"</strong>
+                            </p>
+                            {selectedNode?.type === 'document' && (
+                                <p className="text-xs text-red-600 mt-2">
+                                    This will also delete all fragments (chunks) inside this document.
+                                </p>
+                            )}
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={deleteNode}
+                                disabled={deletingNode}
+                                className="bg-red-600 hover:bg-red-700 text-white"
+                            >
+                                {deletingNode ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <Trash2 className="w-4 h-4" />
+                                )}
+                                Yes, Delete Forever
                             </Button>
                         </div>
                     </div>

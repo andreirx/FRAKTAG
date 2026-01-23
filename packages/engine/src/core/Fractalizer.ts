@@ -388,8 +388,11 @@ export class Fractalizer {
       editMode
     });
 
-    // 2. Generate gist if not provided
-    const finalGist = gist || await this.generateGist(content, treeId);
+    // 2. Generate gist if not provided (skip if content is empty/short)
+    let finalGist = gist || '';
+    if (!finalGist && content.trim().length > 10) {
+      finalGist = await this.generateGist(content, treeId);
+    }
 
     // 3. Create document node
     const doc = await this.treeStore.createDocument(
@@ -427,8 +430,11 @@ export class Fractalizer {
       editMode
     });
 
-    // 2. Generate gist if not provided
-    const finalGist = gist || await this.generateGist(content, treeId);
+    // 2. Generate gist if not provided (skip if content is empty/short)
+    let finalGist = gist || '';
+    if (!finalGist && content.trim().length > 10) {
+      finalGist = await this.generateGist(content, treeId);
+    }
 
     // 3. Create fragment node
     const fragment = await this.treeStore.createFragment(

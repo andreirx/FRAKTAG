@@ -483,6 +483,63 @@ export class Fraktag {
   }
 
   /**
+   * Delete a content node (document or fragment).
+   * Cascades to delete all children (fragments under a document).
+   * Also removes associated content atoms and vector index entries.
+   */
+  async deleteNode(nodeId: string): Promise<{ deletedNodes: string[]; deletedContent: string[] }> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) {
+      throw new Error(`Node not found: ${nodeId}`);
+    }
+
+    // Don't allow deleting the root
+    if (!node.parentId) {
+      throw new Error('Cannot delete the root node');
+    }
+
+    // Collect all nodes to delete (including descendants)
+    const nodesToDelete: TreeNode[] = [];
+    const contentIdsToDelete: string[] = [];
+
+    const collectDescendants = async (n: TreeNode) => {
+      nodesToDelete.push(n);
+      if (hasContent(n)) {
+        contentIdsToDelete.push(n.contentId);
+      }
+      const children = await this.treeStore.getChildren(n.id);
+      for (const child of children) {
+        await collectDescendants(child);
+      }
+    };
+    await collectDescendants(node);
+
+    const treeId = node.treeId;
+
+    // Delete from tree (cascades children)
+    await this.treeStore.deleteNode(nodeId);
+    console.log(`🗑️ Deleted ${nodesToDelete.length} node(s) from tree`);
+
+    // Remove from vector index
+    for (const n of nodesToDelete) {
+      await this.vectorStore.remove(n.id);
+    }
+    await this.vectorStore.save(treeId);
+    console.log(`🗑️ Removed ${nodesToDelete.length} vector entries`);
+
+    // Delete content atoms
+    for (const contentId of contentIdsToDelete) {
+      await this.contentStore.delete(contentId);
+    }
+    console.log(`🗑️ Deleted ${contentIdsToDelete.length} content atom(s)`);
+
+    return {
+      deletedNodes: nodesToDelete.map(n => n.id),
+      deletedContent: contentIdsToDelete
+    };
+  }
+
+  /**
    * Move node to a new parent folder
    * Enforces rules:
    * - Folders can move anywhere

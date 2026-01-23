@@ -49,8 +49,12 @@ export function TreeItem({ node, childrenMap, onSelect, selectedId, depth = 0 }:
         }
     };
 
-    // Color based on type
+    // Color based on type and edit mode
     const getColorClass = () => {
+        // Editable content nodes are green
+        if (node.editMode === 'editable') {
+            return "text-emerald-500";
+        }
         switch (node.type) {
             case 'folder':
                 return "text-blue-500";

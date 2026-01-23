@@ -251,6 +251,17 @@ app.patch('/api/nodes/:id', async (req, res) => {
   }
 });
 
+// Delete a content node (document or fragment)
+app.delete('/api/nodes/:id', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const result = await fraktag.deleteNode(req.params.id);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Move node to new parent
 app.patch('/api/nodes/:id/move', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
