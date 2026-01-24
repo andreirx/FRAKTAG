@@ -18,6 +18,7 @@ import {
   X,
   FileText,
 } from "lucide-react";
+import { SourcePopup } from "./SourcePopup";
 
 interface RetrieveResult {
   nodes: { nodeId: string; path: string; resolution: string; content: string }[];
@@ -450,48 +451,20 @@ export function QueryDialog({
         </div>
       </DialogContent>
 
-      {/* Source Content Popup */}
-      {selectedSource && (
-        <Dialog open={!!selectedSource} onOpenChange={(open) => !open && setSelectedSource(null)}>
-          <DialogContent className="w-[80vw] max-w-4xl h-[80vh] flex flex-col">
-            <DialogHeader className="shrink-0">
-              <DialogTitle className="flex items-center gap-2">
-                <FileText className="w-5 h-5 text-emerald-600" />
-                <span className="text-emerald-700">[{selectedSource.index}]</span>
-                {selectedSource.title}
-              </DialogTitle>
-              <DialogDescription>
-                {/* Show source info if available, otherwise show a simplified indicator */}
-                {selectedSource.sourceInfo || `Source ${selectedSource.index}`}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex-1 min-h-0 flex flex-col gap-4 pt-4 overflow-hidden">
-              {/* Gist */}
-              {selectedSource.gist && (
-                <div className="shrink-0 bg-emerald-50 border border-emerald-200 rounded-lg p-4">
-                  <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-2">Summary</div>
-                  <div className="text-sm text-emerald-800">{selectedSource.gist}</div>
-                </div>
-              )}
-              {/* Full Content - scrollable */}
-              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                <div className="shrink-0 text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Full Content</div>
-                <div className="flex-1 min-h-0 border rounded-lg bg-white overflow-auto">
-                  <pre className="p-4 text-sm font-mono text-zinc-700 whitespace-pre-wrap leading-relaxed">
-                    {selectedSource.fullContent}
-                  </pre>
-                </div>
-              </div>
-              {/* Source Info */}
-              {selectedSource.sourceInfo && (
-                <div className="shrink-0 text-xs text-zinc-500">
-                  <span className="font-medium">Source:</span> {selectedSource.sourceInfo}
-                </div>
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      {/* Shared Source Content Popup */}
+      <SourcePopup
+        open={!!selectedSource}
+        onOpenChange={(open) => !open && setSelectedSource(null)}
+        source={selectedSource ? {
+          index: selectedSource.index,
+          title: selectedSource.title,
+          gist: selectedSource.gist,
+          fullContent: selectedSource.fullContent,
+          path: selectedSource.path,
+          nodeId: selectedSource.nodeId,
+        } : undefined}
+        index={selectedSource?.index}
+      />
     </Dialog>
   );
 }

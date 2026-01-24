@@ -176,6 +176,163 @@ app.post('/api/knowledge-bases/load', async (req, res) => {
   }
 });
 
+// ============ CONVERSATION ENDPOINTS ============
+
+// List conversation sessions for a knowledge base
+app.get('/api/knowledge-bases/:kbId/conversations', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const sessions = await fraktag.listConversationSessions(req.params.kbId);
+    res.json(sessions);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create a new conversation session
+app.post('/api/knowledge-bases/:kbId/conversations', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { title } = req.body;
+    const session = await fraktag.createConversationSession(req.params.kbId, title);
+    res.json(session);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get or create today's session
+app.post('/api/knowledge-bases/:kbId/conversations/today', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const session = await fraktag.getOrCreateConversationSession(req.params.kbId);
+    res.json(session);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get turns in a session
+app.get('/api/conversations/:sessionId/turns', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const turns = await fraktag.getConversationTurns(req.params.sessionId);
+    res.json(turns);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update a conversation session (title, etc.)
+app.patch('/api/conversations/:sessionId', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { title } = req.body;
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const updated = await fraktag.updateConversationSession(req.params.sessionId, { title });
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete a conversation session
+app.delete('/api/conversations/:sessionId', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    await fraktag.deleteConversationSession(req.params.sessionId);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Chat endpoint with memory (streaming)
+app.get('/api/chat/stream', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+
+  const { kbId, sessionId, question } = req.query as {
+    kbId: string;
+    sessionId: string;
+    question: string;
+  };
+
+  // Support multiple tree IDs (treeIds=id1&treeIds=id2 or treeIds=id1,id2)
+  let treeIds: string[] = [];
+  const treeIdsParam = req.query.treeIds;
+  if (Array.isArray(treeIdsParam)) {
+    treeIds = treeIdsParam as string[];
+  } else if (typeof treeIdsParam === 'string') {
+    treeIds = treeIdsParam.includes(',') ? treeIdsParam.split(',') : [treeIdsParam];
+  }
+
+  if (!kbId || !sessionId || !question || treeIds.length === 0) {
+    return res.status(400).json({
+      error: 'kbId, sessionId, question, and treeIds are required'
+    });
+  }
+
+  // Set up SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const sendEvent = (type: string, data: any) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    await fraktag.chat(
+      kbId,
+      sessionId,
+      question,
+      treeIds,
+      (event) => {
+        sendEvent(event.type, event.data);
+      }
+    );
+  } catch (e: any) {
+    sendEvent('error', { message: e.message });
+  }
+
+  res.end();
+});
+
+// Chat endpoint (non-streaming)
+app.post('/api/chat', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+
+  const { kbId, sessionId, question, treeIds } = req.body;
+
+  if (!kbId || !sessionId || !question || !treeIds || !Array.isArray(treeIds) || treeIds.length === 0) {
+    return res.status(400).json({
+      error: 'kbId, sessionId, question, and treeIds array are required'
+    });
+  }
+
+  try {
+    const result = await fraktag.chat(kbId, sessionId, question, treeIds);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get conversation tree ID for a knowledge base
+app.get('/api/knowledge-bases/:kbId/conversation-tree', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const treeId = fraktag.getConversationTreeId(req.params.kbId);
+    res.json({ treeId });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ TREE ENDPOINTS ============
 
 app.get('/api/trees', async (req, res) => {
@@ -283,6 +440,20 @@ app.post('/api/trees/:id/folders', async (req, res) => {
 });
 
 // ============ NODE OPERATIONS ============
+
+// Get node with content (for hydration)
+app.get('/api/nodes/:id', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const node = await fraktag.getNodeWithContent(req.params.id);
+    if (!node) {
+      return res.status(404).json({ error: 'Node not found' });
+    }
+    res.json(node);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Update node title and/or gist
 app.patch('/api/nodes/:id', async (req, res) => {

@@ -40,6 +40,7 @@ import { VectorStore } from './core/VectorStore.js';
 import { Arborist, TreeOperation } from './core/Arborist.js';
 import { FileProcessor } from './utils/FileProcessor.js';
 import { KnowledgeBase, KnowledgeBaseManager, DiscoveredKB } from './core/KnowledgeBase.js';
+import { ConversationManager, TurnData, ConversationSession, ConversationTurn, ConversationReference } from './core/ConversationManager.js';
 
 /**
  * Fraktag Engine - Strict Taxonomy Knowledge Management
@@ -63,6 +64,9 @@ export class Fraktag {
   // Knowledge Base support
   private kbManager?: KnowledgeBaseManager;
   private configPath?: string;
+
+  // Conversation support
+  private conversationManager: ConversationManager;
 
   private constructor(config: FraktagConfig, storage: JsonStorage) {
     this.config = config;
@@ -94,6 +98,7 @@ export class Fraktag {
 
     this.arborist = new Arborist(this.treeStore, this.vectorStore);
     this.fileProcessor = new FileProcessor();
+    this.conversationManager = new ConversationManager(this.treeStore, this.contentStore, this.vectorStore);
 
     // Merge custom prompts with defaults
     const prompts = {
@@ -450,6 +455,36 @@ export class Fraktag {
 
   async getContent(contentId: string): Promise<ContentAtom | null> {
     return await this.contentStore.get(contentId);
+  }
+
+  /**
+   * Get a node with its content (for hydration of references)
+   */
+  async getNodeWithContent(nodeId: string): Promise<{
+    nodeId: string;
+    title: string;
+    gist: string;
+    content: string;
+    type: string;
+    path: string;
+  } | null> {
+    const node = await this.treeStore.getNode(nodeId);
+    if (!node) return null;
+
+    let content = '';
+    if (hasContent(node)) {
+      const contentAtom = await this.contentStore.get(node.contentId);
+      content = contentAtom?.payload || '';
+    }
+
+    return {
+      nodeId: node.id,
+      title: node.title,
+      gist: node.gist || '',
+      content,
+      type: node.type,
+      path: node.path
+    };
   }
 
   // ============ NODE OPERATIONS ============
@@ -1233,6 +1268,220 @@ export class Fraktag {
     };
   }
 
+  // ============ CONVERSATION MANAGEMENT ============
+
+  /**
+   * Get or create a conversation session for today
+   */
+  async getOrCreateConversationSession(kbId: string): Promise<ConversationSession> {
+    const folder = await this.conversationManager.getOrCreateTodaySession(kbId);
+    const turns = await this.treeStore.getChildren(folder.id);
+    return {
+      id: folder.id,
+      treeId: folder.treeId,
+      title: folder.title,
+      startedAt: folder.createdAt,
+      turnCount: turns.length
+    };
+  }
+
+  /**
+   * Create a new conversation session
+   */
+  async createConversationSession(kbId: string, title?: string): Promise<ConversationSession> {
+    const folder = await this.conversationManager.createSession(kbId, title);
+    return {
+      id: folder.id,
+      treeId: folder.treeId,
+      title: folder.title,
+      startedAt: folder.createdAt,
+      turnCount: 0
+    };
+  }
+
+  /**
+   * List all conversation sessions for a knowledge base
+   */
+  async listConversationSessions(kbId: string): Promise<ConversationSession[]> {
+    return this.conversationManager.listSessions(kbId);
+  }
+
+  /**
+   * Get all turns in a conversation session
+   */
+  async getConversationTurns(sessionId: string): Promise<ConversationTurn[]> {
+    return this.conversationManager.getSessionTurns(sessionId);
+  }
+
+  /**
+   * Delete a conversation session
+   */
+  async deleteConversationSession(sessionId: string): Promise<void> {
+    return this.conversationManager.deleteSession(sessionId);
+  }
+
+  /**
+   * Update a conversation session (title, etc.)
+   */
+  async updateConversationSession(
+    sessionId: string,
+    updates: { title?: string }
+  ): Promise<ConversationSession> {
+    return this.conversationManager.updateSession(sessionId, updates);
+  }
+
+  /**
+   * Chat with memory - asks a question, logs the conversation, returns the answer
+   * This combines retrieval, generation, and conversation logging
+   * @param sourceTreeIds - array of tree IDs to search across
+   */
+  async chat(
+    kbId: string,
+    sessionId: string,
+    question: string,
+    sourceTreeIds: string | string[],
+    onEvent?: (event: { type: 'source' | 'answer_chunk' | 'done' | 'error'; data: any }) => void
+  ): Promise<{ answer: string; references: ConversationReference[] }> {
+    // Normalize to array
+    const treeIds = Array.isArray(sourceTreeIds) ? sourceTreeIds : [sourceTreeIds];
+
+    // References for storage (just nodeIds)
+    const references: ConversationReference[] = [];
+    // Full source data for streaming events
+    const sourceData: { nodeId: string; title: string }[] = [];
+    const contextBlocks: string[] = [];
+    let sourceIndex = 0;
+
+    console.log(`💬 Chat: "${question.slice(0, 50)}..." across ${treeIds.length} trees`);
+
+    // 1. Retrieve relevant content from all source trees
+    for (const treeId of treeIds) {
+      try {
+        const retrieval = await this.navigator.retrieve({
+          treeId,
+          query: question,
+          maxDepth: 5,
+          resolution: 'L2'
+        });
+
+        for (const node of retrieval.nodes) {
+          sourceIndex++;
+          const treeNode = await this.treeStore.getNode(node.nodeId);
+          const title = treeNode?.title || 'Untitled';
+          const gist = treeNode?.gist || '';
+
+          // Store just nodeId for persistence
+          references.push({ nodeId: node.nodeId });
+          // Keep title for return value
+          sourceData.push({ nodeId: node.nodeId, title });
+
+          // Emit source event with fullContent for popup display
+          if (onEvent) {
+            onEvent({
+              type: 'source',
+              data: {
+                index: sourceIndex,
+                title,
+                path: node.path,
+                preview: node.content.slice(0, 200),
+                fullContent: node.content,
+                gist,
+                nodeId: node.nodeId,
+                treeId
+              }
+            });
+          }
+
+          contextBlocks.push(`--- [SOURCE ${sourceIndex}] ${title} ---\n${node.content}`);
+        }
+      } catch (e) {
+        console.warn(`Failed to retrieve from tree ${treeId}:`, e);
+      }
+    }
+
+    console.log(`📚 Found ${sourceIndex} sources for context`);
+
+    // 2. Generate answer
+    const context = contextBlocks.join('\n\n');
+
+    if (contextBlocks.length === 0) {
+      const noContextAnswer = "I couldn't find any relevant information in the selected knowledge sources to answer your question.";
+      if (onEvent) {
+        onEvent({ type: 'answer_chunk', data: { text: noContextAnswer } });
+        onEvent({ type: 'done', data: { references: [] } });
+      }
+      await this.conversationManager.logTurn(kbId, sessionId, {
+        question,
+        answer: noContextAnswer,
+        references: []
+      });
+      return { answer: noContextAnswer, references: [] };
+    }
+
+    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
+
+Guidelines:
+- Cite sources as [1], [2], etc.
+- If you cannot answer from the context, say so honestly.
+- Be concise but thorough.
+
+Context:
+${context}
+
+User Question: ${question}
+
+Answer:`;
+
+    let answer = '';
+
+    try {
+      console.log(`🤖 Generating answer with LLM...`);
+
+      if (onEvent && this.smartLlm.stream) {
+        // Streaming mode
+        await this.smartLlm.stream(prompt, {}, (chunk: string) => {
+          answer += chunk;
+          onEvent({ type: 'answer_chunk', data: { text: chunk } });
+        });
+      } else {
+        // Non-streaming mode - still emit the answer as chunks for the client
+        answer = await this.smartLlm.complete(prompt, {});
+        if (onEvent) {
+          onEvent({ type: 'answer_chunk', data: { text: answer } });
+        }
+      }
+
+      console.log(`✅ Answer generated (${answer.length} chars)`);
+
+      if (onEvent) {
+        onEvent({ type: 'done', data: { references: sourceData.map(s => s.title) } });
+      }
+    } catch (e: any) {
+      console.error(`❌ LLM error:`, e);
+      const errorMsg = `Error generating answer: ${e.message || 'Unknown error'}`;
+      if (onEvent) {
+        onEvent({ type: 'error', data: { message: errorMsg } });
+      }
+      answer = errorMsg;
+    }
+
+    // 3. Log the conversation turn
+    await this.conversationManager.logTurn(kbId, sessionId, {
+      question,
+      answer,
+      references
+    });
+
+    return { answer, references };
+  }
+
+  /**
+   * Get the conversation tree ID for a knowledge base
+   */
+  getConversationTreeId(kbId: string): string {
+    return this.conversationManager.getConversationTreeId(kbId);
+  }
+
   private createLLMAdapter(config: FraktagConfig['llm']): ILLMAdapter {
     switch (config.adapter) {
       case 'ollama':
@@ -1257,3 +1506,4 @@ export class Fraktag {
 // Export all types
 export * from './core/types.js';
 export { DiscoveredKB } from './core/KnowledgeBase.js';
+export { ConversationSession, ConversationTurn, ConversationReference, TurnData } from './core/ConversationManager.js';

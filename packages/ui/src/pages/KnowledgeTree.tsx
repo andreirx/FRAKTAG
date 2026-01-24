@@ -3,11 +3,12 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, AlertTriangle } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, AlertTriangle, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
 import { QueryDialog } from "@/components/fraktag/QueryDialog";
+import { ChatDialog } from "@/components/fraktag/ChatDialog";
 import { MoveDialog } from "@/components/fraktag/MoveDialog";
 import { KBManagerDialog } from "@/components/fraktag/KBManagerDialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -57,6 +58,7 @@ export default function KnowledgeTree() {
 
     // Query Dialog State
     const [queryDialogOpen, setQueryDialogOpen] = useState(false);
+    const [chatDialogOpen, setChatDialogOpen] = useState(false);
 
     // KB Manager Dialog State
     const [kbManagerOpen, setKbManagerOpen] = useState(false);
@@ -136,7 +138,7 @@ export default function KnowledgeTree() {
     // Get active KB name
     const activeKbName = activeKbId
         ? knowledgeBases.find(kb => kb.id === activeKbId)?.name || "Unknown KB"
-        : knowledgeBases.length > 0 ? "All Knowledge Bases" : "No Knowledge Bases";
+        : "Internal Knowledge Base";
 
     // Reload functions for after KB/tree creation
     const reloadKnowledgeBases = async () => {
@@ -625,6 +627,16 @@ export default function KnowledgeTree() {
                         </Button>
 
                         <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={() => setChatDialogOpen(true)}
+                            title="Chat with Knowledge Base"
+                            className="shrink-0"
+                        >
+                            <MessageSquare className="h-4 w-4 text-emerald-600"/>
+                        </Button>
+
+                        <Button
                             variant="default"
                             size="icon"
                             onClick={() => setIngestionOpen(true)}
@@ -1015,6 +1027,16 @@ export default function KnowledgeTree() {
                 onOpenChange={setQueryDialogOpen}
                 treeId={activeTreeId}
                 treeName={activeTreeName}
+            />
+
+            {/* Chat Dialog */}
+            <ChatDialog
+                open={chatDialogOpen}
+                onOpenChange={setChatDialogOpen}
+                kbId={activeKbId || 'internal'}
+                kbName={activeKbName}
+                trees={trees}
+                defaultTreeId={activeTreeId}
             />
 
             {/* KB Manager Dialog */}
