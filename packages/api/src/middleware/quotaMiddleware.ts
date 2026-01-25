@@ -31,7 +31,9 @@ async function getDynamoClient() {
     if (config.deployMode !== 'cloud') return null;
 
     try {
+        // @ts-ignore - AWS SDK only available in cloud deployment
         const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+        // @ts-ignore - AWS SDK only available in cloud deployment
         const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
 
         const client = new DynamoDBClient({ region: config.awsRegion });
@@ -55,6 +57,7 @@ async function getUserUsage(userId: string): Promise<{ docs: number; queries: nu
         const client = await getDynamoClient();
         if (client) {
             try {
+                // @ts-ignore - AWS SDK only available in cloud deployment
                 const { GetCommand } = await import('@aws-sdk/lib-dynamodb');
                 const result = await client.send(new GetCommand({
                     TableName: tableName,
@@ -101,6 +104,7 @@ async function incrementUsage(userId: string, type: 'docs' | 'queries'): Promise
         const client = await getDynamoClient();
         if (client) {
             try {
+                // @ts-ignore - AWS SDK only available in cloud deployment
                 const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
                 await client.send(new UpdateCommand({
                     TableName: tableName,

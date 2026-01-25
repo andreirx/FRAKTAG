@@ -16,5 +16,10 @@
     "resolveJsonModule": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "data"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "data",
+    "src/adapters/storage/S3Storage.ts"
+  ]
 }

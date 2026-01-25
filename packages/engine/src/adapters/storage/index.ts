@@ -3,9 +3,18 @@
  * Creates the appropriate storage backend based on environment configuration.
  */
 
+import { IStorage } from './IStorage.js';
+import { JsonStorage } from './JsonStorage.js';
+
 export { IStorage } from './IStorage.js';
 export { JsonStorage } from './JsonStorage.js';
-export { S3Storage, S3StorageConfig } from './S3Storage.js';
+
+// S3Storage is loaded dynamically - only export the config type
+export interface S3StorageConfig {
+    bucket: string;
+    prefix?: string;
+    region?: string;
+}
 
 export type StorageType = 'fs' | 's3';
 
@@ -33,16 +42,16 @@ export function createStorage(config?: Partial<StorageConfig>): IStorage {
         }
 
         // Dynamic import to avoid loading AWS SDK when not needed
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { S3Storage } = require('./S3Storage.js');
         return new S3Storage({
             bucket,
             prefix: config?.prefix || process.env.STORAGE_PREFIX || '',
             region: config?.region || process.env.AWS_REGION || 'eu-central-1',
-        });
+        }) as IStorage;
     }
 
     // Default: filesystem storage
-    const { JsonStorage } = require('./JsonStorage.js');
     const basePath = config?.basePath || process.env.STORAGE_ROOT || './data';
     return new JsonStorage(basePath);
 }

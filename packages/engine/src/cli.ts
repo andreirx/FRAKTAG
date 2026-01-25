@@ -432,7 +432,7 @@ HUMAN EXAMPLES:
               output(node);
             } else {
               console.log(`\n📄 ${node.title} (${node.type})`);
-              console.log(`   ID: ${node.id}`);
+              console.log(`   ID: ${node.nodeId}`);
               console.log(`   Path: ${node.path}`);
               console.log(`   Gist: ${node.gist}`);
               if (node.content) {

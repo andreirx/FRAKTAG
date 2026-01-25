@@ -3,6 +3,7 @@
  * Implements IStorage interface for AWS S3 backend.
  */
 
+// @ts-ignore - AWS SDK only available in cloud deployment
 import {
     S3Client,
     GetObjectCommand,
