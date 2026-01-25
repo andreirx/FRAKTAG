@@ -11,7 +11,7 @@ interface CreateFolderDialogProps {
     onOpenChange: (open: boolean) => void;
     treeId: string;
     parentId: string;
-    onComplete: () => void;
+    onComplete: (newNode?: any) => void;
 }
 
 export function CreateFolderDialog({ open, onOpenChange, treeId, parentId, onComplete }: CreateFolderDialogProps) {
@@ -38,16 +38,19 @@ export function CreateFolderDialog({ open, onOpenChange, treeId, parentId, onCom
 
         setCreating(true);
         try {
+            let lastCreatedNode = null;
             for (const folder of validFolders) {
-                await axios.post(`/api/trees/${treeId}/folders`, {
+                const res = await axios.post(`/api/trees/${treeId}/folders`, {
                     parentId,
                     title: folder.title,
                     gist: folder.title, // Use title as gist placeholder
                 });
+                lastCreatedNode = res.data;
             }
             onOpenChange(false);
             setFolders([{ title: "" }]);
-            onComplete();
+            // Return the last created folder so it can be selected
+            onComplete(lastCreatedNode);
         } catch (e) {
             console.error("Failed to create folders:", e);
         } finally {

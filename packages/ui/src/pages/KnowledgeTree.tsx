@@ -320,15 +320,26 @@ export default function KnowledgeTree() {
         if (!selectedNode || !contentPayload || contentPayload.trim().length < 10) return;
         setGeneratingGist(true);
         try {
-            const res = await axios.post('/api/generate/gist', {
+            const genRes = await axios.post('/api/generate/gist', {
                 content: contentPayload.slice(0, 3000),
                 treeId: activeTreeId
             });
-            if (res.data.gist) {
-                setEditGist(res.data.gist);
-                await axios.patch(`/api/nodes/${selectedNode.id}`, { gist: res.data.gist });
-                // Update selected node
-                setSelectedNode({ ...selectedNode, gist: res.data.gist });
+            if (genRes.data.gist) {
+                setEditGist(genRes.data.gist);
+                // Save to server and use the response
+                const patchRes = await axios.patch(`/api/nodes/${selectedNode.id}`, { gist: genRes.data.gist });
+                // Update selected node with server response
+                setSelectedNode(patchRes.data);
+                // Also update in rawData to reflect in tree
+                if (rawData?.nodes) {
+                    setRawData({
+                        ...rawData,
+                        nodes: {
+                            ...rawData.nodes,
+                            [selectedNode.id]: patchRes.data,
+                        },
+                    });
+                }
             }
         } catch (e) {
             console.error("Failed to generate gist:", e);
@@ -351,12 +362,17 @@ export default function KnowledgeTree() {
     };
 
 
-    async function loadTreeStructure(id: string) {
+    async function loadTreeStructure(id: string, selectNodeId?: string) {
         setLoading(true);
         try {
             const res = await axios.get(`/api/trees/${id}/structure`);
             setRawData(res.data);
-            setSelectedNode(null);
+            // If a node ID is provided, select it after loading; otherwise clear selection
+            if (selectNodeId && res.data?.nodes?.[selectNodeId]) {
+                setSelectedNode(res.data.nodes[selectNodeId]);
+            } else if (!selectNodeId) {
+                setSelectedNode(null);
+            }
         } catch (e) { console.error(e); }
         finally { setLoading(false); }
     }
@@ -894,7 +910,10 @@ export default function KnowledgeTree() {
                 onOpenChange={setCreateFolderOpen}
                 treeId={activeTreeId}
                 parentId={createFolderParentId}
-                onComplete={() => loadTreeStructure(activeTreeId)}
+                onComplete={(newNode) => {
+                    // Select the newly created folder after tree reloads
+                    loadTreeStructure(activeTreeId, newNode?.id);
+                }}
             />
 
             {/* Move Dialog */}
@@ -951,8 +970,8 @@ export default function KnowledgeTree() {
                 treeId={activeTreeId}
                 parentId={createNoteParentId}
                 onComplete={(newNode) => {
-                    loadTreeStructure(activeTreeId);
-                    if (newNode) setSelectedNode(newNode);
+                    // Pass the new node ID to select it after tree reloads
+                    loadTreeStructure(activeTreeId, newNode?.id);
                 }}
             />
 
