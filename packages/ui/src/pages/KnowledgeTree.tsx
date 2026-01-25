@@ -3,7 +3,7 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, AlertTriangle, MessageSquare } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
@@ -11,7 +11,10 @@ import { QueryDialog } from "@/components/fraktag/QueryDialog";
 import { ChatDialog } from "@/components/fraktag/ChatDialog";
 import { MoveDialog } from "@/components/fraktag/MoveDialog";
 import { KBManagerDialog } from "@/components/fraktag/KBManagerDialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { CreateFolderDialog } from "@/components/fraktag/CreateFolderDialog";
+import { CreateNoteDialog } from "@/components/fraktag/CreateNoteDialog";
+import { DeleteNodeDialog } from "@/components/fraktag/DeleteNodeDialog";
+import { ReplaceVersionDialog } from "@/components/fraktag/ReplaceVersionDialog";
 
 interface KnowledgeBase {
     id: string;
@@ -44,11 +47,9 @@ export default function KnowledgeTree() {
     const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
     const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Folder Creation Dialog (supports multiple folders)
+    // Folder Creation Dialog
     const [createFolderOpen, setCreateFolderOpen] = useState(false);
-    const [newFolders, setNewFolders] = useState<{ title: string; gist: string }[]>([{ title: "", gist: "" }]);
     const [createFolderParentId, setCreateFolderParentId] = useState<string>("");
-    const [creatingFolder, setCreatingFolder] = useState(false);
 
     // Move Dialog
     const [moveDialogOpen, setMoveDialogOpen] = useState(false);
@@ -70,14 +71,10 @@ export default function KnowledgeTree() {
 
     // Version Replacement Dialog
     const [replaceVersionOpen, setReplaceVersionOpen] = useState(false);
-    const [newVersionContent, setNewVersionContent] = useState("");
-    const [replacingVersion, setReplacingVersion] = useState(false);
 
     // Create Note Dialog
     const [createNoteOpen, setCreateNoteOpen] = useState(false);
-    const [newNoteTitle, setNewNoteTitle] = useState("");
-    const [newNoteParentId, setNewNoteParentId] = useState("");
-    const [creatingNote, setCreatingNote] = useState(false);
+    const [createNoteParentId, setCreateNoteParentId] = useState("");
 
     // Gist Generation
     const [generatingGist, setGeneratingGist] = useState(false);
@@ -85,7 +82,6 @@ export default function KnowledgeTree() {
 
     // Delete Node Dialog
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-    const [deletingNode, setDeletingNode] = useState(false);
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(560);
@@ -268,48 +264,10 @@ export default function KnowledgeTree() {
         }, 800);
     };
 
-    // Folder Creation (supports multiple folders)
+    // Folder Creation
     const openCreateFolderDialog = (parentId: string) => {
         setCreateFolderParentId(parentId);
-        setNewFolders([{ title: "", gist: "" }]);
         setCreateFolderOpen(true);
-    };
-
-    const addNewFolderRow = () => {
-        setNewFolders(prev => [...prev, { title: "", gist: "" }]);
-    };
-
-    const updateNewFolder = (index: number, field: 'title' | 'gist', value: string) => {
-        setNewFolders(prev => prev.map((f, i) => i === index ? { ...f, [field]: value } : f));
-    };
-
-    const removeNewFolder = (index: number) => {
-        setNewFolders(prev => prev.filter((_, i) => i !== index));
-    };
-
-    const canCreateFolders = newFolders.some(f => f.title.trim() && f.gist.trim());
-
-    const createFolders = async () => {
-        const validFolders = newFolders.filter(f => f.title.trim() && f.gist.trim());
-        if (validFolders.length === 0) return;
-
-        setCreatingFolder(true);
-        try {
-            // Create all folders in sequence
-            for (const folder of validFolders) {
-                await axios.post(`/api/trees/${activeTreeId}/folders`, {
-                    parentId: createFolderParentId,
-                    title: folder.title,
-                    gist: folder.gist,
-                });
-            }
-            setCreateFolderOpen(false);
-            loadTreeStructure(activeTreeId);
-        } catch (e) {
-            console.error("Failed to create folders:", e);
-        } finally {
-            setCreatingFolder(false);
-        }
     };
 
     // Content Auto-Save (for editable content)
@@ -381,57 +339,8 @@ export default function KnowledgeTree() {
 
     // Create Note (editable document)
     const openCreateNoteDialog = (parentId: string) => {
-        setNewNoteParentId(parentId);
-        setNewNoteTitle("");
+        setCreateNoteParentId(parentId);
         setCreateNoteOpen(true);
-    };
-
-    const createNote = async () => {
-        if (!newNoteTitle.trim()) return;
-        setCreatingNote(true);
-        try {
-            const res = await axios.post(`/api/trees/${activeTreeId}/editable-documents`, {
-                folderId: newNoteParentId,
-                title: newNoteTitle,
-                content: '',
-                gist: ''
-            });
-            setCreateNoteOpen(false);
-            await loadTreeStructure(activeTreeId);
-            // Select the new node
-            setSelectedNode(res.data);
-        } catch (e) {
-            console.error("Failed to create note:", e);
-        } finally {
-            setCreatingNote(false);
-        }
-    };
-
-    // Replace Version (for readonly content)
-    const openReplaceVersionDialog = () => {
-        setNewVersionContent(contentPayload || '');
-        setReplaceVersionOpen(true);
-    };
-
-    const replaceVersion = async () => {
-        if (!selectedNode || !newVersionContent.trim()) return;
-        setReplacingVersion(true);
-        try {
-            const res = await axios.post(`/api/nodes/${selectedNode.id}/replace-version`, {
-                content: newVersionContent
-            });
-            // Refresh content
-            setContentPayload(newVersionContent);
-            setReplaceVersionOpen(false);
-            // Update node with new content ID
-            if (res.data.newContent) {
-                setSelectedNode({ ...selectedNode, contentId: res.data.newContent.id });
-            }
-        } catch (e) {
-            console.error("Failed to replace version:", e);
-        } finally {
-            setReplacingVersion(false);
-        }
     };
 
     // Move operations
@@ -441,25 +350,6 @@ export default function KnowledgeTree() {
         setMoveDialogOpen(true);
     };
 
-    // Delete Node
-    const openDeleteDialog = () => {
-        setDeleteDialogOpen(true);
-    };
-
-    const deleteNode = async () => {
-        if (!selectedNode) return;
-        setDeletingNode(true);
-        try {
-            await axios.delete(`/api/nodes/${selectedNode.id}`);
-            setDeleteDialogOpen(false);
-            setSelectedNode(null);
-            await loadTreeStructure(activeTreeId);
-        } catch (e) {
-            console.error("Failed to delete node:", e);
-        } finally {
-            setDeletingNode(false);
-        }
-    };
 
     async function loadTreeStructure(id: string) {
         setLoading(true);
@@ -819,7 +709,7 @@ export default function KnowledgeTree() {
                                                 <Button
                                                     variant="outline"
                                                     size="sm"
-                                                    onClick={openDeleteDialog}
+                                                    onClick={() => setDeleteDialogOpen(true)}
                                                     className="gap-1 text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
                                                 >
                                                     <Trash2 className="w-3 h-3" />
@@ -902,7 +792,7 @@ export default function KnowledgeTree() {
                                                     <Button
                                                         variant="outline"
                                                         size="sm"
-                                                        onClick={openReplaceVersionDialog}
+                                                        onClick={() => setReplaceVersionOpen(true)}
                                                         className="gap-1"
                                                     >
                                                         <History className="w-3 h-3" />
@@ -999,95 +889,13 @@ export default function KnowledgeTree() {
             />
 
             {/* Create Folder Dialog */}
-            <Dialog open={createFolderOpen} onOpenChange={setCreateFolderOpen}>
-                <DialogContent className="max-w-md">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                            <FolderPlus className="w-5 h-5 text-blue-500" />
-                            Create New Folder{newFolders.length > 1 ? 's' : ''}
-                        </DialogTitle>
-                        <DialogDescription>
-                            Create one or more subfolders. Folders organize content but contain no direct payload.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 pt-4">
-                        <ScrollArea className="max-h-[350px] pr-4">
-                            <div className="space-y-4">
-                                {newFolders.map((folder, index) => (
-                                    <div key={index} className="relative p-3 border rounded-lg bg-zinc-50/50">
-                                        {/* Remove button for additional folders */}
-                                        {newFolders.length > 1 && (
-                                            <button
-                                                onClick={() => removeNewFolder(index)}
-                                                className="absolute top-2 right-2 p-1 text-zinc-400 hover:text-red-500 rounded"
-                                                title="Remove folder"
-                                            >
-                                                <X className="w-4 h-4" />
-                                            </button>
-                                        )}
-
-                                        <div className="space-y-3">
-                                            <div>
-                                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                                    Folder {newFolders.length > 1 ? `#${index + 1} ` : ''}Title
-                                                </label>
-                                                <Input
-                                                    value={folder.title}
-                                                    onChange={(e) => updateNewFolder(index, 'title', e.target.value)}
-                                                    placeholder="Enter folder title..."
-                                                    className="mt-1"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                                    Description (Gist)
-                                                </label>
-                                                <textarea
-                                                    value={folder.gist}
-                                                    onChange={(e) => updateNewFolder(index, 'gist', e.target.value)}
-                                                    placeholder="What does this folder contain?"
-                                                    className="w-full mt-1 min-h-[60px] p-3 text-sm border rounded-lg resize-y"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </ScrollArea>
-
-                        {/* Add another folder button */}
-                        <Button
-                            type="button"
-                            variant="outline"
-                            onClick={addNewFolderRow}
-                            className="w-full border-dashed"
-                        >
-                            <Plus className="w-4 h-4 mr-2" />
-                            Add Another Folder
-                        </Button>
-
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button variant="outline" onClick={() => setCreateFolderOpen(false)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                onClick={createFolders}
-                                disabled={!canCreateFolders || creatingFolder}
-                                className="bg-blue-600 hover:bg-blue-700"
-                            >
-                                {creatingFolder ? (
-                                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                                ) : (
-                                    <FolderPlus className="w-4 h-4 mr-2" />
-                                )}
-                                Create {newFolders.filter(f => f.title.trim() && f.gist.trim()).length > 1
-                                    ? `${newFolders.filter(f => f.title.trim() && f.gist.trim()).length} Folders`
-                                    : 'Folder'}
-                            </Button>
-                        </div>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            <CreateFolderDialog
+                open={createFolderOpen}
+                onOpenChange={setCreateFolderOpen}
+                treeId={activeTreeId}
+                parentId={createFolderParentId}
+                onComplete={() => loadTreeStructure(activeTreeId)}
+            />
 
             {/* Move Dialog */}
             <MoveDialog
@@ -1137,142 +945,43 @@ export default function KnowledgeTree() {
             />
 
             {/* Create Note Dialog */}
-            <Dialog open={createNoteOpen} onOpenChange={setCreateNoteOpen}>
-                <DialogContent className="max-w-md">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                            <FilePlus className="w-5 h-5 text-emerald-500" />
-                            Create New Note
-                        </DialogTitle>
-                        <DialogDescription>
-                            Create an editable note that you can write and edit directly.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 pt-4">
-                        <div>
-                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                Note Title
-                            </label>
-                            <Input
-                                value={newNoteTitle}
-                                onChange={(e) => setNewNoteTitle(e.target.value)}
-                                placeholder="Enter note title..."
-                                className="mt-1"
-                                autoFocus
-                            />
-                        </div>
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button variant="outline" onClick={() => setCreateNoteOpen(false)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                onClick={createNote}
-                                disabled={!newNoteTitle.trim() || creatingNote}
-                                className="bg-emerald-600 hover:bg-emerald-700"
-                            >
-                                {creatingNote ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                    <FilePlus className="w-4 h-4" />
-                                )}
-                                Create Note
-                            </Button>
-                        </div>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            <CreateNoteDialog
+                open={createNoteOpen}
+                onOpenChange={setCreateNoteOpen}
+                treeId={activeTreeId}
+                parentId={createNoteParentId}
+                onComplete={(newNode) => {
+                    loadTreeStructure(activeTreeId);
+                    if (newNode) setSelectedNode(newNode);
+                }}
+            />
 
             {/* Delete Confirmation Dialog */}
-            <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <DialogContent className="max-w-md">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2 text-red-600">
-                            <AlertTriangle className="w-5 h-5" />
-                            Delete Content
-                        </DialogTitle>
-                        <DialogDescription>
-                            This action cannot be undone.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 pt-4">
-                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                            <p className="text-sm text-red-800 font-medium mb-2">
-                                Are you sure you want to delete this {selectedNode?.type}?
-                            </p>
-                            <p className="text-sm text-red-700">
-                                <strong>"{selectedNode?.title}"</strong>
-                            </p>
-                            {selectedNode?.type === 'document' && (
-                                <p className="text-xs text-red-600 mt-2">
-                                    This will also delete all fragments (chunks) inside this document.
-                                </p>
-                            )}
-                        </div>
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                onClick={deleteNode}
-                                disabled={deletingNode}
-                                className="bg-red-600 hover:bg-red-700 text-white"
-                            >
-                                {deletingNode ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                    <Trash2 className="w-4 h-4" />
-                                )}
-                                Yes, Delete Forever
-                            </Button>
-                        </div>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            <DeleteNodeDialog
+                open={deleteDialogOpen}
+                onOpenChange={setDeleteDialogOpen}
+                nodeId={selectedNode?.id || ""}
+                nodeTitle={selectedNode?.title || ""}
+                nodeType={selectedNode?.type || ""}
+                onComplete={() => {
+                    setSelectedNode(null);
+                    loadTreeStructure(activeTreeId);
+                }}
+            />
 
             {/* Replace Version Dialog */}
-            <Dialog open={replaceVersionOpen} onOpenChange={setReplaceVersionOpen}>
-                <DialogContent className="max-w-3xl max-h-[90vh]">
-                    <DialogHeader>
-                        <DialogTitle className="flex items-center gap-2">
-                            <History className="w-5 h-5 text-amber-500" />
-                            Replace Content Version
-                        </DialogTitle>
-                        <DialogDescription>
-                            Create a new version of this content. The old version will be preserved in history.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 pt-4">
-                        <div>
-                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                New Content
-                            </label>
-                            <textarea
-                                value={newVersionContent}
-                                onChange={(e) => setNewVersionContent(e.target.value)}
-                                className="w-full mt-1 min-h-[300px] p-3 text-sm font-mono border rounded-lg resize-y"
-                                placeholder="Enter the new content..."
-                            />
-                        </div>
-                        <div className="flex justify-end gap-2 pt-2">
-                            <Button variant="outline" onClick={() => setReplaceVersionOpen(false)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                onClick={replaceVersion}
-                                disabled={!newVersionContent.trim() || replacingVersion}
-                                className="bg-amber-600 hover:bg-amber-700"
-                            >
-                                {replacingVersion ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                    <History className="w-4 h-4" />
-                                )}
-                                Replace Version
-                            </Button>
-                        </div>
-                    </div>
-                </DialogContent>
-            </Dialog>
+            <ReplaceVersionDialog
+                open={replaceVersionOpen}
+                onOpenChange={setReplaceVersionOpen}
+                nodeId={selectedNode?.id || ""}
+                currentContent={contentPayload || ""}
+                onComplete={(newContent, newContentId) => {
+                    setContentPayload(newContent);
+                    if (newContentId && selectedNode) {
+                        setSelectedNode({ ...selectedNode, contentId: newContentId });
+                    }
+                }}
+            />
         </div>
     );
 }
