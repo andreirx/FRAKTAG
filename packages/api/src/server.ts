@@ -72,10 +72,12 @@ app.get('/api/knowledge-bases/:id', async (req, res) => {
     if (!kb) {
       return res.status(404).json({ error: `Knowledge base "${req.params.id}" not found` });
     }
-    const trees = await kb.listTrees();
+    // Get trees from central storage filtered by this KB
+    const treesForKB = await fraktag.listTreesForKB(req.params.id);
+    const treeIds = treesForKB.map(t => t.id);
     res.json({
       ...kb.toJSON(),
-      trees
+      trees: treeIds
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -338,7 +340,16 @@ app.get('/api/knowledge-bases/:kbId/conversation-tree', async (req, res) => {
 app.get('/api/trees', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const trees = await fraktag.listTrees();
+    const kbId = req.query.kbId as string | undefined;
+    // If kbId is provided, filter trees by that KB
+    // If kbId is 'all', return all trees (including internal)
+    // Otherwise return all trees (default behavior for backwards compatibility)
+    let trees;
+    if (kbId && kbId !== 'all') {
+      trees = await fraktag.listTreesForKB(kbId);
+    } else {
+      trees = await fraktag.listTrees();
+    }
     res.json(trees);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -515,11 +526,12 @@ app.get('/api/content/:id', async (req, res) => {
 app.patch('/api/content/:id', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const { payload } = req.body;
+    const { payload, nodeId } = req.body;
     if (payload === undefined) {
       return res.status(400).json({ error: 'payload is required' });
     }
-    const updated = await fraktag.updateEditableContent(req.params.id, payload);
+    // Pass nodeId to also update vector index
+    const updated = await fraktag.updateEditableContent(req.params.id, payload, nodeId);
     res.json(updated);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

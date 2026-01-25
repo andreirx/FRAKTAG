@@ -64,6 +64,7 @@ export class Fraktag {
   // Knowledge Base support
   private kbManager?: KnowledgeBaseManager;
   private configPath?: string;
+  private kbVectorStores: Map<string, VectorStore> = new Map();
 
   // Conversation support
   private conversationManager: ConversationManager;
@@ -123,6 +124,16 @@ export class Fraktag {
       this.vectorStore,
       this.basicLlm
     );
+
+    // Set store resolver on Fractalizer and Navigator for KB-aware operations
+    // This allows them to route operations to the correct KB storage
+    const storeResolver = {
+      getTreeStoreForTree: (treeId: string) => this.getTreeStoreForTree(treeId),
+      getContentStoreForTree: (treeId: string) => this.getContentStoreForTree(treeId),
+      getVectorStoreForTree: (treeId: string) => this.getVectorStoreForTree(treeId)
+    };
+    this.fractalizer.setStoreResolver(storeResolver);
+    this.navigator.setStoreResolver(storeResolver);
   }
 
   private createEmbeddingAdapter(config?: EmbeddingConfig): IEmbeddingAdapter {
@@ -202,30 +213,180 @@ export class Fraktag {
 
   // ============ TREE MANAGEMENT ============
 
+  /**
+   * List all trees from all sources:
+   * - Internal/legacy trees (from main engine storage)
+   * - Trees from each loaded knowledge base (from KB storage)
+   */
   async listTrees(): Promise<Tree[]> {
-    return await this.treeStore.listTrees();
+    // Get internal/legacy trees from main storage
+    const internalTrees = await this.treeStore.listTrees();
+
+    // Get trees from all loaded KBs
+    const kbTrees: Tree[] = [];
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        const trees = await kb.listTrees();
+        kbTrees.push(...trees);
+      }
+    }
+
+    return [...internalTrees, ...kbTrees];
   }
 
+  /**
+   * List trees for a specific knowledge base.
+   * - If kbId is 'internal' or undefined: returns trees from main engine storage
+   * - Otherwise: returns trees from the KB's own storage
+   */
+  async listTreesForKB(kbId?: string): Promise<Tree[]> {
+    if (!kbId || kbId === 'internal') {
+      // Return internal/legacy trees from main storage
+      return await this.treeStore.listTrees();
+    }
+
+    // Return trees from the specific KB's storage
+    const kb = this.kbManager?.get(kbId);
+    if (!kb) {
+      return [];
+    }
+    return await kb.listTrees();
+  }
+
+  /**
+   * Get a tree by ID. Searches in KB storages first, then main storage.
+   */
   async getTree(treeId: string): Promise<Tree> {
+    // Try to find in KB storages first (check by kbId prefix)
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          try {
+            return await kb.treeStore.getTree(treeId);
+          } catch {
+            // Not found in this KB, continue
+          }
+        }
+      }
+    }
+
+    // Fall back to main storage
     return await this.treeStore.getTree(treeId);
   }
 
+  /**
+   * Get full tree file (config + nodes). Routes to correct storage.
+   */
   async getFullTree(treeId: string): Promise<{ config: any, nodes: Record<string, any> }> {
+    // Try to find in KB storages first
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          try {
+            return await kb.treeStore.getTreeFile(treeId);
+          } catch {
+            // Not found in this KB, continue
+          }
+        }
+      }
+    }
+
+    // Fall back to main storage
     return await this.treeStore.getTreeFile(treeId);
   }
 
+  /**
+   * Get the TreeStore for a given tree ID (routes to correct KB or main storage)
+   */
+  getTreeStoreForTree(treeId: string): TreeStore {
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          return kb.treeStore;
+        }
+      }
+    }
+    return this.treeStore;
+  }
+
+  /**
+   * Get the ContentStore for a given tree ID (routes to correct KB or main storage)
+   */
+  getContentStoreForTree(treeId: string): ContentStore {
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          return kb.contentStore;
+        }
+      }
+    }
+    return this.contentStore;
+  }
+
+  /**
+   * Get the VectorStore for a given tree ID (routes to correct KB or main storage).
+   * Creates a new VectorStore for each KB on first access (lazy initialization).
+   */
+  getVectorStoreForTree(treeId: string): VectorStore {
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          // Check if we already have a VectorStore for this KB
+          if (!this.kbVectorStores.has(kb.id)) {
+            // Create a new VectorStore using the KB's storage
+            const kbVectorStore = new VectorStore(kb.storage, this.embedder);
+            this.kbVectorStores.set(kb.id, kbVectorStore);
+          }
+          return this.kbVectorStores.get(kb.id)!;
+        }
+      }
+    }
+    return this.vectorStore;
+  }
+
+  /**
+   * Get a node by ID, searching across all storages (main + all KBs).
+   */
+  async getNode(nodeId: string): Promise<TreeNode | null> {
+    // Try main storage first
+    let node = await this.treeStore.getNode(nodeId);
+    if (node) return node;
+
+    // Try KB storages
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        node = await kb.treeStore.getNode(nodeId);
+        if (node) return node;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the stores (tree + content) for a node's tree
+   */
+  getStoresForNode(node: TreeNode): { treeStore: TreeStore; contentStore: ContentStore } {
+    const treeStore = this.getTreeStoreForTree(node.treeId);
+    const contentStore = this.getContentStoreForTree(node.treeId);
+    return { treeStore, contentStore };
+  }
+
   async printTree(treeId: string): Promise<string> {
-    return await this.treeStore.generateVisualTree(treeId);
+    const store = this.getTreeStoreForTree(treeId);
+    return await store.generateVisualTree(treeId);
   }
 
   async getLeafFolders(treeId: string): Promise<FolderNode[]> {
-    return await this.treeStore.getLeafFolders(treeId);
+    const store = this.getTreeStoreForTree(treeId);
+    return await store.getLeafFolders(treeId);
   }
 
   // ============ FOLDER MANAGEMENT ============
 
   async createFolder(treeId: string, parentId: string, title: string, gist: string): Promise<FolderNode> {
-    return await this.treeStore.createFolder(treeId, parentId, title, gist);
+    const store = this.getTreeStoreForTree(treeId);
+    return await store.createFolder(treeId, parentId, title, gist);
   }
 
   // ============ INGESTION (Human-Assisted Workflow) ============
@@ -323,12 +484,42 @@ export class Fraktag {
   /**
    * Update the content of an editable document or fragment
    * Returns the updated content atom, or throws if not editable
+   * Searches all storages (internal + KBs) for the content
+   * Also updates the vector index for the associated node
    */
-  async updateEditableContent(contentId: string, newPayload: string): Promise<ContentAtom> {
-    const updated = await this.contentStore.updatePayload(contentId, newPayload);
+  async updateEditableContent(contentId: string, newPayload: string, nodeId?: string): Promise<ContentAtom> {
+    // Try internal storage first
+    let updated = await this.contentStore.updatePayload(contentId, newPayload);
+    let foundInKb: KnowledgeBase | null = null;
+
+    if (!updated && this.kbManager) {
+      // Try KB storages
+      for (const kb of this.kbManager.list()) {
+        updated = await kb.contentStore.updatePayload(contentId, newPayload);
+        if (updated) {
+          foundInKb = kb;
+          break;
+        }
+      }
+    }
+
     if (!updated) {
       throw new Error(`Content not found: ${contentId}`);
     }
+
+    // Update the vector index for the node if we know which node it is
+    if (nodeId) {
+      const node = await this.getNode(nodeId);
+      if (node) {
+        const vectorStore = this.getVectorStoreForTree(node.treeId);
+        await vectorStore.load(node.treeId);
+        await vectorStore.remove(nodeId);
+        await vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${newPayload.slice(0, 500)}`);
+        await vectorStore.save(node.treeId);
+        console.log(`📊 Updated vector index for node ${nodeId}`);
+      }
+    }
+
     return updated;
   }
 
@@ -342,8 +533,8 @@ export class Fraktag {
     newContent: string,
     createdBy: string = 'user'
   ): Promise<{ node: TreeNode; newContent: ContentAtom }> {
-    // Find the node across all trees
-    const node = await this.treeStore.getNode(nodeId);
+    // Find the node across all storages
+    const node = await this.getNode(nodeId);
     if (!node) {
       throw new Error(`Node not found: ${nodeId}`);
     }
@@ -352,8 +543,11 @@ export class Fraktag {
       throw new Error(`Node ${nodeId} is a folder and has no content`);
     }
 
+    // Get the correct stores for this node's tree
+    const { treeStore, contentStore } = this.getStoresForNode(node);
+
     // Create new version of content
-    const newContentAtom = await this.contentStore.createVersion(
+    const newContentAtom = await contentStore.createVersion(
       node.contentId,
       newContent,
       createdBy
@@ -362,7 +556,7 @@ export class Fraktag {
     // Update node to point to new content
     (node as DocumentNode).contentId = newContentAtom.id;
     node.updatedAt = new Date().toISOString();
-    await this.treeStore.saveNode(node);
+    await treeStore.saveNode(node);
 
     // Re-index the node with new content
     await this.vectorStore.add(
@@ -376,23 +570,59 @@ export class Fraktag {
 
   /**
    * Get the version history of a content atom
+   * Searches all storages (internal + KBs) for the content
    */
   async getContentHistory(contentId: string): Promise<ContentAtom[]> {
-    return await this.contentStore.getHistory(contentId);
+    // Try internal storage first
+    const history = await this.contentStore.getHistory(contentId);
+    if (history.length > 0) return history;
+
+    // Try KB storages
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        const kbHistory = await kb.contentStore.getHistory(contentId);
+        if (kbHistory.length > 0) return kbHistory;
+      }
+    }
+    return [];
   }
 
   /**
    * Get the latest version of content (in case node points to old version)
+   * Searches all storages for the content
    */
   async getLatestContent(contentId: string): Promise<ContentAtom | null> {
-    return await this.contentStore.getLatestVersion(contentId);
+    // Try internal storage first
+    const content = await this.contentStore.getLatestVersion(contentId);
+    if (content) return content;
+
+    // Try KB storages
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        const kbContent = await kb.contentStore.getLatestVersion(contentId);
+        if (kbContent) return kbContent;
+      }
+    }
+    return null;
   }
 
   /**
    * Check if content has been superseded by a newer version
+   * Searches all storages
    */
   async isContentSuperseded(contentId: string): Promise<boolean> {
-    return await this.contentStore.isSuperseded(contentId);
+    // Try internal storage first
+    const superseded = await this.contentStore.isSuperseded(contentId);
+    if (superseded) return true;
+
+    // Try KB storages
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        const kbSuperseded = await kb.contentStore.isSuperseded(contentId);
+        if (kbSuperseded) return true;
+      }
+    }
+    return false;
   }
 
   // ============ LEGACY INGESTION (Deprecated) ============
@@ -415,10 +645,12 @@ export class Fraktag {
     let contentId = '';
 
     for (const treeId of targetTrees) {
-      const tree = await this.treeStore.getTree(treeId);
+      // Use routing to get the correct tree store for this tree
+      const treeStore = this.getTreeStoreForTree(treeId);
+      const tree = await treeStore.getTree(treeId);
 
       // Find a leaf folder to place content
-      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+      const leafFolders = await treeStore.getLeafFolders(treeId);
       const targetFolder = request.parentNodeId || (leafFolders.length > 0 ? leafFolders[0].id : tree.rootNodeId);
 
       const title = await this.fractalizer.generateTitle(request.content, treeId);
@@ -453,8 +685,23 @@ export class Fraktag {
     return await this.navigator.browse(request);
   }
 
+  /**
+   * Get content by ID. Note: For KB content, you should use the tree ID to route.
+   * This searches all storages for the content.
+   */
   async getContent(contentId: string): Promise<ContentAtom | null> {
-    return await this.contentStore.get(contentId);
+    // Try main storage first
+    let content = await this.contentStore.get(contentId);
+    if (content) return content;
+
+    // Try KB storages
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        content = await kb.contentStore.get(contentId);
+        if (content) return content;
+      }
+    }
+    return null;
   }
 
   /**
@@ -468,12 +715,14 @@ export class Fraktag {
     type: string;
     path: string;
   } | null> {
-    const node = await this.treeStore.getNode(nodeId);
+    const node = await this.getNode(nodeId);
     if (!node) return null;
+
+    const { contentStore } = this.getStoresForNode(node);
 
     let content = '';
     if (hasContent(node)) {
-      const contentAtom = await this.contentStore.get(node.contentId);
+      const contentAtom = await contentStore.get(node.contentId);
       content = contentAtom?.payload || '';
     }
 
@@ -493,8 +742,10 @@ export class Fraktag {
    * Update node title and/or gist
    */
   async updateNode(nodeId: string, updates: { title?: string; gist?: string }): Promise<TreeNode> {
-    const node = await this.treeStore.getNode(nodeId);
+    const node = await this.getNode(nodeId);
     if (!node) throw new Error(`Node ${nodeId} not found`);
+
+    const { treeStore, contentStore } = this.getStoresForNode(node);
 
     if (updates.title !== undefined) {
       node.title = updates.title;
@@ -504,13 +755,13 @@ export class Fraktag {
     }
     node.updatedAt = new Date().toISOString();
 
-    await this.treeStore.saveNode(node);
+    await treeStore.saveNode(node);
 
     // Update vector index with new title/gist
     await this.vectorStore.remove(nodeId);
     let indexText = `${node.title}\n${node.gist}`;
     if (hasContent(node)) {
-      const content = await this.contentStore.get(node.contentId);
+      const content = await contentStore.get(node.contentId);
       if (content) {
         indexText += `\n${content.payload.slice(0, 500)}`;
       }
@@ -527,7 +778,7 @@ export class Fraktag {
    * Also removes associated content atoms and vector index entries.
    */
   async deleteNode(nodeId: string): Promise<{ deletedNodes: string[]; deletedContent: string[] }> {
-    const node = await this.treeStore.getNode(nodeId);
+    const node = await this.getNode(nodeId);
     if (!node) {
       throw new Error(`Node not found: ${nodeId}`);
     }
@@ -536,6 +787,8 @@ export class Fraktag {
     if (!node.parentId) {
       throw new Error('Cannot delete the root node');
     }
+
+    const { treeStore, contentStore } = this.getStoresForNode(node);
 
     // Collect all nodes to delete (including descendants)
     const nodesToDelete: TreeNode[] = [];
@@ -546,7 +799,7 @@ export class Fraktag {
       if (hasContent(n)) {
         contentIdsToDelete.push(n.contentId);
       }
-      const children = await this.treeStore.getChildren(n.id);
+      const children = await treeStore.getChildren(n.id);
       for (const child of children) {
         await collectDescendants(child);
       }
@@ -556,7 +809,7 @@ export class Fraktag {
     const treeId = node.treeId;
 
     // Delete from tree (cascades children)
-    await this.treeStore.deleteNode(nodeId);
+    await treeStore.deleteNode(nodeId);
     console.log(`🗑️ Deleted ${nodesToDelete.length} node(s) from tree`);
 
     // Remove from vector index
@@ -568,7 +821,7 @@ export class Fraktag {
 
     // Delete content atoms
     for (const contentId of contentIdsToDelete) {
-      await this.contentStore.delete(contentId);
+      await contentStore.delete(contentId);
     }
     console.log(`🗑️ Deleted ${contentIdsToDelete.length} content atom(s)`);
 
@@ -585,17 +838,19 @@ export class Fraktag {
    * - Documents/fragments can only move to leaf folders (no folder children)
    */
   async moveNode(nodeId: string, newParentId: string): Promise<TreeNode> {
-    const node = await this.treeStore.getNode(nodeId);
+    const node = await this.getNode(nodeId);
     if (!node) throw new Error(`Node ${nodeId} not found`);
 
-    const newParent = await this.treeStore.getNode(newParentId);
+    const { treeStore } = this.getStoresForNode(node);
+
+    const newParent = await treeStore.getNodeFromTree(node.treeId, newParentId);
     if (!newParent) throw new Error(`Target parent ${newParentId} not found`);
     if (!isFolder(newParent)) throw new Error(`Target ${newParentId} is not a folder`);
 
     // Check if newParent is valid for this node type
     if (node.type !== 'folder') {
       // Documents/fragments can only go into leaf folders (no folder children)
-      const siblings = await this.treeStore.getChildren(newParentId);
+      const siblings = await treeStore.getChildren(newParentId);
       const hasSubfolders = siblings.some(s => s.type === 'folder');
       if (hasSubfolders) {
         throw new Error(`Cannot move ${node.type} into a folder that has subfolders`);
@@ -607,7 +862,7 @@ export class Fraktag {
     node.parentId = newParentId;
     node.updatedAt = new Date().toISOString();
 
-    await this.treeStore.saveNode(node);
+    await treeStore.saveNode(node);
 
     console.log(`📦 Moved node ${nodeId} from ${oldParentId} to ${newParentId}`);
 
@@ -683,12 +938,14 @@ export class Fraktag {
     }
 
     const contextPromises = retrieval.nodes.map(async (node, i) => {
-      const treeNode = await this.treeStore.getNode(node.nodeId);
+      // Use routing to get node from correct storage
+      const treeNode = await this.getNode(node.nodeId);
       const title = treeNode?.title || "Untitled Segment";
 
       let sourceInfo = "";
       if (node.contentId) {
-        const atom = await this.contentStore.get(node.contentId);
+        // Use routing to get content from correct storage
+        const atom = await this.getContent(node.contentId);
         if (atom?.sourceUri) {
           const filename = atom.sourceUri.split('/').pop();
           sourceInfo = `(File: ${filename})`;
@@ -765,12 +1022,14 @@ export class Fraktag {
 
       for (let i = 0; i < retrieval.nodes.length; i++) {
         const node = retrieval.nodes[i];
-        const treeNode = await this.treeStore.getNode(node.nodeId);
+        // Use routing to get node from correct storage
+        const treeNode = await this.getNode(node.nodeId);
         const title = treeNode?.title || "Untitled Segment";
 
         let sourceInfo = "";
         if (node.contentId) {
-          const atom = await this.contentStore.get(node.contentId);
+          // Use routing to get content from correct storage
+          const atom = await this.getContent(node.contentId);
           if (atom?.sourceUri) {
             const filename = atom.sourceUri.split('/').pop();
             sourceInfo = `(File: ${filename})`;
@@ -847,15 +1106,19 @@ export class Fraktag {
     };
 
     try {
-      const tree = await this.treeStore.getTree(treeId);
-      const allNodes = await this.treeStore.getAllNodes(treeId);
+      // Use routing to get the correct stores for this tree
+      const treeStore = this.getTreeStoreForTree(treeId);
+      const contentStore = this.getContentStoreForTree(treeId);
+
+      const tree = await treeStore.getTree(treeId);
+      const allNodes = await treeStore.getAllNodes(treeId);
 
       for (const node of allNodes) {
         if (node.id === tree.rootNodeId) continue;
 
         // Check orphan nodes
         if (node.parentId) {
-          const parent = await this.treeStore.getNode(node.parentId);
+          const parent = await treeStore.getNode(node.parentId);
           if (!parent) {
             result.orphanNodes.push(node.id);
             result.valid = false;
@@ -864,7 +1127,7 @@ export class Fraktag {
 
         // Check missing content refs
         if (hasContent(node)) {
-          const content = await this.contentStore.get(node.contentId);
+          const content = await contentStore.get(node.contentId);
           if (!content) {
             result.missingContentRefs.push(node.id);
             result.valid = false;
@@ -873,11 +1136,11 @@ export class Fraktag {
 
         // Check constraint violations
         if (node.parentId) {
-          const parent = await this.treeStore.getNode(node.parentId);
+          const parent = await treeStore.getNode(node.parentId);
           if (parent) {
             // Folder with both folder and document children
             if (isFolder(parent)) {
-              const siblings = await this.treeStore.getChildren(node.parentId);
+              const siblings = await treeStore.getChildren(node.parentId);
               const hasFolders = siblings.some(s => isFolder(s));
               const hasDocuments = siblings.some(s => s.type === 'document');
               if (hasFolders && hasDocuments) {
@@ -901,8 +1164,10 @@ export class Fraktag {
   async audit(treeId: string): Promise<any> {
     console.log(`\n🕵️  The Gardener (Expert) is inspecting tree: ${treeId}...`);
 
-    const treeMap = await this.treeStore.generateTreeMap(treeId);
-    const treeConfig = await this.treeStore.getTree(treeId);
+    // Use routing to get the correct tree store
+    const treeStore = this.getTreeStoreForTree(treeId);
+    const treeMap = await treeStore.generateTreeMap(treeId);
+    const treeConfig = await treeStore.getTree(treeId);
 
     const dogma = (treeConfig as any).dogma
       ? JSON.stringify((treeConfig as any).dogma)
@@ -930,18 +1195,37 @@ export class Fraktag {
   }
 
   async reset(treeId: string, options: { pruneContent?: boolean } = {}): Promise<void> {
+    // Check if tree is from internal config
     const treeConfig = this.config.trees.find(t => t.id === treeId);
-    if (!treeConfig) throw new Error(`Tree ${treeId} not configured.`);
+
+    // Use routing to get the correct stores
+    const treeStore = this.getTreeStoreForTree(treeId);
+    const contentStore = this.getContentStoreForTree(treeId);
 
     console.log(`🔥 Resetting Tree: ${treeId}`);
 
-    await this.treeStore.deleteTree(treeId);
+    await treeStore.deleteTree(treeId);
     await this.vectorStore.deleteIndex(treeId);
-    await this.treeStore.createTree(treeConfig);
+
+    // Re-create tree - if from config, use config; otherwise get from KB
+    if (treeConfig) {
+      await treeStore.createTree(treeConfig);
+    } else {
+      // For KB trees, we need to look up the tree config from KB
+      if (this.kbManager) {
+        for (const kb of this.kbManager.list()) {
+          if (treeId.startsWith(kb.id)) {
+            const newTreeConfig = kb.getTreeConfig(treeId.replace(`${kb.id}-`, ''));
+            await treeStore.createTree(newTreeConfig);
+            break;
+          }
+        }
+      }
+    }
 
     if (options.pruneContent) {
       console.log(`   🧹 Pruning derived chunks...`);
-      const count = await this.contentStore.pruneDerived();
+      const count = await contentStore.pruneDerived();
       console.log(`   ✅ Removed ${count} generated fragments.`);
     }
 
@@ -949,7 +1233,20 @@ export class Fraktag {
   }
 
   clearCache(treeId?: string) {
+    // Clear cache on internal store
     this.treeStore.clearCache(treeId);
+    // Also clear on KB stores if applicable
+    if (this.kbManager && treeId) {
+      const treeStore = this.getTreeStoreForTree(treeId);
+      if (treeStore !== this.treeStore) {
+        treeStore.clearCache(treeId);
+      }
+    } else if (this.kbManager && !treeId) {
+      // Clear all caches
+      for (const kb of this.kbManager.list()) {
+        kb.treeStore.clearCache();
+      }
+    }
   }
 
   // ============ PRIVATE METHODS ============
@@ -1046,10 +1343,9 @@ export class Fraktag {
 
     const kb = await this.kbManager.create(relativePath, options);
 
-    // Create the default tree for this KB
-    const treeConfig = kb.getTreeConfig();
-    await this.treeStore.createTree(treeConfig);
-    console.log(`🌱 Created tree for new KB "${kb.name}": ${treeConfig.name}`);
+    // Create the default tree in the KB's own storage (portable!)
+    const tree = await kb.createTree();
+    console.log(`🌱 Created tree for new KB "${kb.name}": ${tree.name} (in ${kb.path}/trees/)`);
 
     return kb;
   }
@@ -1072,16 +1368,16 @@ export class Fraktag {
 
     const kb = await this.kbManager.createInStorage(options);
 
-    // Create the default tree for this KB
-    const treeConfig = kb.getTreeConfig();
-    await this.treeStore.createTree(treeConfig);
-    console.log(`🌱 Created tree for new KB "${kb.name}": ${treeConfig.name}`);
+    // Create the default tree in the KB's own storage (portable!)
+    const tree = await kb.createTree();
+    console.log(`🌱 Created tree for new KB "${kb.name}": ${tree.name} (in ${kb.path}/trees/)`);
 
     return kb;
   }
 
   /**
-   * Load an existing knowledge base from a path
+   * Load an existing knowledge base from a path.
+   * The KB's trees/content/indexes are in its own folder (portable!).
    */
   async loadKnowledgeBase(kbPath: string): Promise<KnowledgeBase> {
     if (!this.kbManager) {
@@ -1090,45 +1386,44 @@ export class Fraktag {
       this.kbManager = new KnowledgeBaseManager(configDir);
     }
 
-    // Load the KB using manager
+    // Load the KB - its trees are already in its own storage
     const kb = await this.kbManager.load(kbPath);
 
-    // Initialize trees from this KB
-    const treeIds = await kb.listTrees();
-    for (const treeId of treeIds) {
-      const exists = await this.treeStore.treeExists(treeId);
-      if (!exists) {
-        const treeConfig = kb.getTreeConfig(treeId);
-        await this.treeStore.createTree(treeConfig);
-        console.log(`   🌱 Initialized tree: ${treeConfig.name}`);
-      }
+    // Log what trees are available in this KB
+    const trees = await kb.listTrees();
+    if (trees.length > 0) {
+      console.log(`   📚 KB "${kb.name}" has ${trees.length} tree(s): ${trees.map(t => t.name).join(', ')}`);
     }
 
     return kb;
   }
 
   /**
-   * Add a new tree to an existing knowledge base
+   * Add a new tree to an existing knowledge base.
+   * The tree is created in the KB's own storage folder (portable!).
    */
-  async addTreeToKnowledgeBase(kbId: string, treeId: string, treeName?: string): Promise<void> {
+  async addTreeToKnowledgeBase(kbId: string, localTreeId: string, treeName?: string): Promise<void> {
     const kb = this.kbManager?.get(kbId);
     if (!kb) {
       throw new Error(`Knowledge base not found: ${kbId}`);
     }
 
-    // Check if tree already exists
-    if (await kb.hasTree(treeId)) {
-      throw new Error(`Tree "${treeId}" already exists in KB "${kb.name}"`);
+    // Get the full tree ID (prefixed with KB ID)
+    const fullTreeId = kb.getFullTreeId(localTreeId);
+
+    // Check if tree already exists in KB's storage
+    if (await kb.hasTree(fullTreeId)) {
+      throw new Error(`Tree "${localTreeId}" already exists in KB "${kb.name}"`);
     }
 
-    // Create tree config from KB
-    const treeConfig = kb.getTreeConfig(treeId);
+    // Create the tree in the KB's own storage
+    const treeConfig = kb.getTreeConfig(localTreeId);
     if (treeName) {
       treeConfig.name = treeName;
     }
 
-    await this.treeStore.createTree(treeConfig);
-    console.log(`🌱 Created new tree "${treeId}" in KB "${kb.name}"`);
+    await kb.treeStore.createTree(treeConfig);
+    console.log(`🌱 Created new tree "${localTreeId}" in KB "${kb.name}" (${kb.path}/trees/)`);
   }
 
   /**
@@ -1158,12 +1453,14 @@ export class Fraktag {
     let totalNodes = 0;
 
     for (const treeId of treeIds) {
-      const tree = await this.treeStore.getTree(treeId);
+      // Use routing to get the correct tree store
+      const treeStore = this.getTreeStoreForTree(treeId);
+      const tree = await treeStore.getTree(treeId);
       if (!tree) {
         throw new Error(`Tree not found: ${treeId}`);
       }
 
-      const allNodes = await this.treeStore.getAllNodes(treeId);
+      const allNodes = await treeStore.getAllNodes(treeId);
       totalNodes += allNodes.length;
 
       for (const node of allNodes) {
@@ -1275,7 +1572,9 @@ export class Fraktag {
    */
   async getOrCreateConversationSession(kbId: string): Promise<ConversationSession> {
     const folder = await this.conversationManager.getOrCreateTodaySession(kbId);
-    const turns = await this.treeStore.getChildren(folder.id);
+    // Use routing to get children from correct tree store
+    const treeStore = this.getTreeStoreForTree(folder.treeId);
+    const turns = await treeStore.getChildren(folder.id);
     return {
       id: folder.id,
       treeId: folder.treeId,
@@ -1366,7 +1665,8 @@ export class Fraktag {
 
         for (const node of retrieval.nodes) {
           sourceIndex++;
-          const treeNode = await this.treeStore.getNode(node.nodeId);
+          // Use routing to get node from correct storage
+          const treeNode = await this.getNode(node.nodeId);
           const title = treeNode?.title || 'Untitled';
           const gist = treeNode?.gist || '';
 

@@ -17,7 +17,18 @@ import {
 } from './types.js';
 import { DEFAULT_PROMPTS } from '../prompts/default.js';
 
+/**
+ * Store resolver interface for KB-aware operations
+ */
+export interface StoreResolver {
+  getTreeStoreForTree(treeId: string): TreeStore;
+  getContentStoreForTree(treeId: string): ContentStore;
+  getVectorStoreForTree(treeId: string): VectorStore;
+}
+
 export class Navigator {
+  private storeResolver?: StoreResolver;
+
   constructor(
     private contentStore: ContentStore,
     private treeStore: TreeStore,
@@ -25,9 +36,51 @@ export class Navigator {
     private llm: ILLMAdapter
   ) {}
 
+  /**
+   * Set a store resolver for KB-aware operations.
+   * When set, the Navigator will use the resolver to get the correct stores for each tree.
+   */
+  setStoreResolver(resolver: StoreResolver): void {
+    this.storeResolver = resolver;
+  }
+
+  /**
+   * Get the correct TreeStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getTreeStore(treeId: string): TreeStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getTreeStoreForTree(treeId);
+    }
+    return this.treeStore;
+  }
+
+  /**
+   * Get the correct ContentStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getContentStore(treeId: string): ContentStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getContentStoreForTree(treeId);
+    }
+    return this.contentStore;
+  }
+
+  /**
+   * Get the correct VectorStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getVectorStore(treeId: string): VectorStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getVectorStoreForTree(treeId);
+    }
+    return this.vectorStore;
+  }
+
   async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
-    const tree = await this.treeStore.getTree(request.treeId);
-    await this.vectorStore.load(request.treeId);
+    // Get the correct stores for this tree (KB-aware routing)
+    const treeStore = this.getTreeStore(request.treeId);
+    const vectorStore = this.getVectorStore(request.treeId);
+
+    const tree = await treeStore.getTree(request.treeId);
+    await vectorStore.load(request.treeId);
 
     console.log(`\n🧭 Starting Retrieval: ${tree.name}`);
     console.log(`   Quest: "${request.query}"`);
@@ -40,11 +93,11 @@ export class Navigator {
     // PHASE 1: VECTOR BATCH RECONNAISSANCE
     // =========================================================
     console.log(`\n🔍 [Phase 1] Vector Neighborhood Scan`);
-    const seeds = await this.vectorStore.search(request.query, 5);
+    const seeds = await vectorStore.search(request.query, 5);
     const validSeeds = seeds.filter(s => s.score > 0.25);
 
     if (validSeeds.length > 0) {
-      const neighborhoodText = await this.buildNeighborhoodContext(validSeeds);
+      const neighborhoodText = await this.buildNeighborhoodContext(validSeeds, request.treeId);
 
       try {
         const decisionJson = await this.llm.complete(
@@ -61,7 +114,7 @@ export class Navigator {
         for (const id of targetIds) {
           if (visited.has(id)) continue;
 
-          const node = await this.treeStore.getNode(id);
+          const node = await treeStore.getNode(id);
           if (node) {
             visited.add(id);
 
@@ -93,7 +146,7 @@ export class Navigator {
     // PHASE 2: GLOBAL MAP SCAN
     // =========================================================
     console.log(`\n🔍 [Phase 2] Global Map Scan`);
-    const fullTreeMap = await this.treeStore.generateTreeMap(request.treeId);
+    const fullTreeMap = await treeStore.generateTreeMap(request.treeId);
 
     const CHUNK_SIZE = 200000;
     const OVERLAP = 1000;
@@ -138,7 +191,7 @@ export class Navigator {
 
     for (const id of candidates) {
       if (visited.has(id)) continue;
-      const node = await this.treeStore.getNode(id);
+      const node = await treeStore.getNode(id);
       if (!node) continue;
 
       console.log(`   🪂 Dive: ${node.title.slice(0, 50)}...`);
@@ -153,14 +206,15 @@ export class Navigator {
         0,
         0,
         10,
-        true
+        true,
+        request.treeId
       );
 
       // Check parent context
       if (node.parentId) {
-        const parent = await this.treeStore.getNode(node.parentId);
+        const parent = await treeStore.getNode(node.parentId);
         if (parent && !visited.has(parent.id)) {
-          await this.drill(parent, request.query, 1, request.resolution || 'L2', results, visited, 0, 0, 10, false);
+          await this.drill(parent, request.query, 1, request.resolution || 'L2', results, visited, 0, 0, 10, false, request.treeId);
         }
       }
     }
@@ -170,18 +224,20 @@ export class Navigator {
     return { nodes: uniqueResults, navigationPath: Array.from(visited) };
   }
 
-  private async buildNeighborhoodContext(seeds: { id: string; score: number }[]): Promise<string> {
+  private async buildNeighborhoodContext(seeds: { id: string; score: number }[], treeId: string): Promise<string> {
+    // Get the correct tree store for KB-aware routing
+    const treeStore = this.getTreeStore(treeId);
     let output = "";
 
     for (const seed of seeds) {
-      const node = await this.treeStore.getNode(seed.id);
+      const node = await treeStore.getNode(seed.id);
       if (!node) continue;
 
       output += `\n=== NEIGHBORHOOD (Score: ${seed.score.toFixed(2)}) ===\n`;
 
       // Parent Context
       if (node.parentId) {
-        const parent = await this.treeStore.getNode(node.parentId);
+        const parent = await treeStore.getNode(node.parentId);
         if (parent) {
           output += `PARENT [${parent.id}] (${parent.type}): ${parent.title} - ${parent.gist}\n`;
         }
@@ -192,7 +248,7 @@ export class Navigator {
       output += `   Gist: ${node.gist.slice(0, 200)}...\n`;
 
       // Children
-      const children = await this.treeStore.getChildren(node.id);
+      const children = await treeStore.getChildren(node.id);
       if (children.length > 0) {
         output += `   CHILDREN:\n`;
         children.forEach(c => {
@@ -237,15 +293,20 @@ export class Navigator {
     depth: number,
     orientationThreshold: number,
     totalTreeDepth: number,
-    forceCheck: boolean = false
+    forceCheck: boolean = false,
+    treeId?: string
   ): Promise<void> {
+    // Get the correct tree store for KB-aware routing
+    const effectiveTreeId = treeId || node.treeId;
+    const treeStore = this.getTreeStore(effectiveTreeId);
+    const contentStore = this.getContentStore(effectiveTreeId);
 
     if (visited.has(node.id)) return;
     visited.add(node.id);
 
     // If this node has content, grab it
     if (hasContent(node)) {
-      const content = await this.resolveContent(node, targetResolution);
+      const content = await this.resolveContent(node, targetResolution, effectiveTreeId);
       results.push({
         nodeId: node.id,
         path: node.path,
@@ -256,7 +317,7 @@ export class Navigator {
       console.log(`      💎 Captured ${node.type}: "${node.title.slice(0, 30)}..."`);
     }
 
-    const children = await this.treeStore.getChildren(node.id);
+    const children = await treeStore.getChildren(node.id);
     if (children.length === 0 || depth >= maxDepth) return;
 
     // Build candidate list for LLM
@@ -299,7 +360,7 @@ export class Navigator {
             // Document or Fragment: Grab directly
             if (!visited.has(child.id)) {
               visited.add(child.id);
-              const content = await this.resolveContent(child, targetResolution);
+              const content = await this.resolveContent(child, targetResolution, effectiveTreeId);
               results.push({
                 nodeId: child.id,
                 path: child.path,
@@ -314,7 +375,7 @@ export class Navigator {
             await this.drill(
               child, query, maxDepth, targetResolution,
               results, visited, depth + 1, orientationThreshold, totalTreeDepth,
-              false
+              false, effectiveTreeId
             );
           }
         }
@@ -327,7 +388,11 @@ export class Navigator {
     }
   }
 
-  private async resolveContent(node: TreeNode, resolution: 'L0' | 'L1' | 'L2'): Promise<string> {
+  private async resolveContent(node: TreeNode, resolution: 'L0' | 'L1' | 'L2', treeId?: string): Promise<string> {
+    // Get the correct content store for KB-aware routing
+    const effectiveTreeId = treeId || node.treeId;
+    const contentStore = this.getContentStore(effectiveTreeId);
+
     switch (resolution) {
       case 'L0':
         return node.gist;
@@ -336,7 +401,7 @@ export class Navigator {
         return node.gist;
       case 'L2':
         if (hasContent(node)) {
-          const content = await this.contentStore.get(node.contentId);
+          const content = await contentStore.get(node.contentId);
           return content?.payload ?? node.gist;
         }
         return node.gist;
@@ -344,14 +409,17 @@ export class Navigator {
   }
 
   async browse(request: BrowseRequest): Promise<BrowseResult> {
-    const tree = await this.treeStore.getTree(request.treeId);
+    // Get the correct tree store for KB-aware routing
+    const treeStore = this.getTreeStore(request.treeId);
+
+    const tree = await treeStore.getTree(request.treeId);
     const nodeId = request.nodeId ?? tree.rootNodeId;
-    const node = await this.treeStore.getNodeFromTree(request.treeId, nodeId);
+    const node = await treeStore.getNodeFromTree(request.treeId, nodeId);
 
     if (!node) throw new Error(`Node not found: ${nodeId}`);
 
-    const children = await this.treeStore.getChildren(nodeId);
-    const parent = node.parentId ? await this.treeStore.getNode(node.parentId) : null;
+    const children = await treeStore.getChildren(nodeId);
+    const parent = node.parentId ? await treeStore.getNode(node.parentId) : null;
 
     return {
       node: {

@@ -4,8 +4,10 @@
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import { resolve, join, basename } from 'path';
 import { existsSync } from 'fs';
-import { KnowledgeBaseConfig, SeedFolder, TreeConfig } from './types.js';
+import { KnowledgeBaseConfig, SeedFolder, TreeConfig, Tree } from './types.js';
 import { JsonStorage } from '../adapters/storage/JsonStorage.js';
+import { TreeStore } from './TreeStore.js';
+import { ContentStore } from './ContentStore.js';
 
 /**
  * Info about a discovered knowledge base (before loading)
@@ -26,16 +28,24 @@ export interface DiscoveredKB {
  * - content/ (content atoms)
  * - indexes/ (vector embeddings)
  * - trees/ (tree structures, can have multiple)
+ *
+ * PORTABLE: All data lives within the KB folder, making it easy to
+ * copy, backup, or share entire knowledge bases.
  */
 export class KnowledgeBase {
   readonly path: string;
   readonly config: KnowledgeBaseConfig;
   readonly storage: JsonStorage;
+  readonly treeStore: TreeStore;
+  readonly contentStore: ContentStore;
 
   private constructor(path: string, config: KnowledgeBaseConfig, storage: JsonStorage) {
     this.path = path;
     this.config = config;
     this.storage = storage;
+    // Each KB has its own TreeStore and ContentStore using its local storage
+    this.treeStore = new TreeStore(storage);
+    this.contentStore = new ContentStore(storage);
   }
 
   // ============ FACTORY METHODS ============
@@ -134,35 +144,69 @@ export class KnowledgeBase {
   // ============ TREE MANAGEMENT ============
 
   /**
-   * Get tree config for creating/initializing a tree in this KB
+   * Get the full tree ID (prefixed with KB ID) from a local tree ID.
+   * This ensures tree IDs are globally unique across KBs.
+   * E.g., "main" in KB "kb-my-projects-xyz" becomes "kb-my-projects-xyz-main"
    */
-  getTreeConfig(treeId?: string): TreeConfig {
-    const id = treeId || this.defaultTreeId;
+  getFullTreeId(localTreeId?: string): string {
+    const local = localTreeId || this.defaultTreeId;
+    return `${this.config.id}-${local}`;
+  }
+
+  /**
+   * Get tree config for creating/initializing a tree in this KB.
+   * The tree ID is prefixed with the KB ID to ensure global uniqueness.
+   */
+  getTreeConfig(localTreeId?: string): TreeConfig {
+    const local = localTreeId || this.defaultTreeId;
+    const fullId = this.getFullTreeId(local);
     return {
-      id,
-      name: this.config.name + (id !== 'main' ? ` (${id})` : ''),
+      id: fullId,
+      name: this.config.name + (local !== 'main' ? ` (${local})` : ''),
       organizingPrinciple: this.config.organizingPrinciple,
       autoPlace: false,
       seedFolders: this.config.seedFolders,
       dogma: this.config.dogma,
+      kbId: this.config.id, // Track which KB owns this tree
     };
   }
 
   /**
-   * List all trees in this KB
+   * Create a tree in this KB using the KB's local storage.
+   * The tree is stored in this KB's trees/ folder.
    */
-  async listTrees(): Promise<string[]> {
-    const files = await this.storage.list('trees');
-    return files
-      .filter(f => f.endsWith('.json') && !f.endsWith('.audit.log'))
-      .map(f => f.replace('trees/', '').replace('.json', ''));
+  async createTree(localTreeId?: string): Promise<Tree> {
+    const config = this.getTreeConfig(localTreeId);
+    return await this.treeStore.createTree(config);
+  }
+
+  /**
+   * List all trees in this KB (returns full Tree objects)
+   */
+  async listTrees(): Promise<Tree[]> {
+    return await this.treeStore.listTrees();
+  }
+
+  /**
+   * List tree IDs in this KB
+   */
+  async listTreeIds(): Promise<string[]> {
+    const trees = await this.treeStore.listTrees();
+    return trees.map(t => t.id);
   }
 
   /**
    * Check if a tree exists in this KB
    */
   async hasTree(treeId: string): Promise<boolean> {
-    return this.storage.exists(`trees/${treeId}.json`);
+    return this.treeStore.treeExists(treeId);
+  }
+
+  /**
+   * Get a tree from this KB
+   */
+  async getTree(treeId: string): Promise<Tree> {
+    return await this.treeStore.getTree(treeId);
   }
 
   // ============ PATH HELPERS ============

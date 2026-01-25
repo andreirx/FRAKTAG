@@ -18,7 +18,18 @@ import {
 } from './types.js';
 import { VectorStore } from './VectorStore.js';
 
+/**
+ * Store resolver interface for KB-aware operations
+ */
+export interface StoreResolver {
+  getTreeStoreForTree(treeId: string): TreeStore;
+  getContentStoreForTree(treeId: string): ContentStore;
+  getVectorStoreForTree(treeId: string): VectorStore;
+}
+
 export class Fractalizer {
+  private storeResolver?: StoreResolver;
+
   constructor(
     private contentStore: ContentStore,
     private treeStore: TreeStore,
@@ -28,6 +39,44 @@ export class Fractalizer {
     private config: IngestionConfig,
     private prompts: PromptSet
   ) {}
+
+  /**
+   * Set a store resolver for KB-aware operations.
+   * When set, the Fractalizer will use the resolver to get the correct stores for each tree.
+   */
+  setStoreResolver(resolver: StoreResolver): void {
+    this.storeResolver = resolver;
+  }
+
+  /**
+   * Get the correct TreeStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getTreeStore(treeId: string): TreeStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getTreeStoreForTree(treeId);
+    }
+    return this.treeStore;
+  }
+
+  /**
+   * Get the correct ContentStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getContentStore(treeId: string): ContentStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getContentStoreForTree(treeId);
+    }
+    return this.contentStore;
+  }
+
+  /**
+   * Get the correct VectorStore for a tree (uses resolver if set, otherwise falls back to default)
+   */
+  private getVectorStore(treeId: string): VectorStore {
+    if (this.storeResolver) {
+      return this.storeResolver.getVectorStoreForTree(treeId);
+    }
+    return this.vectorStore;
+  }
 
   // ============ SPLIT ANALYSIS (Programmatic - No AI) ============
 
@@ -380,8 +429,12 @@ export class Fractalizer {
     gist?: string,
     editMode: ContentEditMode = 'readonly'
   ): Promise<DocumentNode> {
+    // Get the correct stores for this tree (KB-aware routing)
+    const contentStore = this.getContentStore(treeId);
+    const treeStore = this.getTreeStore(treeId);
+
     // 1. Create content atom
-    const contentAtom = await this.contentStore.create({
+    const contentAtom = await contentStore.create({
       payload: content,
       mediaType: 'text/plain',
       createdBy: 'fractalizer',
@@ -395,7 +448,7 @@ export class Fractalizer {
     }
 
     // 3. Create document node
-    const doc = await this.treeStore.createDocument(
+    const doc = await treeStore.createDocument(
       treeId,
       parentFolderId,
       title,
@@ -404,9 +457,10 @@ export class Fractalizer {
       editMode
     );
 
-    // 4. Index for retrieval
-    await this.vectorStore.add(doc.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
-    await this.vectorStore.save(treeId);
+    // 4. Index for retrieval (using KB-aware vector store)
+    const vectorStore = this.getVectorStore(treeId);
+    await vectorStore.add(doc.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
+    await vectorStore.save(treeId);
 
     return doc;
   }
@@ -422,8 +476,13 @@ export class Fractalizer {
     gist?: string,
     editMode: ContentEditMode = 'readonly'
   ): Promise<FragmentNode> {
+    // Get the correct stores for this tree (KB-aware routing)
+    const contentStore = this.getContentStore(treeId);
+    const treeStore = this.getTreeStore(treeId);
+    const vectorStore = this.getVectorStore(treeId);
+
     // 1. Create content atom
-    const contentAtom = await this.contentStore.create({
+    const contentAtom = await contentStore.create({
       payload: content,
       mediaType: 'text/plain',
       createdBy: 'fractalizer',
@@ -437,7 +496,7 @@ export class Fractalizer {
     }
 
     // 3. Create fragment node
-    const fragment = await this.treeStore.createFragment(
+    const fragment = await treeStore.createFragment(
       treeId,
       parentDocumentId,
       title,
@@ -446,9 +505,9 @@ export class Fractalizer {
       editMode
     );
 
-    // 4. Index for retrieval
-    await this.vectorStore.add(fragment.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
-    await this.vectorStore.save(treeId);
+    // 4. Index for retrieval (using KB-aware vector store)
+    await vectorStore.add(fragment.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
+    await vectorStore.save(treeId);
 
     return fragment;
   }
@@ -458,7 +517,8 @@ export class Fractalizer {
    */
   async generateGist(content: string, treeId: string): Promise<string> {
     try {
-      const tree = await this.treeStore.getTree(treeId);
+      const treeStore = this.getTreeStore(treeId);
+      const tree = await treeStore.getTree(treeId);
       const gist = await this.basicLlm.complete(
         this.prompts.generateGist,
         {
@@ -478,7 +538,8 @@ export class Fractalizer {
    */
   async generateTitle(content: string, treeId: string): Promise<string> {
     try {
-      const tree = await this.treeStore.getTree(treeId);
+      const treeStore = this.getTreeStore(treeId);
+      const tree = await treeStore.getTree(treeId);
       const title = await this.basicLlm.complete(
         this.prompts.generateTitle || this.prompts.generateGist,
         {
@@ -496,16 +557,38 @@ export class Fractalizer {
 
   /**
    * Update the content of an existing document/fragment
+   * Note: nodeId is used to find the node, then we route to the correct stores based on treeId
    */
-  async updateNode(nodeId: string, newContent: string): Promise<void> {
-    const node = await this.treeStore.getNode(nodeId);
+  async updateNode(nodeId: string, newContent: string, treeId?: string): Promise<void> {
+    // If treeId not provided, we need to find it from the node
+    // This requires searching all stores - use default first
+    let node = await this.treeStore.getNode(nodeId);
+    let actualTreeStore = this.treeStore;
+    let actualContentStore = this.contentStore;
+
+    if (!node && this.storeResolver) {
+      // Node not in default store, we need to search KB stores
+      // This is a limitation - we'd need to iterate KBs
+      // For now, if treeId is provided, use it
+    }
+
+    if (treeId) {
+      actualTreeStore = this.getTreeStore(treeId);
+      actualContentStore = this.getContentStore(treeId);
+      node = await actualTreeStore.getNode(nodeId);
+    }
+
     if (!node || !hasContent(node)) {
       throw new Error(`Node ${nodeId} not found or is not a content node`);
     }
 
+    // Use the node's treeId for routing
+    const nodeTreeStore = this.getTreeStore(node.treeId);
+    const nodeContentStore = this.getContentStore(node.treeId);
+
     // 1. Create new content atom (versioned)
     const oldContentId = node.contentId;
-    const newAtom = await this.contentStore.create({
+    const newAtom = await nodeContentStore.create({
       payload: newContent,
       mediaType: 'text/plain',
       createdBy: 'fractalizer',
@@ -517,32 +600,49 @@ export class Fractalizer {
     node.gist = await this.generateGist(newContent, node.treeId);
     node.updatedAt = new Date().toISOString();
 
-    await this.treeStore.saveNode(node);
+    await nodeTreeStore.saveNode(node);
 
-    // 3. Update vector index
-    await this.vectorStore.remove(nodeId);
-    await this.vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${newContent.slice(0, 500)}`);
-    await this.vectorStore.save(node.treeId);
+    // 3. Update vector index (using KB-aware vector store)
+    const nodeVectorStore = this.getVectorStore(node.treeId);
+    await nodeVectorStore.remove(nodeId);
+    await nodeVectorStore.add(nodeId, `${node.title}\n${node.gist}\n${newContent.slice(0, 500)}`);
+    await nodeVectorStore.save(node.treeId);
   }
 
   /**
    * Regenerate gist for a node
+   * Note: nodeId is used to find the node, then we route to correct stores based on treeId
    */
-  async regenerateGist(nodeId: string): Promise<void> {
-    const node = await this.treeStore.getNode(nodeId);
+  async regenerateGist(nodeId: string, treeId?: string): Promise<void> {
+    // Use routing based on treeId if provided
+    let node: TreeNode | null = null;
+    let actualTreeStore = this.treeStore;
+    let actualContentStore = this.contentStore;
+
+    if (treeId) {
+      actualTreeStore = this.getTreeStore(treeId);
+      actualContentStore = this.getContentStore(treeId);
+    }
+
+    node = await actualTreeStore.getNode(nodeId);
     if (!node) throw new Error(`Node ${nodeId} not found`);
 
+    // Use the node's treeId for routing
+    const nodeTreeStore = this.getTreeStore(node.treeId);
+    const nodeContentStore = this.getContentStore(node.treeId);
+    const nodeVectorStore = this.getVectorStore(node.treeId);
+
     if (hasContent(node)) {
-      const content = await this.contentStore.get(node.contentId);
+      const content = await nodeContentStore.get(node.contentId);
       if (content) {
         node.gist = await this.generateGist(content.payload, node.treeId);
         node.updatedAt = new Date().toISOString();
-        await this.treeStore.saveNode(node);
+        await nodeTreeStore.saveNode(node);
 
-        // Update vector index
-        await this.vectorStore.remove(nodeId);
-        await this.vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${content.payload.slice(0, 500)}`);
-        await this.vectorStore.save(node.treeId);
+        // Update vector index (using KB-aware vector store)
+        await nodeVectorStore.remove(nodeId);
+        await nodeVectorStore.add(nodeId, `${node.title}\n${node.gist}\n${content.payload.slice(0, 500)}`);
+        await nodeVectorStore.save(node.treeId);
       }
     }
   }
@@ -555,7 +655,8 @@ export class Fractalizer {
    */
   async generateAiSplits(content: string, treeId: string): Promise<{ title: string; text: string }[]> {
     try {
-      const tree = await this.treeStore.getTree(treeId);
+      const treeStore = this.getTreeStore(treeId);
+      const tree = await treeStore.getTree(treeId);
 
       const prompt = `Analyze this content and split it into logical sections. Each section should be self-contained and cover a distinct topic.
 
@@ -602,8 +703,9 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
     documentGist: string
   ): Promise<{ folderId: string; reasoning: string; confidence: number }> {
     try {
-      const tree = await this.treeStore.getTree(treeId);
-      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+      const treeStore = this.getTreeStore(treeId);
+      const tree = await treeStore.getTree(treeId);
+      const leafFolders = await treeStore.getLeafFolders(treeId);
 
       if (leafFolders.length === 0) {
         throw new Error('No leaf folders available');
@@ -663,7 +765,8 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
     } catch (e) {
       console.error('Placement proposal failed:', e);
       // Get first leaf folder as fallback
-      const leafFolders = await this.treeStore.getLeafFolders(treeId);
+      const treeStore = this.getTreeStore(treeId);
+      const leafFolders = await treeStore.getLeafFolders(treeId);
       return {
         folderId: leafFolders[0]?.id || 'unknown',
         reasoning: 'Error during placement analysis',
@@ -686,12 +789,15 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
   ): Promise<TreeNode> {
     console.warn('Fractalizer.ingest() is deprecated. Use ingestDocument() with explicit placement.');
 
+    // Get the correct stores for this tree (KB-aware routing)
+    const treeStore = this.getTreeStore(treeId);
+
     // Get a leaf folder to place content
-    const tree = await this.treeStore.getTree(treeId);
+    const tree = await treeStore.getTree(treeId);
     const targetParentId = parentId || tree.rootNodeId;
 
     // Try to use the parent directly, or find a leaf folder
-    const parent = await this.treeStore.getNodeFromTree(treeId, targetParentId);
+    const parent = await treeStore.getNodeFromTree(treeId, targetParentId);
     if (!parent) throw new Error(`Parent ${targetParentId} not found`);
 
     // If parent is a folder, create document there

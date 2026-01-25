@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Library, Plus, FolderOpen, TreeDeciduous, Check, AlertCircle, RefreshCw, Database, CheckCircle, PackageOpen, ArrowRight } from "lucide-react";
+import { Loader2, Library, Plus, FolderOpen, TreeDeciduous, Check, AlertCircle, RefreshCw, Database, CheckCircle, PackageOpen, ArrowRight, X, Sparkles, Folder } from "lucide-react";
 
 interface KnowledgeBase {
     id: string;
@@ -36,7 +36,7 @@ interface KBManagerDialogProps {
     onOpenChange: (open: boolean) => void;
     knowledgeBases: KnowledgeBase[];
     trees: TreeInfo[];
-    onKBCreated: () => void;
+    onKBCreated: (newKbId?: string) => void;  // Pass the new KB ID so caller can switch to it
     onTreeCreated: () => void;
 }
 
@@ -64,6 +64,42 @@ export function KBManagerDialog({
     // Create KB state
     const [newKbName, setNewKbName] = useState("");
     const [newKbPrinciple, setNewKbPrinciple] = useState("");
+    const [seedFolderNames, setSeedFolderNames] = useState<string[]>([]);
+    const [seedFolderInput, setSeedFolderInput] = useState("");
+
+    // KB Presets
+    const kbPresets = [
+        {
+            id: "personal-notes",
+            name: "Personal Notes",
+            principle: "Personal thoughts, ideas, and reflections. Organized by topic and life area.",
+            folders: ["Daily Journal", "Ideas & Brainstorms", "Learning", "Goals & Plans"],
+        },
+        {
+            id: "project-docs",
+            name: "Project Documentation",
+            principle: "Technical documentation for software projects. Organized by project, then by documentation type (architecture, API, guides).",
+            folders: ["Architecture", "API Reference", "User Guides", "Development Notes"],
+        },
+        {
+            id: "research",
+            name: "Research Collection",
+            principle: "Research papers, articles, and study notes. Organized by field and topic.",
+            folders: ["Papers", "Books", "Articles", "My Notes"],
+        },
+        {
+            id: "team-wiki",
+            name: "Team Wiki",
+            principle: "Shared team knowledge base. Organized by department, process, and project.",
+            folders: ["Onboarding", "Processes", "Best Practices", "Meeting Notes"],
+        },
+        {
+            id: "custom",
+            name: "Custom (blank)",
+            principle: "",
+            folders: [],
+        },
+    ];
 
     // Export KB state
     const [selectedTreeIds, setSelectedTreeIds] = useState<string[]>([]);
@@ -101,6 +137,8 @@ export function KBManagerDialog({
     const resetForm = () => {
         setNewKbName("");
         setNewKbPrinciple("");
+        setSeedFolderNames([]);
+        setSeedFolderInput("");
         setSelectedKbId("");
         setNewTreeId("");
         setNewTreeName("");
@@ -110,6 +148,31 @@ export function KBManagerDialog({
         setExportResult(null);
         setError(null);
         setSuccess(null);
+    };
+
+    const handlePresetSelect = (presetId: string) => {
+        const preset = kbPresets.find(p => p.id === presetId);
+        if (!preset) return;
+
+        // Always update principle
+        setNewKbPrinciple(preset.principle);
+
+        // Only populate folders if user hasn't entered any
+        if (seedFolderNames.length === 0 && !seedFolderInput.trim()) {
+            setSeedFolderNames(preset.folders);
+        }
+    };
+
+    const addSeedFolder = () => {
+        const name = seedFolderInput.trim();
+        if (name && !seedFolderNames.includes(name)) {
+            setSeedFolderNames(prev => [...prev, name]);
+            setSeedFolderInput("");
+        }
+    };
+
+    const removeSeedFolder = (name: string) => {
+        setSeedFolderNames(prev => prev.filter(n => n !== name));
     };
 
     const toggleTreeSelection = (treeId: string) => {
@@ -181,13 +244,21 @@ export function KBManagerDialog({
         setError(null);
         setSuccess(null);
 
+        // Build seed folders array with simple gists
+        const seedFolders = seedFolderNames.map(name => ({
+            title: name,
+            gist: `${name} content`,
+        }));
+
         try {
-            await axios.post("/api/knowledge-bases", {
+            const res = await axios.post("/api/knowledge-bases", {
                 name: newKbName,
                 organizingPrinciple: newKbPrinciple,
+                seedFolders: seedFolders.length > 0 ? seedFolders : undefined,
             });
             setSuccess(`Created knowledge base "${newKbName}"`);
-            onKBCreated();
+            // Pass the new KB ID so caller can switch to it
+            onKBCreated(res.data.id);
             resetForm();
             await discoverKBs(); // Refresh the list
             setActiveTab("browse"); // Go back to browse
@@ -393,44 +464,125 @@ export function KBManagerDialog({
                     )}
 
                     {activeTab === "create" && (
-                        <div className="space-y-4">
-                            <div>
-                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                    Name
-                                </label>
-                                <Input
-                                    value={newKbName}
-                                    onChange={(e) => setNewKbName(e.target.value)}
-                                    placeholder="My Knowledge Base"
-                                    className="mt-1"
-                                />
-                                <p className="text-[10px] text-zinc-400 mt-1">
-                                    A folder will be automatically created in the storage path
-                                </p>
+                        <ScrollArea className="flex-1">
+                            <div className="space-y-4 pr-4">
+                                {/* Presets */}
+                                <div>
+                                    <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                                        <Sparkles className="w-3 h-3" /> Start with a Template
+                                    </label>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {kbPresets.map((preset) => (
+                                            <button
+                                                key={preset.id}
+                                                onClick={() => handlePresetSelect(preset.id)}
+                                                className={`text-left p-3 rounded-lg border transition-colors ${
+                                                    newKbPrinciple === preset.principle && preset.principle
+                                                        ? "border-purple-300 bg-purple-50"
+                                                        : "border-zinc-200 hover:border-purple-200 hover:bg-purple-50/50"
+                                                }`}
+                                            >
+                                                <div className="font-medium text-sm">{preset.name}</div>
+                                                {preset.folders.length > 0 && (
+                                                    <div className="text-[10px] text-zinc-500 mt-1">
+                                                        {preset.folders.slice(0, 3).join(", ")}
+                                                        {preset.folders.length > 3 && "..."}
+                                                    </div>
+                                                )}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Name */}
+                                <div>
+                                    <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                        Name
+                                    </label>
+                                    <Input
+                                        value={newKbName}
+                                        onChange={(e) => setNewKbName(e.target.value)}
+                                        placeholder="My Knowledge Base"
+                                        className="mt-1"
+                                    />
+                                </div>
+
+                                {/* Organizing Principle */}
+                                <div>
+                                    <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                        Organizing Principle
+                                    </label>
+                                    <textarea
+                                        value={newKbPrinciple}
+                                        onChange={(e) => setNewKbPrinciple(e.target.value)}
+                                        placeholder="Describe how content should be organized in this knowledge base..."
+                                        className="w-full mt-1 min-h-[80px] p-3 text-sm border rounded-lg resize-y"
+                                    />
+                                    <p className="text-[10px] text-zinc-400 mt-1">
+                                        This guides how documents are categorized and structured
+                                    </p>
+                                </div>
+
+                                {/* Seed Folders */}
+                                <div>
+                                    <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                                        <Folder className="w-3 h-3" /> Top-Level Folders (optional)
+                                    </label>
+                                    <div className="flex gap-2 mt-1">
+                                        <Input
+                                            value={seedFolderInput}
+                                            onChange={(e) => setSeedFolderInput(e.target.value)}
+                                            placeholder="Add a folder..."
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    addSeedFolder();
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={addSeedFolder}
+                                            disabled={!seedFolderInput.trim()}
+                                        >
+                                            <Plus className="w-4 h-4" />
+                                        </Button>
+                                    </div>
+                                    {seedFolderNames.length > 0 && (
+                                        <div className="flex flex-wrap gap-2 mt-2">
+                                            {seedFolderNames.map((name) => (
+                                                <span
+                                                    key={name}
+                                                    className="inline-flex items-center gap-1 px-2 py-1 bg-zinc-100 text-zinc-700 rounded text-sm"
+                                                >
+                                                    <Folder className="w-3 h-3 text-zinc-500" />
+                                                    {name}
+                                                    <button
+                                                        onClick={() => removeSeedFolder(name)}
+                                                        className="ml-1 text-zinc-400 hover:text-red-500"
+                                                    >
+                                                        <X className="w-3 h-3" />
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <p className="text-[10px] text-zinc-400 mt-1">
+                                        These folders will be created automatically when the KB is created
+                                    </p>
+                                </div>
+
+                                <Button
+                                    onClick={handleCreateKB}
+                                    disabled={loading || !newKbName.trim() || !newKbPrinciple.trim()}
+                                    className="w-full bg-purple-600 hover:bg-purple-700"
+                                >
+                                    {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
+                                    Create Knowledge Base
+                                </Button>
                             </div>
-                            <div>
-                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                    Organizing Principle
-                                </label>
-                                <textarea
-                                    value={newKbPrinciple}
-                                    onChange={(e) => setNewKbPrinciple(e.target.value)}
-                                    placeholder="Describe how content should be organized in this knowledge base..."
-                                    className="w-full mt-1 min-h-[100px] p-3 text-sm border rounded-lg resize-y"
-                                />
-                                <p className="text-[10px] text-zinc-400 mt-1">
-                                    This guides how documents are categorized and structured
-                                </p>
-                            </div>
-                            <Button
-                                onClick={handleCreateKB}
-                                disabled={loading || !newKbName.trim() || !newKbPrinciple.trim()}
-                                className="w-full bg-purple-600 hover:bg-purple-700"
-                            >
-                                {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
-                                Create Knowledge Base
-                            </Button>
-                        </div>
+                        </ScrollArea>
                     )}
 
                     {activeTab === "export" && (

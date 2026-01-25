@@ -70,6 +70,7 @@ export class TreeStore {
       rootNodeId,
       createdAt: now,
       updatedAt: now,
+      kbId: config.kbId, // Track which KB owns this tree
     };
 
     const rootNode: FolderNode = {

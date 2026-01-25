@@ -70,6 +70,7 @@ export interface TreeConfig {
     forbiddenConcepts?: string[];
     requiredContext?: string[];
   };
+  kbId?: string;  // The KB that owns this tree (undefined = internal/legacy)
 }
 
 export interface SeedFolder {
@@ -207,6 +208,7 @@ export interface Tree {
   rootNodeId: string;
   createdAt: string;
   updatedAt: string;
+  kbId?: string;  // The KB that owns this tree (undefined = internal/legacy)
 }
 
 // ============ INGESTION & PROPOSALS (Human-Assisted) ============

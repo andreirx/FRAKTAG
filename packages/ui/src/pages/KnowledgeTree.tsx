@@ -24,7 +24,7 @@ interface KnowledgeBase {
 export default function KnowledgeTree() {
     const [loading, setLoading] = useState(true);
     const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
-    const [activeKbId, setActiveKbId] = useState<string | null>(null); // null means "All KBs"
+    const [activeKbId, setActiveKbId] = useState<string | null>(null); // null means "Internal Knowledge Base"
     const [trees, setTrees] = useState<any[]>([]);
     const [activeTreeId, setActiveTreeId] = useState<string>("");
     const [rawData, setRawData] = useState<any>(null);
@@ -44,10 +44,9 @@ export default function KnowledgeTree() {
     const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
     const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Folder Creation Dialog
+    // Folder Creation Dialog (supports multiple folders)
     const [createFolderOpen, setCreateFolderOpen] = useState(false);
-    const [newFolderTitle, setNewFolderTitle] = useState("");
-    const [newFolderGist, setNewFolderGist] = useState("");
+    const [newFolders, setNewFolders] = useState<{ title: string; gist: string }[]>([{ title: "", gist: "" }]);
     const [createFolderParentId, setCreateFolderParentId] = useState<string>("");
     const [creatingFolder, setCreatingFolder] = useState(false);
 
@@ -89,7 +88,7 @@ export default function KnowledgeTree() {
     const [deletingNode, setDeletingNode] = useState(false);
 
     // Sidebar Resize State
-    const [sidebarWidth, setSidebarWidth] = useState(400);
+    const [sidebarWidth, setSidebarWidth] = useState(560);
     const isResizing = useRef(false);
     const startResizing = useCallback(() => { isResizing.current = true; }, []);
     const stopResizing = useCallback(() => { isResizing.current = false; }, []);
@@ -130,10 +129,32 @@ export default function KnowledgeTree() {
 
     // Filter trees by active KB
     const filteredTrees = useMemo(() => {
-        if (!activeKbId) return trees; // Show all trees
-        // TODO: When trees have kbId, filter by that. For now show all.
-        return trees;
+        if (!activeKbId) {
+            // "Internal Knowledge Base" - show trees without kbId
+            return trees.filter(t => !t.kbId);
+        }
+        // Show trees belonging to the selected KB
+        return trees.filter(t => t.kbId === activeKbId);
     }, [trees, activeKbId]);
+
+    // When KB changes, switch to first tree from the new KB if current tree doesn't belong
+    useEffect(() => {
+        if (!activeTreeId) return;
+
+        // Check if current tree belongs to the selected KB
+        const currentTree = trees.find(t => t.id === activeTreeId);
+        if (!currentTree) return;
+
+        const treeMatchesKb = activeKbId
+            ? currentTree.kbId === activeKbId
+            : !currentTree.kbId; // Internal KB: tree should have no kbId
+
+        // If current tree doesn't match, switch to first tree from the new KB
+        if (!treeMatchesKb && filteredTrees.length > 0) {
+            setActiveTreeId(filteredTrees[0].id);
+            setSelectedNode(null);
+        }
+    }, [activeKbId, trees]);
 
     // Get active KB name
     const activeKbName = activeKbId
@@ -247,27 +268,45 @@ export default function KnowledgeTree() {
         }, 800);
     };
 
-    // Folder Creation
+    // Folder Creation (supports multiple folders)
     const openCreateFolderDialog = (parentId: string) => {
         setCreateFolderParentId(parentId);
-        setNewFolderTitle("");
-        setNewFolderGist("");
+        setNewFolders([{ title: "", gist: "" }]);
         setCreateFolderOpen(true);
     };
 
-    const createFolder = async () => {
-        if (!newFolderTitle.trim() || !newFolderGist.trim()) return;
+    const addNewFolderRow = () => {
+        setNewFolders(prev => [...prev, { title: "", gist: "" }]);
+    };
+
+    const updateNewFolder = (index: number, field: 'title' | 'gist', value: string) => {
+        setNewFolders(prev => prev.map((f, i) => i === index ? { ...f, [field]: value } : f));
+    };
+
+    const removeNewFolder = (index: number) => {
+        setNewFolders(prev => prev.filter((_, i) => i !== index));
+    };
+
+    const canCreateFolders = newFolders.some(f => f.title.trim() && f.gist.trim());
+
+    const createFolders = async () => {
+        const validFolders = newFolders.filter(f => f.title.trim() && f.gist.trim());
+        if (validFolders.length === 0) return;
+
         setCreatingFolder(true);
         try {
-            await axios.post(`/api/trees/${activeTreeId}/folders`, {
-                parentId: createFolderParentId,
-                title: newFolderTitle,
-                gist: newFolderGist,
-            });
+            // Create all folders in sequence
+            for (const folder of validFolders) {
+                await axios.post(`/api/trees/${activeTreeId}/folders`, {
+                    parentId: createFolderParentId,
+                    title: folder.title,
+                    gist: folder.gist,
+                });
+            }
             setCreateFolderOpen(false);
             loadTreeStructure(activeTreeId);
         } catch (e) {
-            console.error("Failed to create folder:", e);
+            console.error("Failed to create folders:", e);
         } finally {
             setCreatingFolder(false);
         }
@@ -280,7 +319,11 @@ export default function KnowledgeTree() {
 
         setContentSaveStatus("saving");
         try {
-            await axios.patch(`/api/content/${selectedNode.contentId}`, { payload: content });
+            // Pass nodeId to also update vector index
+            await axios.patch(`/api/content/${selectedNode.contentId}`, {
+                payload: content,
+                nodeId: selectedNode.id
+            });
             setContentPayload(content);
             setContentSaveStatus("saved");
             setTimeout(() => setContentSaveStatus("idle"), 2000);
@@ -551,7 +594,7 @@ export default function KnowledgeTree() {
                                     <>
                                         <DropdownMenuItem onClick={() => setActiveKbId(null)}>
                                             <Library className="w-4 h-4 mr-2 text-zinc-400" />
-                                            <span className={!activeKbId ? "font-bold" : ""}>All Knowledge Bases</span>
+                                            <span className={!activeKbId ? "font-bold" : ""}>Internal Knowledge Base</span>
                                         </DropdownMenuItem>
                                         <DropdownMenuSeparator />
                                         {knowledgeBases.map(kb => (
@@ -703,6 +746,8 @@ export default function KnowledgeTree() {
                                     childrenMap={childrenMap}
                                     onSelect={setSelectedNode}
                                     selectedId={selectedNode?.id}
+                                    onCreateFolder={openCreateFolderDialog}
+                                    onCreateContent={openCreateNoteDialog}
                                 />
                             ) : (
                                 <div className="p-4 text-sm text-zinc-400 text-center">Empty Tree</div>
@@ -723,7 +768,7 @@ export default function KnowledgeTree() {
                 <ScrollArea className="h-full">
                     <div className="p-8 pb-32 max-w-5xl mx-auto">
                         {selectedNode ? (
-                            <div className="space-y-8 animate-in fade-in duration-300">
+                            <div className="flex flex-col gap-8 animate-in fade-in duration-300 min-h-[calc(100vh-200px)]">
 
                                 {/* Header */}
                                 <div>
@@ -825,8 +870,8 @@ export default function KnowledgeTree() {
 
                                 {/* Content Payload (for Documents and Fragments) */}
                                 {selectedNode.contentId && (
-                                    <div className="space-y-4">
-                                        <div className="flex items-center justify-between border-b pb-2">
+                                    <div className="flex flex-col flex-1 min-h-0">
+                                        <div className="flex items-center justify-between border-b pb-2 mb-4">
                                             <h3 className="font-semibold text-lg flex items-center gap-2">
                                                 <FileText className="w-5 h-5 text-emerald-600" /> Content
                                                 {/* Edit mode badge */}
@@ -867,7 +912,7 @@ export default function KnowledgeTree() {
                                             </div>
                                         </div>
 
-                                        <div className="rounded-lg border bg-white shadow-sm min-h-[100px] relative">
+                                        <div className="rounded-lg border bg-white shadow-sm flex-1 min-h-[300px] relative flex flex-col">
                                             {contentLoading ? (
                                                 <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10 backdrop-blur-sm">
                                                     <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
@@ -882,11 +927,11 @@ export default function KnowledgeTree() {
                                                     </Button>
                                                 </div>
                                             ) : contentEditMode === 'editable' ? (
-                                                // Editable content - textarea
+                                                // Editable content - textarea fills available space
                                                 <textarea
                                                     value={editableContent}
                                                     onChange={(e) => handleContentChange(e.target.value)}
-                                                    className="w-full min-h-[300px] p-6 text-sm font-mono text-zinc-700 bg-white border-0 resize-y focus:outline-none focus:ring-0"
+                                                    className="w-full flex-1 p-6 text-sm font-mono text-zinc-700 bg-white border-0 resize-none focus:outline-none focus:ring-0 rounded-lg"
                                                     placeholder="Start writing..."
                                                 />
                                             ) : (
@@ -959,50 +1004,85 @@ export default function KnowledgeTree() {
                     <DialogHeader>
                         <DialogTitle className="flex items-center gap-2">
                             <FolderPlus className="w-5 h-5 text-blue-500" />
-                            Create New Folder
+                            Create New Folder{newFolders.length > 1 ? 's' : ''}
                         </DialogTitle>
                         <DialogDescription>
-                            Create a new subfolder. Folders organize content but contain no direct payload.
+                            Create one or more subfolders. Folders organize content but contain no direct payload.
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 pt-4">
-                        <div>
-                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                Folder Title
-                            </label>
-                            <Input
-                                value={newFolderTitle}
-                                onChange={(e) => setNewFolderTitle(e.target.value)}
-                                placeholder="Enter folder title..."
-                                className="mt-1"
-                            />
-                        </div>
-                        <div>
-                            <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                Description (Gist)
-                            </label>
-                            <textarea
-                                value={newFolderGist}
-                                onChange={(e) => setNewFolderGist(e.target.value)}
-                                placeholder="What does this folder contain?"
-                                className="w-full mt-1 min-h-[80px] p-3 text-sm border rounded-lg resize-y"
-                            />
-                        </div>
+                        <ScrollArea className="max-h-[350px] pr-4">
+                            <div className="space-y-4">
+                                {newFolders.map((folder, index) => (
+                                    <div key={index} className="relative p-3 border rounded-lg bg-zinc-50/50">
+                                        {/* Remove button for additional folders */}
+                                        {newFolders.length > 1 && (
+                                            <button
+                                                onClick={() => removeNewFolder(index)}
+                                                className="absolute top-2 right-2 p-1 text-zinc-400 hover:text-red-500 rounded"
+                                                title="Remove folder"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        )}
+
+                                        <div className="space-y-3">
+                                            <div>
+                                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                                    Folder {newFolders.length > 1 ? `#${index + 1} ` : ''}Title
+                                                </label>
+                                                <Input
+                                                    value={folder.title}
+                                                    onChange={(e) => updateNewFolder(index, 'title', e.target.value)}
+                                                    placeholder="Enter folder title..."
+                                                    className="mt-1"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                                    Description (Gist)
+                                                </label>
+                                                <textarea
+                                                    value={folder.gist}
+                                                    onChange={(e) => updateNewFolder(index, 'gist', e.target.value)}
+                                                    placeholder="What does this folder contain?"
+                                                    className="w-full mt-1 min-h-[60px] p-3 text-sm border rounded-lg resize-y"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </ScrollArea>
+
+                        {/* Add another folder button */}
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={addNewFolderRow}
+                            className="w-full border-dashed"
+                        >
+                            <Plus className="w-4 h-4 mr-2" />
+                            Add Another Folder
+                        </Button>
+
                         <div className="flex justify-end gap-2 pt-2">
                             <Button variant="outline" onClick={() => setCreateFolderOpen(false)}>
                                 Cancel
                             </Button>
                             <Button
-                                onClick={createFolder}
-                                disabled={!newFolderTitle.trim() || !newFolderGist.trim() || creatingFolder}
+                                onClick={createFolders}
+                                disabled={!canCreateFolders || creatingFolder}
                                 className="bg-blue-600 hover:bg-blue-700"
                             >
                                 {creatingFolder ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
                                 ) : (
-                                    <FolderPlus className="w-4 h-4" />
+                                    <FolderPlus className="w-4 h-4 mr-2" />
                                 )}
-                                Create Folder
+                                Create {newFolders.filter(f => f.title.trim() && f.gist.trim()).length > 1
+                                    ? `${newFolders.filter(f => f.title.trim() && f.gist.trim()).length} Folders`
+                                    : 'Folder'}
                             </Button>
                         </div>
                     </div>
@@ -1045,9 +1125,13 @@ export default function KnowledgeTree() {
                 onOpenChange={setKbManagerOpen}
                 knowledgeBases={knowledgeBases}
                 trees={trees}
-                onKBCreated={() => {
+                onKBCreated={(newKbId) => {
                     reloadKnowledgeBases();
                     reloadTrees();
+                    // Switch to the newly created KB
+                    if (newKbId) {
+                        setActiveKbId(newKbId);
+                    }
                 }}
                 onTreeCreated={reloadTrees}
             />
