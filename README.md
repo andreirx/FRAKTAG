@@ -527,7 +527,163 @@ fkt kb migrate notes ./knowledge-bases/notes
 
 ---
 
-## 6. Current Status
+## 6. CLI Agent Integration
+
+FRAKTAG includes an agent-ready CLI (`fkt`) designed for integration with coding agents like Claude Code, Cursor, Antigravity, and similar tools. This enables **living documentation** that stays synchronized with your codebase.
+
+### The `.fraktag/` Pattern
+
+Any git repository can become a FRAKTAG knowledge base by initializing a `.fraktag/` directory:
+
+```bash
+cd my-project
+fkt init
+```
+
+This creates a self-contained knowledge base in your repo:
+```
+my-project/
+├── .fraktag/
+│   ├── config.json      # LLM settings + tree definitions
+│   ├── content/         # Content atoms
+│   ├── trees/           # Tree structures
+│   └── indexes/         # Vector embeddings
+├── src/
+├── README.md
+└── ...
+```
+
+The `.fraktag/` directory can be:
+- **Git-tracked** for versioned documentation
+- **Git-ignored** for local-only knowledge bases
+- **Shared** across team members who sync the repo
+
+### Machine-Readable Output (`--json`)
+
+All commands support `--json` flag for structured output that agents can parse:
+
+```bash
+# Human-friendly output
+fkt folders docs
+# 📂 Leaf Folders in docs (4):
+#   [root-arch] Architecture
+#      Gist: System design, patterns...
+
+# Agent-friendly output
+fkt folders docs --json
+# [{"id":"root-arch","title":"Architecture","gist":"System design...","path":"/Architecture"}]
+```
+
+### Agent Workflow Example
+
+A coding agent maintaining project documentation:
+
+```bash
+# 1. Initialize KB in the repo (one-time)
+cd my-project
+fkt init
+fkt setup
+
+# 2. Ingest existing documentation
+fkt folders docs --json                           # Get folder IDs
+fkt ingest README.md docs root-guides --title "Project Readme"
+fkt ingest docs/api.md docs root-api --title "API Reference"
+
+# 3. Query the knowledge base
+fkt ask "How do I add a new endpoint?" docs --json
+# Returns: { "answer": "...", "references": ["API Reference", ...] }
+
+# 4. Update living documentation
+# After making code changes, agent updates the relevant doc:
+fkt node get <node-id> --json                     # Get current content
+# Agent edits the content based on code changes...
+fkt content replace <node-id> /tmp/updated.md    # Update with new version
+
+# 5. Verify integrity
+fkt verify docs --json
+```
+
+### CLI Command Reference
+
+**Initialization:**
+```bash
+fkt init                    # Create .fraktag/ in current directory
+fkt setup                   # Initialize trees from config
+```
+
+**Tree Operations:**
+```bash
+fkt tree [treeId]           # Visual tree structure
+fkt folders [treeId]        # List leaf folders (ingestion targets)
+fkt stats [treeId]          # Node counts by type
+```
+
+**Node CRUD:**
+```bash
+fkt node get <id>           # Get node with content
+fkt node update <id> --title "New Title" --gist "New summary"
+fkt node delete <id>        # Delete node and children
+fkt node move <id> <parentId>  # Move to different folder
+```
+
+**Content Operations:**
+```bash
+fkt content get <id>        # Get content atom
+fkt content update <id> <file>     # Update EDITABLE content
+fkt content replace <nodeId> <file> # Create new VERSION (readonly)
+```
+
+**Ingestion:**
+```bash
+fkt analyze <file>          # Preview split detection
+fkt ingest <file> <treeId> <folderId> [--title "..."]
+```
+
+**Retrieval:**
+```bash
+fkt retrieve <query> [treeId]  # Vector + graph search
+fkt ask <query> [treeId]       # RAG synthesis
+fkt browse [treeId] [nodeId]   # Navigate structure
+```
+
+### Integration with Coding Agents
+
+**Claude Code / Cursor:**
+Add to your project's `.claude/` or context:
+```
+This project uses FRAKTAG for documentation.
+Query documentation: fkt ask "question" docs --json
+Update docs after code changes: fkt content replace <id> <file>
+```
+
+**Antigravity / Custom Agents:**
+The `--json` flag makes FRAKTAG composable with any agent:
+```python
+import subprocess
+import json
+
+result = subprocess.run(
+    ["fkt", "ask", "How does auth work?", "docs", "--json"],
+    capture_output=True, text=True
+)
+response = json.loads(result.stdout)
+print(response["answer"])
+```
+
+### Why Agent-Ready Documentation?
+
+Traditional documentation rots because code changes faster than humans update docs. FRAKTAG enables a new workflow:
+
+1. **Agents read code** → understand changes
+2. **Agents query FRAKTAG** → find relevant documentation
+3. **Agents update FRAKTAG** → keep docs synchronized
+4. **Humans review** → maintain quality and accuracy
+
+The result: documentation that evolves with your codebase, maintained by the same agents that write your code.
+
+---
+
+## 7. Current Status
 
 *   **Ingestion:** Human-supervised with full audit trail. AI proposes, humans approve.
 *   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach.
@@ -537,7 +693,7 @@ fkt kb migrate notes ./knowledge-bases/notes
 
 ---
 
-## 7. Design Principles
+## 8. Design Principles
 
 1.  **Human in the Loop:** AI assists but doesn't dictate. Every significant decision requires human approval.
 2.  **Full Traceability:** Audit logs capture every decision with actor attribution.
@@ -547,11 +703,9 @@ fkt kb migrate notes ./knowledge-bases/notes
 
 ---
 
-## 8. Next Steps
+## 9. Next Steps
 
-*   **Fix Splitting:** Splitting by section returns the same result whatever the section depth. Splitting by custom applies only to the overall doc - I want to split individual sections by string not regex. Add an option to SPLIT SECTION AT CURSOR.
-*   **Conversation Memory:** Multi-turn Q&A with context retention.
-*   **Question and Answer Caching:** Some questions have been asked before, why not answer from a cache.
-*   **Cloud Deployment:** AWS CDK infrastructure.
-*   **Batch Ingestion:** Process multiple files with consistent rules.
+*   **Question and Answer Caching:** Some questions have been asked before, why not answer from a cache. May use conversation history as cache.
+*   **Cloud Deployment:** AWS CDK infrastructure done, still to actually deploy.
+*   **Batch Ingestion:** Process multiple files with consistent rules. BETA
 *   **Version History UI:** View and navigate content version history in the UI (backend complete).
