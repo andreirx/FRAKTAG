@@ -42,7 +42,7 @@ export function CreateFolderDialog({ open, onOpenChange, treeId, parentId, onCom
                 await axios.post(`/api/trees/${treeId}/folders`, {
                     parentId,
                     title: folder.title,
-                    gist: "",
+                    gist: folder.title, // Use title as gist placeholder
                 });
             }
             onOpenChange(false);

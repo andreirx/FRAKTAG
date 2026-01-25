@@ -1,0 +1,89 @@
+# FRAKTAG Enterprise Docker Compose
+# Production-ready configuration for VPN/private deployment
+
+version: '3.8'
+
+services:
+  # ===================
+  # API Server
+  # ===================
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: fraktag-api
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - FRAKTAG_DEPLOY_MODE=enterprise
+      - STORAGE_ADAPTER=${STORAGE_ADAPTER:-fs}
+      - STORAGE_ROOT=/data
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Enterprise tenant isolation (optional)
+      - ENTERPRISE_TENANT_ISOLATION=${ENTERPRISE_TENANT_ISOLATION:-false}
+      # S3 configuration (for enterprise with S3/MinIO)
+      - S3_BUCKET_DATA=${S3_BUCKET_DATA:-}
+      - AWS_REGION=${AWS_REGION:-eu-central-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      # For MinIO
+      - AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL:-}
+    volumes:
+      - ${DATA_PATH:-./data}:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===================
+  # UI Server
+  # ===================
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ui
+      args:
+        - VITE_DEPLOY_MODE=enterprise
+        - VITE_API_URL=/api
+    container_name: fraktag-ui
+    ports:
+      - "80:80"
+      - "443:443"  # For TLS termination
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      # Mount TLS certificates if available
+      - ${TLS_CERT_PATH:-./certs}:/etc/nginx/certs:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    name: fraktag-enterprise
+    driver: bridge
