@@ -1,9 +1,11 @@
 {
-  "name": "api",
+  "name": "@fraktag/api",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/server.js",
   "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts"
   },
   "keywords": [],
