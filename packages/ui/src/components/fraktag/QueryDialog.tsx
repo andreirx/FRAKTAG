@@ -19,6 +19,7 @@ import {
   FileText,
 } from "lucide-react";
 import { SourcePopup } from "./SourcePopup";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 interface RetrieveResult {
   nodes: { nodeId: string; path: string; resolution: string; content: string }[];
@@ -373,16 +374,20 @@ export function QueryDialog({
                       </div>
                       <div
                         ref={answerRef}
-                        className="bg-zinc-50 rounded-lg border p-4 text-sm leading-relaxed whitespace-pre-wrap max-h-[400px] overflow-y-auto"
+                        className="bg-zinc-50 rounded-lg border p-4 text-sm leading-relaxed max-h-[400px] overflow-y-auto"
                       >
-                        {streamingAnswer || (
+                        {streamingAnswer ? (
+                          <>
+                            <MarkdownRenderer content={streamingAnswer} />
+                            {isStreaming && (
+                              <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-0.5" />
+                            )}
+                          </>
+                        ) : (
                           <span className="text-zinc-400 italic flex items-center gap-2">
                             <Loader2 className="w-4 h-4 animate-spin" />
                             Generating answer...
                           </span>
-                        )}
-                        {isStreaming && streamingAnswer && (
-                          <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-0.5" />
                         )}
                       </div>
                       {!isStreaming && streamingReferences.length > 0 && (

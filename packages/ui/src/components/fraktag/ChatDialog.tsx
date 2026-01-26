@@ -23,6 +23,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { SourcePopup, StreamingSourceData } from "./SourcePopup";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 interface Tree {
   id: string;
@@ -609,8 +610,8 @@ export function ChatDialog({
                       )}
 
                       {/* Answer */}
-                      <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                        {turn.answer}
+                      <div className="text-sm leading-relaxed">
+                        <MarkdownRenderer content={turn.answer} />
                       </div>
                     </div>
                   </div>
@@ -675,8 +676,8 @@ export function ChatDialog({
 
                       {/* Streaming answer */}
                       {streamingAnswer ? (
-                        <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                          {streamingAnswer}
+                        <div className="text-sm leading-relaxed">
+                          <MarkdownRenderer content={streamingAnswer} />
                           <span className="inline-block w-2 h-4 bg-purple-500 animate-pulse ml-0.5" />
                         </div>
                       ) : streamingSources.length > 0 ? (

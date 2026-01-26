@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Loader2, FileText } from "lucide-react";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 // For streaming sources (already have full data)
 export interface StreamingSourceData {
@@ -125,10 +126,8 @@ export function SourcePopup({
               <div className="shrink-0 text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">
                 Full Content
               </div>
-              <div className="flex-1 min-h-0 border rounded-lg bg-white overflow-auto">
-                <pre className="p-4 text-sm font-mono text-zinc-700 whitespace-pre-wrap leading-relaxed">
-                  {content || <span className="text-zinc-400 italic">No content available</span>}
-                </pre>
+              <div className="flex-1 min-h-0 border rounded-lg bg-white overflow-auto p-4">
+                <MarkdownRenderer content={content} />
               </div>
             </div>
           </div>

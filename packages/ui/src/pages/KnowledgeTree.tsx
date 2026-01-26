@@ -15,6 +15,8 @@ import { CreateFolderDialog } from "@/components/fraktag/CreateFolderDialog";
 import { CreateNoteDialog } from "@/components/fraktag/CreateNoteDialog";
 import { DeleteNodeDialog } from "@/components/fraktag/DeleteNodeDialog";
 import { ReplaceVersionDialog } from "@/components/fraktag/ReplaceVersionDialog";
+import { MarkdownRenderer } from "@/components/fraktag/MarkdownRenderer";
+import { EditableContent } from "@/components/fraktag/EditableContent";
 
 interface KnowledgeBase {
     id: string;
@@ -818,7 +820,7 @@ export default function KnowledgeTree() {
                                             </div>
                                         </div>
 
-                                        <div className="rounded-lg border bg-white shadow-sm flex-1 min-h-[300px] relative flex flex-col">
+                                        <div className="rounded-lg border bg-white shadow-sm flex-1 min-h-[300px] relative flex flex-col overflow-hidden">
                                             {contentLoading ? (
                                                 <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10 backdrop-blur-sm">
                                                     <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
@@ -833,19 +835,16 @@ export default function KnowledgeTree() {
                                                     </Button>
                                                 </div>
                                             ) : contentEditMode === 'editable' ? (
-                                                // Editable content - textarea fills available space
-                                                <textarea
-                                                    value={editableContent}
-                                                    onChange={(e) => handleContentChange(e.target.value)}
-                                                    className="w-full flex-1 p-6 text-sm font-mono text-zinc-700 bg-white border-0 resize-none focus:outline-none focus:ring-0 rounded-lg"
+                                                // Editable content with markdown preview and Edit/Done toggle
+                                                <EditableContent
+                                                    content={editableContent}
+                                                    onChange={handleContentChange}
                                                     placeholder="Start writing..."
                                                 />
                                             ) : (
-                                                // Read-only content - pre
-                                                <div className="p-6 overflow-x-auto">
-                                                    <pre className="text-xs font-mono text-zinc-600 whitespace-pre-wrap leading-relaxed select-text">
-                                                        {contentPayload || "Loading content..."}
-                                                    </pre>
+                                                // Read-only content - rendered markdown
+                                                <div className="p-6 overflow-auto">
+                                                    <MarkdownRenderer content={contentPayload || ""} />
                                                 </div>
                                             )}
                                         </div>
