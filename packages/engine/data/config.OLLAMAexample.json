@@ -3,8 +3,8 @@
   "storagePath": ".",
   "llm": {
     "adapter": "ollama",
-    "model": "qwen3-coder-128k",
-    "basicModel": "deepseek-coder-v2:lite",
+    "model": "qwen3-coder:30b",
+    "basicModel": "qwen3-coder:30b",
     "expertModel": "gpt-oss:120b",
     "endpoint": "http://localhost:11434",
     "numCtx": 65536,
