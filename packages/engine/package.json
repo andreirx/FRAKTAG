@@ -13,6 +13,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "undici": "^7.19.1",
     "unpdf": "^1.4.0",
     "uuid": "^9.0.0"
   },

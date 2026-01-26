@@ -1427,6 +1427,31 @@ export class Fraktag {
   }
 
   /**
+   * Create a new tree in the internal (default) storage.
+   * For trees not in a portable knowledge base.
+   */
+  async createTree(treeId: string, treeName: string, seedFolders?: { title: string; gist: string }[]): Promise<void> {
+    // Check if tree already exists
+    const existingTrees = await this.listTrees();
+    if (existingTrees.some(t => t.id === treeId)) {
+      throw new Error(`Tree "${treeId}" already exists`);
+    }
+
+    const treeConfig = {
+      id: treeId,
+      name: treeName,
+      organizingPrinciple: `${treeName} knowledge tree`,
+      autoPlace: false,
+      seedFolders: seedFolders || [
+        { title: 'General', gist: 'General content' }
+      ]
+    };
+
+    await this.treeStore.createTree(treeConfig);
+    console.log(`🌱 Created new tree "${treeId}" in internal storage`);
+  }
+
+  /**
    * Export selected trees to a new portable knowledge base.
    * Copies trees, their content atoms, and vector indexes.
    */
@@ -1788,6 +1813,8 @@ Answer:`;
         return new OllamaAdapter({
           endpoint: config.endpoint ?? 'http://localhost:11434',
           model: config.model,
+          timeoutMs: config.timeoutMs,
+          numCtx: config.numCtx
         });
       case 'openai':
         const apiKey = config.apiKey || process.env.FRAKTAG_OPENAI_KEY || process.env.OPENAI_API_KEY;

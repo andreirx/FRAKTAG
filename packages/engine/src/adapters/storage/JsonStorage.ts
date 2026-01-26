@@ -1,6 +1,4 @@
-// src/adapters/storage/JsonStorage.ts
-
-import { readFile, writeFile, appendFile, mkdir, readdir, rm, access, stat } from 'fs/promises';
+import { readFile, writeFile, appendFile, mkdir, readdir, rm, access, stat, rename } from 'fs/promises';
 import { join, dirname } from 'path';
 import { IStorage } from './IStorage.js';
 
@@ -21,17 +19,17 @@ export class JsonStorage implements IStorage {
   async read<T>(filePath: string): Promise<T | null> {
     try {
       const fullPath = join(this.basePath, filePath);
-      
+
       // Safety Check: Empty file?
       try {
-          const stats = await stat(fullPath); // Need to import { stat } from 'fs/promises'
-          if (stats.size === 0) {
-              console.warn(`⚠️  Found empty file: ${filePath}. Treating as missing.`);
-              return null;
-          }
+        const stats = await stat(fullPath);
+        if (stats.size === 0) {
+          console.warn(`⚠️  Found empty file: ${filePath}. Treating as missing.`);
+          return null;
+        }
       } catch (e) {
-          // File doesn't exist, which is fine
-          return null; 
+        // File doesn't exist, which is fine
+        return null;
       }
 
       const content = await readFile(fullPath, 'utf-8');
@@ -41,38 +39,38 @@ export class JsonStorage implements IStorage {
       if (error instanceof Error && 'code' in error && (error as any).code === 'ENOENT') {
         return null;
       }
-      
+
       // CORRUPTION RECOVERY
       if (error instanceof SyntaxError) {
         console.error(`💥 CORRUPTION DETECTED in ${filePath}: ${error.message}`);
-        console.warn(`   🗑️  Deleting corrupted file to allow regeneration.`);
-        
-        try {
-            await this.delete(filePath);
-        } catch (delError) {
-            console.error(`   ❌ Failed to delete corrupted file:`, delError);
-        }
-        return null; // Return null so the system regenerates it
+        return null;
       }
-      
+
       throw new Error(`Failed to read file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   /**
-   * Write data to a JSON file
+   * Write data to a JSON file ATOMICALLY
+   * Writes to .tmp file then renames to avoid race conditions (empty reads)
    */
   async write<T>(filePath: string, data: T): Promise<void> {
     try {
       const fullPath = join(this.basePath, filePath);
       const dir = dirname(fullPath);
+      // Create a unique temp file on the same volume
+      const tempPath = `${fullPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
       // Ensure directory exists
       await mkdir(dir, { recursive: true });
 
-      // Write file with pretty formatting
+      // Write file with pretty formatting to TEMP path
       const jsonContent = JSON.stringify(data, null, 2);
-      await writeFile(fullPath, jsonContent, 'utf-8');
+      await writeFile(tempPath, jsonContent, 'utf-8');
+
+      // Atomic rename: overwrite the target file instantly
+      await rename(tempPath, fullPath);
+
     } catch (error) {
       throw new Error(`Failed to write file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -129,7 +127,7 @@ export class JsonStorage implements IStorage {
   }
 
   /**
-   * Append a line to a text file (creates file if doesn't exist)
+   * Append a line to a text file
    */
   async appendLine(filePath: string, line: string): Promise<void> {
     try {

@@ -6,7 +6,9 @@
     "model": "qwen3-coder-128k",
     "basicModel": "deepseek-coder-v2:lite",
     "expertModel": "gpt-oss:120b",
-    "endpoint": "http://localhost:11434"
+    "endpoint": "http://localhost:11434",
+    "numCtx": 65536,
+    "timeoutMs": 600000
   },
   "trees": [
     {

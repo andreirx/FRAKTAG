@@ -356,6 +356,29 @@ app.get('/api/trees', async (req, res) => {
   }
 });
 
+// Create a new tree in the internal knowledge base
+app.post('/api/trees', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { treeId, treeName } = req.body;
+    if (!treeId || !treeName) {
+      return res.status(400).json({ error: 'treeId and treeName are required' });
+    }
+
+    // Check if tree already exists
+    const existingTrees = await fraktag.listTrees();
+    if (existingTrees.some(t => t.id === treeId)) {
+      return res.status(409).json({ error: `Tree "${treeId}" already exists` });
+    }
+
+    // Create the tree in internal KB
+    await fraktag.createTree(treeId, treeName);
+    res.json({ success: true, treeId, treeName });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/trees/:id', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {

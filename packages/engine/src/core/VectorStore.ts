@@ -33,9 +33,18 @@ export class VectorStore {
     async add(id: string, text: string): Promise<void> {
         // Basic dedupe check to avoid re-embedding same ID
         const existingIndex = this.index.findIndex(e => e.id === id);
-        if (existingIndex >= 0) return; // Already indexed
+        if (existingIndex >= 0) {
+            // If text changed significantly, we might want to update, but for now we assume ID uniqueness
+            // To force update, call remove() first
+            return;
+        }
 
-        const vector = await this.embedder.embed(text);
+        // SAFETY TRUNCATION: Prevent OOM/Crash on huge texts (e.g. 13k chars)
+        // 8192 chars is approx 2048 tokens, a safe limit for most local embedding models
+        // the "semantic fingerprint" of a document is almost always established in the first 2,000 words (8k chars)
+        const safeText = text.length > 8192 ? text.slice(0, 8192) : text;
+
+        const vector = await this.embedder.embed(safeText);
         if (vector.length === 0) return; // Embedding failed
 
         this.index.push({

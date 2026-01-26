@@ -110,8 +110,18 @@ export function KBManagerDialog({
 
     // Add Tree state
     const [selectedKbId, setSelectedKbId] = useState("");
-    const [newTreeId, setNewTreeId] = useState("");
     const [newTreeName, setNewTreeName] = useState("");
+
+    // Auto-generate tree ID from name
+    const generateTreeId = (name: string): string => {
+        return name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            || 'tree';
+    };
+
+    const newTreeId = generateTreeId(newTreeName);
 
     // Discover KBs when dialog opens
     useEffect(() => {
@@ -140,7 +150,6 @@ export function KBManagerDialog({
         setSeedFolderNames([]);
         setSeedFolderInput("");
         setSelectedKbId("");
-        setNewTreeId("");
         setNewTreeName("");
         setSelectedTreeIds([]);
         setExportKbName("");
@@ -270,8 +279,8 @@ export function KBManagerDialog({
     };
 
     const handleAddTree = async () => {
-        if (!selectedKbId || !newTreeId.trim()) {
-            setError("KB and Tree ID are required");
+        if (!newTreeName.trim()) {
+            setError("Tree name is required");
             return;
         }
 
@@ -280,13 +289,21 @@ export function KBManagerDialog({
         setSuccess(null);
 
         try {
-            await axios.post(`/api/knowledge-bases/${selectedKbId}/trees`, {
-                treeId: newTreeId,
-                treeName: newTreeName || newTreeId,
-            });
-            setSuccess(`Added tree "${newTreeId}" to knowledge base`);
+            // For internal KB, use a different endpoint
+            if (selectedKbId === "_internal" || !selectedKbId) {
+                await axios.post(`/api/trees`, {
+                    treeId: newTreeId,
+                    treeName: newTreeName,
+                });
+            } else {
+                await axios.post(`/api/knowledge-bases/${selectedKbId}/trees`, {
+                    treeId: newTreeId,
+                    treeName: newTreeName,
+                });
+            }
             onTreeCreated();
             resetForm();
+            onOpenChange(false); // Close dialog
         } catch (e: any) {
             setError(e.response?.data?.error || e.message);
         } finally {
@@ -342,7 +359,6 @@ export function KBManagerDialog({
                         size="sm"
                         onClick={() => { setActiveTab("add-tree"); setError(null); setSuccess(null); }}
                         className="gap-1"
-                        disabled={knowledgeBases.length === 0}
                     >
                         <TreeDeciduous className="w-3 h-3" /> Add Tree
                     </Button>
@@ -692,7 +708,7 @@ export function KBManagerDialog({
                                     onChange={(e) => setSelectedKbId(e.target.value)}
                                     className="w-full mt-1 h-10 px-3 text-sm border rounded-lg bg-white"
                                 >
-                                    <option value="">Select a knowledge base...</option>
+                                    <option value="_internal">Internal Knowledge Base</option>
                                     {knowledgeBases.map((kb) => (
                                         <option key={kb.id} value={kb.id}>
                                             {kb.name}
@@ -702,36 +718,27 @@ export function KBManagerDialog({
                             </div>
                             <div>
                                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                    Tree ID
-                                </label>
-                                <Input
-                                    value={newTreeId}
-                                    onChange={(e) => setNewTreeId(e.target.value)}
-                                    placeholder="my-tree"
-                                    className="mt-1"
-                                />
-                                <p className="text-[10px] text-zinc-400 mt-1">
-                                    Unique identifier (lowercase, no spaces)
-                                </p>
-                            </div>
-                            <div>
-                                <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                    Tree Name (optional)
+                                    Tree Name
                                 </label>
                                 <Input
                                     value={newTreeName}
                                     onChange={(e) => setNewTreeName(e.target.value)}
-                                    placeholder="My Tree"
+                                    placeholder="My New Tree"
                                     className="mt-1"
                                 />
+                                {newTreeName.trim() && (
+                                    <p className="text-[10px] text-zinc-400 mt-1">
+                                        ID: <span className="font-mono bg-zinc-100 px-1 rounded">{newTreeId}</span>
+                                    </p>
+                                )}
                             </div>
                             <Button
                                 onClick={handleAddTree}
-                                disabled={loading || !selectedKbId || !newTreeId.trim()}
+                                disabled={loading || !newTreeName.trim()}
                                 className="w-full bg-emerald-600 hover:bg-emerald-700"
                             >
                                 {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <TreeDeciduous className="w-4 h-4 mr-2" />}
-                                Add Tree to KB
+                                Create Tree
                             </Button>
                         </div>
                     )}

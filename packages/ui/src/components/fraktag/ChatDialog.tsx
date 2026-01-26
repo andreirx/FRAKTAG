@@ -239,9 +239,21 @@ export function ChatDialog({
   };
 
   const startNewConversation = () => {
+    // Close any active streaming connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    // Clear all conversation state
     setCurrentSession(null);
     setTurns([]);
     setHydratedRefs(new Map());
+    setIsStreaming(false);
+    setStreamingSources([]);
+    setInputText("");
+    setStreamingAnswer("");
+    setStreamingQuestion("");
+    setError(null);
   };
 
   const toggleTreeSelection = (treeId: string) => {
@@ -273,17 +285,20 @@ export function ChatDialog({
     }
 
     try {
-      // If no current session, create one with the question as title
+      // 1. DETERMINE SESSION ID ROBUSTLY
       let sessionId = currentSession?.id;
+
+      // If we are starting fresh, create session immediately
       if (!sessionId) {
         const newSession = await createSessionWithQuestion(question);
         setCurrentSession(newSession);
         sessionId = newSession.id;
-        await loadSessions(); // Refresh sessions list
+        // Don't await loadSessions() here, it causes UI flicker. Do it background.
+        loadSessions();
       } else {
-        // Update session title with latest question gist
+        // Fire and forget title update
         const gist = question.length > 60 ? question.slice(0, 60).trim() + "..." : question;
-        await axios.patch(`/api/conversations/${sessionId}`, { title: gist });
+        axios.patch(`/api/conversations/${sessionId}`, { title: gist }).catch(console.error);
       }
 
       // Build SSE URL with multiple tree IDs
@@ -299,32 +314,57 @@ export function ChatDialog({
       const eventSource = new EventSource(url);
       eventSourceRef.current = eventSource;
 
+      // Local variables to track state for optimistic update
+      let accumulatedAnswer = "";
+      const gatheredSources: StreamingSource[] = [];
+
       eventSource.addEventListener("source", (e) => {
         const data = JSON.parse(e.data);
+        gatheredSources.push(data); // Track locally
         setStreamingSources((prev) => [...prev, data]);
       });
 
       eventSource.addEventListener("answer_chunk", (e) => {
         const data = JSON.parse(e.data);
+        accumulatedAnswer += data.text; // Track locally
         setStreamingAnswer((prev) => prev + data.text);
       });
 
       eventSource.addEventListener("done", async () => {
         eventSource.close();
-        // Reload turns FIRST, then clear streaming state
-        // This prevents the flash where nothing is shown
-        if (sessionId) {
-          await loadTurns(sessionId);
-        }
-        // Now clear streaming state after turns are loaded
+
+        // 2. OPTIMISTIC UPDATE (Fixes the "Flash")
+        // We use gatheredSources because they contain the nodeIds needed for the turn object
+        const turnRefs = gatheredSources.map(s => ({ nodeId: s.nodeId }));
+
+        const newTurn: ConversationTurn = {
+          turnIndex: turns.length + 1,
+          question: question,
+          answer: accumulatedAnswer,
+          references: turnRefs,
+          timestamp: new Date().toISOString(),
+          folderId: "temp-pending" // Placeholder
+        };
+
+        // Update turns list immediately with our local data
+        setTurns(prev => [...prev, newTurn]);
+
+        // 3. Clear streaming state
         setIsStreaming(false);
         setStreamingSources([]);
         setStreamingAnswer("");
         setStreamingQuestion("");
-        // Reload sessions to update turn count
-        await loadSessions();
 
-        // Auto-include conversation tree after first turn so AI can reference conversation history
+        // 4. Background Sync (The "Truth")
+        // Wait a moment for FS to settle, then reload from DB
+        setTimeout(async () => {
+          if (sessionId) {
+            await loadTurns(sessionId);
+            await loadSessions();
+          }
+        }, 500);
+
+        // Auto-include conversation tree context
         const conversationTreeId = `conversations-${kbId}`;
         if (trees.some(t => t.id === conversationTreeId)) {
           setSelectedTreeIds(prev => {
@@ -350,10 +390,13 @@ export function ChatDialog({
       });
 
       eventSource.onerror = () => {
-        if (eventSource.readyState !== EventSource.CONNECTING) {
-          setIsStreaming(false);
-          eventSource.close();
-        }
+        // Only handle if this is still our active connection and not just reconnecting
+        if (eventSourceRef.current !== eventSource) return;
+        if (eventSource.readyState === EventSource.CONNECTING) return;
+
+        setIsStreaming(false);
+        eventSource.close();
+        eventSourceRef.current = null;
       };
     } catch (e: any) {
       setError(e.response?.data?.error || e.message);

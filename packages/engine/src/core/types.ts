@@ -48,6 +48,8 @@ export interface LLMConfig {
   expertModel?: string;
   endpoint?: string;
   apiKey?: string;
+  timeoutMs?: number;
+  numCtx?: number;
   prompts?: Partial<PromptSet>;
 }
 
