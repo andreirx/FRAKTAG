@@ -3,6 +3,7 @@ import axios from "axios";
 import {
   Dialog,
   DialogContent,
+  DialogTitle, // Import Title
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { SourcePopup, StreamingSourceData } from "./SourcePopup";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+
 
 interface Tree {
   id: string;
@@ -129,6 +131,9 @@ export function ChatDialog({
   // TRACKING REF: This is the fix for "Ghost Turns"
   // We keep track of the ID we *want* to show. If async loadTurns returns for an old ID, we ignore it.
   const activeSessionIdRef = useRef<string | null>(null);
+
+  // AbortController for fetch requests (replaces EventSource ref)
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Update tracking ref whenever currentSession changes
   useEffect(() => {
@@ -303,129 +308,153 @@ export function ChatDialog({
     setStreamingQuestion(question);
     setIsStreaming(true);
 
-    // Close any existing EventSource
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
+    // Cancel previous request if any
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
+    // Create new controller
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       // 1. DETERMINE SESSION ID ROBUSTLY
       let sessionId = currentSession?.id;
 
-      // If we are starting fresh, create session immediately
       if (!sessionId) {
+        // Create session
+        // Note: The title API call might fail if title is too long, so truncate strictly for title
         const newSession = await createSessionWithQuestion(question);
         setCurrentSession(newSession);
         sessionId = newSession.id;
-        // Don't await loadSessions() here, it causes UI flicker. Do it background.
         loadSessions();
       } else {
-        // Fire and forget title update
         const gist = question.length > 60 ? question.slice(0, 60).trim() + "..." : question;
         axios.patch(`/api/conversations/${sessionId}`, { title: gist }).catch(console.error);
       }
 
-      // Build SSE URL with multiple tree IDs
-      const params = new URLSearchParams({
-        kbId,
-        sessionId,
-        question,
+      // 2. USE FETCH POST INSTEAD OF EVENTSOURCE (Solves URL length limit)
+      const response = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          kbId,
+          sessionId,
+          question, // Massive payload goes here safely
+          treeIds: Array.from(selectedTreeIds),
+        }),
+        signal: abortController.signal,
       });
-      // Add each selected tree ID
-      selectedTreeIds.forEach(id => params.append("treeIds", id));
-      const url = `/api/chat/stream?${params.toString()}`;
 
-      const eventSource = new EventSource(url);
-      eventSourceRef.current = eventSource;
+      if (!response.ok) {
+        throw new Error(response.statusText);
+      }
 
-      // Local variables to track state for optimistic update
+      if (!response.body) throw new Error("No response body");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      // Local variables for optimistic update
       let accumulatedAnswer = "";
       const gatheredSources: StreamingSource[] = [];
 
-      eventSource.addEventListener("source", (e) => {
-        const data = JSON.parse(e.data);
-        gatheredSources.push(data); // Track locally
-        setStreamingSources((prev) => [...prev, data]);
-      });
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
 
-      eventSource.addEventListener("answer_chunk", (e) => {
-        const data = JSON.parse(e.data);
-        accumulatedAnswer += data.text; // Track locally
-        setStreamingAnswer((prev) => prev + data.text);
-      });
+        // Append new chunk to buffer
+        buffer += decoder.decode(value, { stream: true });
 
-      eventSource.addEventListener("done", async () => {
-        eventSource.close();
+        // Process complete SSE messages (separated by \n\n)
+        const parts = buffer.split('\n\n');
+        // Keep the last part in buffer (might be incomplete)
+        buffer = parts.pop() || "";
 
-        // 2. OPTIMISTIC UPDATE (Fixes the "Flash")
-        // We use gatheredSources because they contain the nodeIds needed for the turn object
-        const turnRefs = gatheredSources.map(s => ({ nodeId: s.nodeId }));
+        for (const part of parts) {
+          if (!part.trim()) continue;
 
-        const newTurn: ConversationTurn = {
-          turnIndex: turns.length + 1,
-          question: question,
-          answer: accumulatedAnswer,
-          references: turnRefs,
-          timestamp: new Date().toISOString(),
-          folderId: "temp-pending" // Placeholder
-        };
+          const lines = part.split('\n');
+          let eventType = "";
+          let dataStr = "";
 
-        // Update turns list immediately with our local data
-        setTurns(prev => [...prev, newTurn]);
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            if (line.startsWith('data: ')) dataStr = line.slice(6);
+          }
 
-        // 3. Clear streaming state
-        setIsStreaming(false);
-        setStreamingSources([]);
-        setStreamingAnswer("");
-        setStreamingQuestion("");
+          if (eventType && dataStr) {
+            try {
+              const data = JSON.parse(dataStr);
 
-        // 4. Background Sync (The "Truth")
-        // Wait a moment for FS to settle, then reload from DB
-        setTimeout(async () => {
-          if (sessionId) {
-            // Only reload if we are still on this session
-            if (activeSessionIdRef.current === sessionId) {
-              await loadTurns(sessionId);
-              await loadSessions();
+              if (eventType === 'source') {
+                gatheredSources.push(data);
+                setStreamingSources(prev => [...prev, data]);
+              }
+              else if (eventType === 'answer_chunk') {
+                const text = data.text || "";
+                accumulatedAnswer += text;
+                setStreamingAnswer(prev => prev + text);
+              }
+              else if (eventType === 'error') {
+                setError(data.message);
+              }
+              else if (eventType === 'done') {
+                // Done! Logic is handled below after loop usually,
+                // but we can trigger state updates here if needed.
+              }
+            } catch (e) {
+              console.error("Error parsing SSE data", e);
             }
           }
-        }, 500);
-
-        // Auto-include conversation tree context
-        const conversationTreeId = `conversations-${kbId}`;
-        if (trees.some(t => t.id === conversationTreeId)) {
-          setSelectedTreeIds(prev => {
-            if (prev.has(conversationTreeId)) return prev;
-            const next = new Set(prev);
-            next.add(conversationTreeId);
-            return next;
-          });
         }
-      });
+      }
 
-      eventSource.addEventListener("error", (e) => {
-        try {
-          const data = JSON.parse((e as any).data);
-          setError(data.message || "Stream error");
-        } catch {
-          if (eventSource.readyState !== EventSource.CLOSED) {
-            setError("Connection error");
-          }
-        }
-        setIsStreaming(false);
-        eventSource.close();
-      });
+      // STREAM COMPLETE
 
-      eventSource.onerror = () => {
-        // Only handle if this is still our active connection and not just reconnecting
-        if (eventSourceRef.current !== eventSource) return;
-        if (eventSource.readyState === EventSource.CONNECTING) return;
+      // 2. OPTIMISTIC UPDATE
+      const turnRefs = gatheredSources.map(s => ({ nodeId: s.nodeId }));
 
-        setIsStreaming(false);
-        eventSource.close();
-        eventSourceRef.current = null;
+      const newTurn: ConversationTurn = {
+        turnIndex: turns.length + 1,
+        question: question,
+        answer: accumulatedAnswer,
+        references: turnRefs,
+        timestamp: new Date().toISOString(),
+        folderId: "temp-pending"
       };
+
+      setTurns(prev => [...prev, newTurn]);
+
+      // 3. Clear streaming state
+      setIsStreaming(false);
+      setStreamingSources([]);
+      setStreamingAnswer("");
+      setStreamingQuestion("");
+
+      // 4. Background Sync
+      setTimeout(async () => {
+        if (sessionId && activeSessionIdRef.current === sessionId) {
+          await loadTurns(sessionId);
+          await loadSessions();
+        }
+      }, 500);
+
+      // Auto-include conversation tree context
+      const conversationTreeId = `conversations-${kbId}`;
+      if (trees.some(t => t.id === conversationTreeId)) {
+        setSelectedTreeIds(prev => {
+          if (prev.has(conversationTreeId)) return prev;
+          const next = new Set(prev);
+          next.add(conversationTreeId);
+          return next;
+        });
+      }
+
     } catch (e: any) {
+      if (e.name === 'AbortError') return;
       setError(e.response?.data?.error || e.message);
       setIsStreaming(false);
     }
@@ -443,6 +472,10 @@ export function ChatDialog({
   return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="w-[95vw] max-w-6xl h-[90vh] p-0 gap-0 flex">
+          {/* ACCESSIBILITY FIX: Hidden Title */}
+          <DialogTitle className="sr-only">
+            Chat Interface with {kbName}
+          </DialogTitle>
           {/* Sidebar */}
           <div className="w-64 shrink-0 bg-zinc-200 text-black flex flex-col">
             {/* New Chat Button */}
@@ -505,7 +538,7 @@ export function ChatDialog({
 
           {/* Main Chat Area */}
           <div className="flex-1 flex flex-col min-w-0 bg-white">
-            {/* Tree Selection Header - Always Visible */}
+            {/* Tree Selection Header */}
             <div className="shrink-0 border-b bg-zinc-50 px-4 py-2">
               <div className="flex items-center gap-2">
                 <button
@@ -641,7 +674,7 @@ export function ChatDialog({
                           <Bot className="w-4 h-4 text-purple-600" />
                         </div>
                         <div className="flex-1 space-y-3">
-                          {/* Sources - compact inline display */}
+                          {/* Sources */}
                           {turn.references.length > 0 && (
                               <div className="flex flex-wrap gap-1.5">
                                 {turn.references.map((ref, i) => {
@@ -709,7 +742,7 @@ export function ChatDialog({
                           <Bot className="w-4 h-4 text-purple-600" />
                         </div>
                         <div className="flex-1 space-y-3">
-                          {/* Sources being discovered */}
+                          {/* Sources */}
                           {streamingSources.length > 0 && (
                               <div className="flex flex-wrap gap-1.5">
                                 {streamingSources.map((source, i) => (
@@ -831,7 +864,7 @@ export function ChatDialog({
           </div>
         </DialogContent>
 
-        {/* Shared Source Popup - for both streaming sources and persisted references */}
+        {/* Shared Source Popup */}
         <SourcePopup
             open={!!(popupSource || popupNodeId)}
             onOpenChange={(open) => {
@@ -848,3 +881,4 @@ export function ChatDialog({
       </Dialog>
   );
 }
+

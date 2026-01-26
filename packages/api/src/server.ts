@@ -251,35 +251,24 @@ app.delete('/api/conversations/:sessionId', async (req, res) => {
   }
 });
 
-// Chat endpoint with memory (streaming)
-app.get('/api/chat/stream', async (req, res) => {
+// Streaming chat endpoint (Moved to POST to support large payloads)
+app.post('/api/chat/stream', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
 
-  const { kbId, sessionId, question } = req.query as {
-    kbId: string;
-    sessionId: string;
-    question: string;
-  };
+  // Read from BODY now, not QUERY
+  const { kbId, sessionId, question, treeIds } = req.body;
 
-  // Support multiple tree IDs (treeIds=id1&treeIds=id2 or treeIds=id1,id2)
-  let treeIds: string[] = [];
-  const treeIdsParam = req.query.treeIds;
-  if (Array.isArray(treeIdsParam)) {
-    treeIds = treeIdsParam as string[];
-  } else if (typeof treeIdsParam === 'string') {
-    treeIds = treeIdsParam.includes(',') ? treeIdsParam.split(',') : [treeIdsParam];
-  }
-
-  if (!kbId || !sessionId || !question || treeIds.length === 0) {
+  if (!kbId || !sessionId || !question || !treeIds || treeIds.length === 0) {
     return res.status(400).json({
       error: 'kbId, sessionId, question, and treeIds are required'
     });
   }
 
-  // Set up SSE
+  // Set up SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
   res.flushHeaders();
 
   const sendEvent = (type: string, data: any) => {
@@ -289,19 +278,32 @@ app.get('/api/chat/stream', async (req, res) => {
 
   try {
     await fraktag.chat(
-      kbId,
-      sessionId,
-      question,
-      treeIds,
-      (event) => {
-        sendEvent(event.type, event.data);
-      }
+        kbId,
+        sessionId,
+        question,
+        treeIds,
+        (event) => {
+          switch (event.type) {
+            case 'source':
+              sendEvent('source', event.data);
+              break;
+            case 'answer_chunk':
+              sendEvent('answer_chunk', { text: event.data.text || event.data });
+              break;
+            case 'done':
+              sendEvent('done', event.data);
+              break;
+            case 'error':
+              sendEvent('error', { message: event.data });
+              break;
+          }
+        }
     );
   } catch (e: any) {
-    sendEvent('error', { message: e.message });
+    sendEvent('error', { message: e.message || 'Unknown error' });
+  } finally {
+    res.end();
   }
-
-  res.end();
 });
 
 // Chat endpoint (non-streaming)

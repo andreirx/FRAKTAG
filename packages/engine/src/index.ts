@@ -1451,16 +1451,17 @@ export class Fraktag {
     console.log(`🌱 Created new tree "${treeId}" in internal storage`);
   }
 
+
   /**
    * Export selected trees to a new portable knowledge base.
    * Copies trees, their content atoms, and vector indexes.
    */
   async exportTreesToNewKB(
-    treeIds: string[],
-    options: {
-      name: string;
-      organizingPrinciple: string;
-    }
+      treeIds: string[],
+      options: {
+        name: string;
+        organizingPrinciple: string;
+      }
   ): Promise<{ kb: KnowledgeBase; stats: { trees: number; nodes: number; content: number } }> {
     if (!this.kbManager) {
       const configDir = this.configPath ? dirname(this.configPath) : process.cwd();
@@ -1497,16 +1498,16 @@ export class Fraktag {
 
     console.log(`   Found ${totalNodes} nodes with ${contentIds.size} content atoms`);
 
-    // 2. Create the new KB (without default tree - we'll copy the selected ones)
+    // 2. Create the new KB
     await this.kbManager.ensureStorageDir();
 
     // Generate folder name from name
     const folderName = options.name
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .slice(0, 50);
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 50);
 
     const id = `kb-${folderName}-${Date.now().toString(36)}`;
     const kbPath = resolve(this.kbManager.getKbStoragePath(), folderName);
@@ -1529,25 +1530,64 @@ export class Fraktag {
     await mkdir(join(finalPath, 'indexes'), { recursive: true });
     await mkdir(join(finalPath, 'trees'), { recursive: true });
 
-    // Write kb.json
-    const kbConfig: KnowledgeBaseConfig = {
-      id,
-      name: options.name,
-      organizingPrinciple: options.organizingPrinciple,
-      defaultTreeId: treeIds[0], // First tree becomes default
-    };
-    await writeFile(join(finalPath, 'kb.json'), JSON.stringify(kbConfig, null, 2), 'utf-8');
+    // 3. Process Trees (Deep Copy & Rename)
+    // We maintain a mapping of oldTreeId -> newTreeId to handle defaultTreeId assignment
+    const treeIdMap = new Map<string, string>();
 
     // 3. Copy tree files
     const sourcePath = this.storage.getBasePath();
-    for (const treeId of treeIds) {
-      const sourceTreePath = join(sourcePath, 'trees', `${treeId}.json`);
-      const destTreePath = join(finalPath, 'trees', `${treeId}.json`);
-      await copyFile(sourceTreePath, destTreePath);
-      console.log(`   📄 Copied tree: ${treeId}`);
+
+    for (const oldTreeId of treeIds) {
+      // Load source tree data
+      const sourceTreeStore = this.getTreeStoreForTree(oldTreeId);
+      const treeFile = await sourceTreeStore.getTreeFile(oldTreeId);
+
+      // Generate new Tree ID prefixed with KB ID
+      // This ensures uniqueness and correct routing in the engine
+      // e.g. "kb-new-business-coach"
+      // Remove any existing KB prefix from the old ID to avoid double-prefixing
+      const cleanSlug = oldTreeId.replace(/^kb-[a-z0-9-]+-/, '');
+      const newTreeId = `${id}-${cleanSlug}`;
+
+      treeIdMap.set(oldTreeId, newTreeId);
+
+      // Deep Clone to avoid mutating cached data
+      const newTreeFile = JSON.parse(JSON.stringify(treeFile));
+
+      // Update Config
+      newTreeFile.config.id = newTreeId;
+      newTreeFile.config.kbId = id;
+      // Optionally update name to indicate export? No, keep original name.
+
+      // Update All Nodes
+      for (const nodeId in newTreeFile.nodes) {
+        newTreeFile.nodes[nodeId].treeId = newTreeId;
+      }
+
+      // Write modified tree to new KB location
+      const destTreePath = join(finalPath, 'trees', `${newTreeId}.json`);
+      await writeFile(destTreePath, JSON.stringify(newTreeFile, null, 2), 'utf-8');
+
+      console.log(`   📄 Migrated tree: ${oldTreeId} -> ${newTreeId}`);
+
+      // 3b. Copy & Rename Vector Index
+      const sourceIndexPath = join(sourcePath, 'indexes', `${oldTreeId}.vectors.json`);
+      const destIndexPath = join(finalPath, 'indexes', `${newTreeId}.vectors.json`); // Use new ID
+
+      if (existsSync(sourceIndexPath)) {
+        try {
+          // We need to rewrite IDs inside the vector index?
+          // No, vector entries key off 'nodeId' which didn't change.
+          // We just need the file to be named correctly for the VectorStore to find it.
+          await copyFile(sourceIndexPath, destIndexPath);
+          console.log(`   🔍 Copied vector index`);
+        } catch (err: any) {
+          console.warn(`   ⚠️ Error copying index: ${err.message}`);
+        }
+      }
     }
 
-    // 4. Copy content atoms
+    // 4. Copy Content (Immutable, so raw copy is fine)
     let copiedContent = 0;
     for (const contentId of contentIds) {
       const sourceContentPath = join(sourcePath, 'content', `${contentId}.json`);
@@ -1561,22 +1601,27 @@ export class Fraktag {
     }
     console.log(`   📦 Copied ${copiedContent} content atoms`);
 
-    // 5. Copy vector indexes
-    for (const treeId of treeIds) {
-      const sourceIndexPath = join(sourcePath, 'indexes', `${treeId}.vectors.json`);
-      const destIndexPath = join(finalPath, 'indexes', `${treeId}.vectors.json`);
-      try {
-        await copyFile(sourceIndexPath, destIndexPath);
-        console.log(`   🔍 Copied vector index: ${treeId}`);
-      } catch (err: any) {
-        // Index might not exist yet
-        console.log(`   ℹ️ No vector index for ${treeId} (will be built on first query)`);
-      }
-    }
+    // 5. Write kb.json with new IDs
+    const kbConfig: KnowledgeBaseConfig = {
+      id,
+      name: options.name,
+      organizingPrinciple: options.organizingPrinciple,
+      // Map the first selected tree's old ID to its new ID for default
+      defaultTreeId: treeIdMap.get(treeIds[0]) || 'main',
+    };
+    await writeFile(join(finalPath, 'kb.json'), JSON.stringify(kbConfig, null, 2), 'utf-8');
 
     // 6. Load and register the new KB
     const kb = await KnowledgeBase.load(finalPath);
-    (this.kbManager as any).knowledgeBases.set(kb.id, kb);
+    // Access private map via casting or public method if available.
+    // Since we are inside Fraktag class which has access to private kbManager...
+    // But kbManager.knowledgeBases is private.
+    // We should use a public method on kbManager to register.
+    // Ideally kbManager.load() returns it and adds it.
+
+    // Refresh the manager's list by re-scanning or force loading path
+    // Since we are in Fraktag class, we can just reload the specific path
+    await this.kbManager.load(finalPath);
 
     console.log(`✅ Export complete! New KB "${kb.name}" at ${finalPath}`);
 
