@@ -388,10 +388,10 @@ export class TreeStore {
    * Create a new folder under a parent
    */
   async createFolder(
-    treeId: string,
-    parentId: string,
-    title: string,
-    gist: string
+      treeId: string,
+      parentId: string,
+      title: string,
+      gist: string
   ): Promise<FolderNode> {
     // Validate parent can accept a folder
     await this.validateParentChild(parentId, 'folder', treeId);
@@ -401,9 +401,14 @@ export class TreeStore {
     if (!parent) throw new Error(`Parent ${parentId} not found`);
 
     const now = new Date().toISOString();
-    const nodeId = `${parentId}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
-    // Check if already exists
+    // FIX: Decouple ID from Parent ID to prevent path explosion
+    // Old: const nodeId = `${parentId}-${title...}`
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const shortUuid = randomUUID().slice(0, 8);
+    const nodeId = `${slug}-${shortUuid}`;
+
+    // Check if already exists (unlikely with UUID, but good practice)
     if (file.nodes[nodeId]) {
       return file.nodes[nodeId] as FolderNode;
     }
