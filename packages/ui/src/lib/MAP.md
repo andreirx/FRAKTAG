@@ -5,8 +5,8 @@ Utility libraries and third-party integrations.
 ## Structure
 
 ```
+utils.ts                  # Utility functions (cn for classnames)
 paddle.ts                 # Paddle.js SDK wrapper
-cognito.ts                # AWS Amplify / Cognito auth helpers
 api.ts                    # Axios instance with auth interceptor
 ```
 
@@ -16,14 +16,6 @@ Paddle payment SDK integration:
 - Initialize Paddle.js
 - Open checkout overlay
 - Handle success/cancel callbacks
-
-## cognito.ts
-
-Cognito authentication helpers:
-- Configure Amplify with User Pool
-- Sign in redirect
-- Token refresh
-- Sign out
 
 ## api.ts
 

@@ -19,13 +19,32 @@ src/
 │   │   ├── input.tsx
 │   │   ├── scroll-area.tsx
 │   │   └── separator.tsx
-│   └── fraktag/                  # Domain-specific components
-│       ├── TreeItem.tsx          # Recursive tree node renderer
-│       ├── IngestionDialog.tsx   # Multi-step ingestion wizard
-│       ├── QueryDialog.tsx       # Streaming Q&A interface
-│       └── MoveDialog.tsx        # Node relocation dialog
+│   ├── fraktag/                  # Domain-specific components
+│   │   ├── TreeItem.tsx              # Recursive tree node renderer
+│   │   ├── IngestionDialog.tsx       # Multi-step ingestion wizard
+│   │   ├── ChatDialog.tsx            # Conversational RAG with session management
+│   │   ├── MoveDialog.tsx            # Node relocation dialog
+│   │   ├── MarkdownRenderer.tsx      # Markdown rendering with Tailwind prose
+│   │   ├── EditableContent.tsx       # View/edit toggle for editable documents
+│   │   ├── SourcePopup.tsx           # Source content preview popup
+│   │   ├── CreateNoteDialog.tsx      # Create editable note dialog
+│   │   ├── DeleteNodeDialog.tsx      # Node deletion confirmation dialog
+│   │   ├── ReplaceVersionDialog.tsx  # Content version replacement dialog
+│   │   ├── CreateFolderDialog.tsx    # Folder creation dialog
+│   │   └── KBManagerDialog.tsx       # Knowledge base management dialog
+│   ├── auth/                     # Authentication components (cloud mode)
+│   │   ├── AuthProvider.tsx
+│   │   ├── AuthGuard.tsx
+│   │   ├── LoginScreen.tsx
+│   │   └── UserMenu.tsx
+│   └── subscription/             # Paddle payment components (cloud mode)
+│       ├── PricingTable.tsx
+│       ├── UpgradeModal.tsx
+│       └── SubscriptionStatus.tsx
 └── lib/
-    └── utils.ts                  # Utility functions (cn for classnames)
+    ├── utils.ts                  # Utility functions (cn for classnames)
+    ├── api.ts                    # Axios instance with auth interceptor
+    └── paddle.ts                 # Paddle.js SDK wrapper
 ```
 
 ## Tech Stack
@@ -37,6 +56,8 @@ src/
 - **Axios** - HTTP client
 - **Lucide React** - Icons
 - **react-resizable-panels** - Resizable split views
+- **react-markdown** - Markdown rendering
+- **@tailwindcss/typography** - Prose styling for rendered markdown
 
 ## Main Page: KnowledgeTree.tsx
 
@@ -53,13 +74,17 @@ const [activeTreeId, setActiveTreeId] = useState("");
 const [flatList, setFlatList] = useState<TreeNode[]>([]);
 const [childrenMap, setChildrenMap] = useState<Record<string, TreeNode[]>>({});
 
+// KB management
+const [activeKbId, setActiveKbId] = useState("");
+const [showConversationTrees, setShowConversationTrees] = useState(false);
+
 // Selection and content
 const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
 const [selectedContent, setSelectedContent] = useState<ContentAtom | null>(null);
 
 // Dialogs
 const [ingestionDialogOpen, setIngestionDialogOpen] = useState(false);
-const [queryDialogOpen, setQueryDialogOpen] = useState(false);
+const [chatDialogOpen, setChatDialogOpen] = useState(false);
 const [moveDialogOpen, setMoveDialogOpen] = useState(false);
 
 // Editing
@@ -73,6 +98,10 @@ const [editingGist, setEditingGist] = useState("");
 - **Tree filtering:** Filter nodes by title/gist text
 - **Folder creation:** Create subfolders with rule enforcement
 - **Content inspection:** View and edit node metadata
+- **KB selector:** Switch between knowledge bases, auto-loads all detected KBs
+- **Conversation tree toggle:** Show/hide conversation trees in tree selector for debugging
+- **Markdown rendering:** All content displayed as formatted markdown via `MarkdownRenderer`
+- **Editable content:** Documents marked editable get view/edit toggle via `EditableContent`
 
 ### Data Flow
 
@@ -208,70 +237,46 @@ Create Document + Fragments
 Show Success + Audit Log Download
 ```
 
-## Component: QueryDialog.tsx
+## Component: ChatDialog.tsx
 
-Streaming Q&A interface with real-time feedback.
+Conversational RAG interface with session management and multi-tree search.
 
-### State
+### Features
 
-```typescript
-// Query
-const [queryText, setQueryText] = useState("");
+- **Session management:** Create, list, rename, and delete conversation sessions
+- **Multi-tree context:** Select which knowledge trees to search across
+- **Streaming answers:** Real-time SSE streaming of sources and answer chunks
+- **Conversation memory:** Each session is stored as a conversation tree with turns
+- **Markdown rendering:** Answers rendered via `MarkdownRenderer`
+- **Source popups:** Click source references to see full content via `SourcePopup`
 
-// Results
-const [retrieveResults, setRetrieveResults] = useState<RetrieveResult | null>(null);
+### Layout
 
-// Streaming
-const [streamingSources, setStreamingSources] = useState<StreamingSource[]>([]);
-const [streamingAnswer, setStreamingAnswer] = useState("");
-const [streamingReferences, setStreamingReferences] = useState<string[]>([]);
-const [isStreaming, setIsStreaming] = useState(false);
+- **Left sidebar (w-80):** Session list with grid layout, hover-reveal delete buttons
+- **Right panel:** Chat messages with input area at bottom
+- **Tree selector:** Absolute-positioned dropdown to choose search scope
 
-// EventSource ref
-const eventSourceRef = useRef<EventSource | null>(null);
+### Session Flow
+
+```
+Open ChatDialog
+    ↓
+POST /api/conversations (create session with linked trees)
+    ↓
+Type question → POST /api/chat/stream (SSE)
+    ↓
+event: source → Show source cards
+event: answer_chunk → Stream answer text
+event: done → Save turn to conversation tree
+    ↓
+GET /api/conversations/:sessionId/turns → Reload history
 ```
 
-### Two Query Modes
+### Delete Button Pattern
 
-1. **Retrieve:** Non-streaming vector + graph search
-   - Returns matching fragments with paths
-   - Shows navigation path through tree
-
-2. **Ask:** Streaming RAG synthesis
-   - Sources appear as discovered (animated cards)
-   - Answer streams in real-time with blinking cursor
-   - References shown after completion
-
-### SSE Integration
-
-```typescript
-function handleAsk() {
-  const url = `/api/ask/stream?query=${queryText}&treeId=${treeId}`;
-  const eventSource = new EventSource(url);
-
-  eventSource.addEventListener("source", (e) => {
-    // Add source card with animation
-    setStreamingSources(prev => [...prev, JSON.parse(e.data)]);
-  });
-
-  eventSource.addEventListener("chunk", (e) => {
-    // Append to streaming answer
-    setStreamingAnswer(prev => prev + JSON.parse(e.data).text);
-  });
-
-  eventSource.addEventListener("done", (e) => {
-    setStreamingReferences(JSON.parse(e.data).references);
-    setIsStreaming(false);
-  });
-}
-```
-
-### UI Features
-
-- **Source cards:** Compact cards showing [index], title, and file info
-- **Streaming cursor:** Blinking indicator while answer generates
-- **Auto-scroll:** Answer area scrolls as content arrives
-- **Clear button:** Reset results for new query
+Uses CSS Grid with `grid-cols-[auto_minmax(0,1fr)]` and absolute-positioned
+delete button with `hidden group-hover:flex` — same pattern as TreeItem.tsx.
+The `minmax(0,1fr)` forces text truncation inside ScrollArea's overflow-hidden viewport.
 
 ## Component: MoveDialog.tsx
 
@@ -384,8 +389,16 @@ npm run preview --workspace=@fraktag/ui
 
 | Component | Lines | Responsibility |
 |-----------|-------|----------------|
-| KnowledgeTree.tsx | ~600 | Main page, state management |
-| IngestionDialog.tsx | ~1700 | Full ingestion workflow |
-| QueryDialog.tsx | ~440 | Streaming Q&A |
-| MoveDialog.tsx | ~280 | Node relocation |
-| TreeItem.tsx | ~135 | Tree node rendering |
+| KnowledgeTree.tsx | ~1090 | Main page, state management, KB selector |
+| IngestionDialog.tsx | ~2300 | Full ingestion workflow |
+| ChatDialog.tsx | ~850 | Conversational RAG with session management |
+| KBManagerDialog.tsx | ~750 | Knowledge base management |
+| MoveDialog.tsx | ~370 | Node relocation |
+| TreeItem.tsx | ~190 | Tree node rendering |
+| EditableContent.tsx | ~150 | View/edit toggle for markdown content |
+| CreateFolderDialog.tsx | ~140 | Folder creation |
+| SourcePopup.tsx | ~140 | Source content preview popup |
+| CreateNoteDialog.tsx | ~100 | Editable note creation |
+| ReplaceVersionDialog.tsx | ~95 | Content version replacement |
+| DeleteNodeDialog.tsx | ~80 | Node deletion confirmation |
+| MarkdownRenderer.tsx | ~36 | Markdown rendering wrapper |

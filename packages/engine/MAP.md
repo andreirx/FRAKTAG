@@ -39,6 +39,7 @@ src/
 ├── prompts/              # LLM prompt templates
 │   └── default.ts
 └── utils/
+    ├── Semaphore.ts      # Async concurrency limiter
     └── FileProcessor.ts  # File type routing
 ```
 
@@ -59,6 +60,9 @@ const fraktag = await Fraktag.fromConfigFile('./config.json');
 - `getFullTree(id)` - Get complete tree structure with all nodes
 - `getContent(id)` - Retrieve content atoms
 
+**Initialization:**
+- `fromConfigFile()` discovers and auto-loads all KBs found in `kbStoragePath` on startup, not just those listed in config
+
 **Ingestion Methods:**
 - `parseFile(fileName, buffer)` - Parse uploaded files
 - `analyzeSplits(content, sourceUri)` - Detect split boundaries
@@ -74,6 +78,7 @@ const fraktag = await Fraktag.fromConfigFile('./config.json');
 - `ask(query, treeId)` - RAG synthesis (returns complete response)
 - `askStream(query, treeId, onEvent)` - Streaming RAG with SSE events
 - `browse({ treeId, nodeId, resolution })` - Navigate tree structure
+- `chat(sessionId, question, sourceTreeIds, onEvent)` - Multi-tree conversational RAG with parallel retrieval across all source trees, conversation memory, and streaming events
 
 **Maintenance Methods:**
 - `verifyTree(treeId)` - Check tree integrity
@@ -306,8 +311,10 @@ interface ILLMAdapter {
 ```
 
 **Implementations:**
-- `OpenAIAdapter` - GPT-4 series with streaming support
-- `OllamaAdapter` - Local models (Qwen, Llama, DeepSeek)
+- `OpenAIAdapter` - GPT-4/GPT-5/O-series with streaming support, default concurrency 10
+- `OllamaAdapter` - Local models (Qwen, Llama, DeepSeek), default concurrency 1
+
+Both adapters use `Semaphore` for concurrency control. Concurrency is configurable via `LLMConfig.concurrency`.
 
 ### Embedding Adapters
 

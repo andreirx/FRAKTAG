@@ -15,13 +15,14 @@ index.ts                  # Factory: creates adapter based on STORAGE_ADAPTER en
 
 ```typescript
 interface IStorage {
-  read(path: string): Promise<string | null>;
-  write(path: string, data: string): Promise<void>;
+  read<T>(path: string): Promise<T | null>;
+  write<T>(path: string, data: T): Promise<void>;
   delete(path: string): Promise<void>;
+  list(dir: string): Promise<string[]>;
   exists(path: string): Promise<boolean>;
-  list(prefix: string): Promise<string[]>;
-  readBinary(path: string): Promise<Buffer | null>;
-  writeBinary(path: string, data: Buffer): Promise<void>;
+  ensureDir(dirPath: string): Promise<void>;
+  appendLine?(filePath: string, line: string): Promise<void>;
+  getBasePath?(): string;
 }
 ```
 
@@ -32,9 +33,11 @@ Storage path includes tenant prefix for multi-tenancy:
 - Local: `./data/trees/...`
 - Cloud: `s3://bucket/tenants/{userId}/trees/...`
 
-## Migration Path
+## Factory Function (`createStorage`)
 
-1. Extract existing fs operations from JsonStorage
-2. Implement same interface for S3Storage
-3. Update Fraktag constructor to accept IStorage
-4. Factory selects implementation based on env
+```typescript
+function createStorage(config?: Partial<StorageConfig>): IStorage;
+// Reads STORAGE_ADAPTER env var ('fs' | 's3')
+// For S3: requires S3_BUCKET_DATA, optional STORAGE_PREFIX
+// For fs: uses STORAGE_ROOT or './data'
+```

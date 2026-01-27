@@ -6,7 +6,14 @@ The API package is a lightweight Express server that bridges the engine to the U
 
 ```
 src/
-└── server.ts    # Single-file Express server with all endpoints
+├── server.ts           # Express server with all endpoints
+├── config/
+│   └── env.ts          # Environment variable validation and defaults
+└── middleware/
+    ├── authMiddleware.ts    # JWT validation / mock user injection
+    ├── tenantResolver.ts    # Determines storage path per user
+    ├── quotaMiddleware.ts   # Usage quota checking
+    └── index.ts             # Middleware chain export
 ```
 
 ## Server Structure
@@ -36,8 +43,10 @@ app.use(express.json({ limit: '10mb' }));
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/trees` | List all trees |
+| GET | `/api/trees` | List trees (supports `?type=knowledge\|conversation` and `?kbId=` filters) |
+| POST | `/api/trees` | Create new tree in internal KB |
 | GET | `/api/trees/:id` | Get tree metadata |
+| PATCH | `/api/trees/:id` | Update tree (name, organizingPrinciple) |
 | GET | `/api/trees/:id/structure` | Full tree with all nodes (clears cache first) |
 | GET | `/api/trees/:id/visual` | Text-based tree visualization |
 | GET | `/api/trees/:id/folders` | Get leaf folders with full paths |
@@ -67,8 +76,11 @@ The `/folders` endpoint builds human-readable paths by traversing parent nodes:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/nodes/:id` | Get node with hydrated content |
 | PATCH | `/api/nodes/:id` | Update title and/or gist |
+| DELETE | `/api/nodes/:id` | Delete content node |
 | PATCH | `/api/nodes/:id/move` | Move node to new parent |
+| POST | `/api/nodes/:id/replace-version` | Replace node content with new version |
 
 **Update body:**
 ```json
@@ -85,6 +97,9 @@ The `/folders` endpoint builds human-readable paths by traversing parent nodes:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/content/:id` | Get raw content atom |
+| PATCH | `/api/content/:id` | Update editable content payload |
+| GET | `/api/content/:id/history` | Get content version history |
+| GET | `/api/content/:id/latest` | Get latest content version |
 
 **Response:**
 ```json
@@ -155,6 +170,7 @@ The `/folders` endpoint builds human-readable paths by traversing parent nodes:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/trees/:treeId/documents` | Ingest document into folder |
+| POST | `/api/trees/:treeId/editable-documents` | Create editable document (user note) |
 | POST | `/api/trees/:treeId/fragments` | Create fragment under document |
 
 **Document request:**
@@ -228,7 +244,51 @@ Connection: keep-alive
 X-Accel-Buffering: no
 ```
 
-### 9. Audit & Maintenance
+### 9. Conversation Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/conversations` | List all conversation sessions |
+| POST | `/api/conversations` | Create session (body: `{ linkedContext: { treeIds } }`) |
+| GET | `/api/conversations/:sessionId/turns` | Get turns in a session |
+| PATCH | `/api/conversations/:sessionId` | Update session (title) |
+| DELETE | `/api/conversations/:sessionId` | Delete a session |
+| POST | `/api/chat/stream` | Streaming conversational RAG (SSE) |
+
+**Chat stream request:**
+```json
+{
+  "sessionId": "session-uuid",
+  "question": "What is...",
+  "treeIds": ["tree-1", "tree-2"]
+}
+```
+
+**Chat SSE Events:**
+```
+event: source
+data: {"index":1,"title":"Source Title","path":"Root > Folder","nodeId":"..."}
+
+event: answer_chunk
+data: {"text":"Answer text chunk..."}
+
+event: done
+data: {"answer":"Full answer","references":[...]}
+```
+
+### 10. Knowledge Base Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/knowledge-bases` | List all loaded KBs |
+| GET | `/api/knowledge-bases/discover` | Discover all KBs (loaded and unloaded) |
+| GET | `/api/knowledge-bases/:id` | Get KB details with associated trees |
+| POST | `/api/knowledge-bases` | Create new KB |
+| POST | `/api/knowledge-bases/:id/trees` | Add tree to KB |
+| POST | `/api/knowledge-bases/export` | Export trees to new portable KB |
+| POST | `/api/knowledge-bases/load` | Load existing KB from path |
+
+### 11. Audit & Maintenance
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

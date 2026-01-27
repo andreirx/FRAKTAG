@@ -303,7 +303,16 @@ Responsible for structural health.
 ### B. The API (`packages/api`)
 A lightweight Express bridge.
 *   Exposes endpoints to `listTrees`, `getStructure`, `getContent`, and `ask`.
-*   **Streaming endpoint:** `GET /api/ask/stream` for real-time SSE streaming of sources and answers.
+*   **Streaming endpoints:**
+    - `POST /api/ask/stream` — Single-tree RAG query with SSE streaming.
+    - `POST /api/chat/stream` — Multi-tree conversational chat with SSE streaming.
+*   **Conversation endpoints:**
+    - `GET /api/conversations` — List all conversation sessions.
+    - `POST /api/conversations` — Create a new session with linked context.
+    - `GET /api/conversations/:id/turns` — Get conversation turns.
+    - `PATCH /api/conversations/:id` — Update session title.
+    - `DELETE /api/conversations/:id` — Delete a conversation.
+*   **Tree filtering:** `GET /api/trees?type=knowledge` to exclude conversation trees.
 *   Node operations: update title/gist, move nodes between folders.
 *   Folder operations: create subfolders, list leaf folders with full paths.
 *   Audit log endpoint for persisting ingestion decisions.
@@ -313,23 +322,29 @@ A lightweight Express bridge.
 A "God's Eye View" of the knowledge base with human-supervised ingestion.
 
 *   **Tree Visualizer:** A recursive sidebar that renders the entire hierarchy with auto-expansion to content level.
-*   **Content Inspector:** Edit titles and gists with auto-save. View and edit content based on edit mode.
+    - **KB selector:** Switch between Internal and external knowledge bases.
+    - **Tree selector:** Pick a tree within the active KB, with organizing principle editor.
+    - **Show conversation trees:** Debug toggle to inspect conversation tree structures alongside knowledge trees.
+*   **Content Inspector:** Edit titles and gists with auto-save. View and edit content based on edit mode. Markdown rendering for all content.
 *   **Inline Content Editing:**
-    - **Editable content:** Direct editing with auto-save (1s debounce)
-    - **Read-only content:** View with "Replace Version" option for creating new versions
-    - **Edit mode badges:** Visual indicators showing EDITABLE (green) or READ-ONLY (gray)
-    - **Create Note:** Button in leaf folders to create editable documents
-    - **Generate Summary:** AI-powered gist generation on demand or auto-trigger on navigate away
+    - **Editable content:** Direct editing with auto-save (1s debounce), Edit/Done toggle between rendered markdown and raw editor.
+    - **Read-only content:** Rendered markdown view with "Replace Version" option for creating new versions.
+    - **Edit mode badges:** Visual indicators showing EDITABLE (green) or READ-ONLY (gray).
+    - **Create Note:** Button in leaf folders to create editable documents.
+    - **Generate Summary:** AI-powered gist generation on demand or auto-trigger on navigate away.
+*   **Chat Dialog (`ChatDialog.tsx`):** Conversational interface for querying across knowledge bases:
+    - **Multi-tree source selection:** Choose which knowledge trees to search across.
+    - **Conversation management:** Persistent sessions with full history, create/delete conversations.
+    - **Streaming responses:** Sources appear as discovered, answers stream in real-time via SSE.
+    - **One tree per conversation:** Each conversation is its own tree (`conv-{uuid}`), stored in Internal KB with `linkedContext` pointing to referenced trees.
+    - **Source references:** Click sources to view full content in a popup with gist tooltips on hover.
+    - **Markdown rendering:** AI answers rendered as formatted markdown.
 *   **Ingestion Dialog (`IngestionDialog.tsx`):** Multi-step wizard with:
-    - Document minimap showing split positions visually
-    - Programmatic splitting (H1/H2/H3, HR, numbered sections, custom regex)
-    - AI-assisted splitting with auto-recovery for incomplete coverage
-    - Human review with merge, edit, and nested splitting
-    - Folder creation during placement
-*   **Query Dialog (`QueryDialog.tsx`):** Knowledge base querying with:
-    - **Streaming responses:** Sources appear as they're discovered, answers stream in real-time
-    - **Retrieve mode:** Vector + graph search returning relevant fragments
-    - **Ask mode:** Full RAG synthesis with live streaming via Server-Sent Events
+    - Document minimap showing split positions visually.
+    - Programmatic splitting (H1/H2/H3, HR, numbered sections, custom regex).
+    - AI-assisted splitting with auto-recovery for incomplete coverage.
+    - Human review with merge, edit, and nested splitting.
+    - Folder creation during placement.
 *   **Move Dialog (`MoveDialog.tsx`):** Relocate nodes with full path visibility and inline folder creation.
 *   **KB Manager Dialog:** Create and load portable knowledge bases, add trees to KBs.
 *   **Folder Management:** Create subfolders (enforcing rules), move content and folders.
@@ -343,27 +358,23 @@ A "God's Eye View" of the knowledge base with human-supervised ingestion.
 
 ## 5. Knowledge Base Portability
 
-FRAKTAG is designed around **self-contained, portable knowledge bases**. Each KB is a complete package that can be moved, shared, backed up, or versioned independently.
+FRAKTAG is built around **self-contained, portable knowledge bases**. Each KB is a complete, self-describing package that can be moved, shared, backed up, or versioned independently.
 
-### Current State (Manual Portability)
+### Internal Knowledge Base
 
-Currently, trees are defined in `config.json` and data is stored in shared folders:
+Every FRAKTAG instance has an **Internal KB** that stores trees defined directly in `config.json`, plus all conversation trees. This is the default storage for legacy trees and conversations:
 
 ```
 packages/engine/data/
-├── config.json          # Trees defined here + LLM settings
-├── content/             # All content (shared across trees)
-├── indexes/             # All vector indexes
-└── trees/               # All tree structures
+├── config.json          # LLM settings + KB references
+├── content/             # Content atoms for internal trees
+├── indexes/             # Vector indexes for internal trees
+└── trees/               # Internal tree structures + conversation trees
 ```
 
-**To move a knowledge base manually:**
-1. Copy the relevant tree file from `trees/`
-2. Copy referenced content files from `content/`
-3. Copy the index file from `indexes/`
-4. Update `config.json` in the target location with tree definition
+### External Knowledge Bases (Portable)
 
-### Planned Architecture (Self-Contained KBs)
+External KBs are fully self-contained directories. They are **auto-discovered and auto-loaded** on engine startup — any KB found in the `knowledge-bases/` directory is loaded automatically without manual configuration.
 
 ### Knowledge Base Structure
 
@@ -419,7 +430,7 @@ Each knowledge base has its own identity and organizing principles:
 
 ### Main Configuration (`config.json`)
 
-The main config contains only adapter settings and KB paths:
+The main config contains adapter settings. Knowledge bases in the `knowledge-bases/` directory are **auto-discovered and auto-loaded** on startup — no explicit KB paths required:
 
 ```json
 {
@@ -435,11 +446,15 @@ The main config contains only adapter settings and KB paths:
   "ingestion": {
     "splitThreshold": 2000,
     "maxDepth": 8
-  },
+  }
+}
+```
+
+Optionally, you can explicitly list KB paths (e.g., for KBs on external drives):
+```json
+{
   "knowledgeBases": [
-    "./knowledge-bases/arda",
-    "./knowledge-bases/notes",
-    "/Volumes/External/shared-kb"
+    { "path": "/Volumes/External/shared-kb", "enabled": true }
   ]
 }
 ```
@@ -474,10 +489,11 @@ fkt kb export arda ./arda-backup
 
 ### UI Capabilities
 
-- **KB Selector:** Switch between knowledge bases
-- **Create KB:** Initialize new KB with name and organizing principle
-- **Create Tree:** Add alternative tree organization to existing KB
-- **Import KB:** Add external KB to the system
+- **KB Selector:** Switch between Internal and external knowledge bases.
+- **Auto-Load:** All detected KBs are loaded and available on startup.
+- **Create KB:** Initialize new KB with name, organizing principle, and seed folders.
+- **Create Tree:** Add alternative tree organization to existing KB.
+- **Export to KB:** Export internal trees to a new portable KB.
 
 ### Data Files
 
@@ -508,22 +524,6 @@ Within each KB:
 5.  **`indexes/*.vectors.json`**: The Semantic Index.
     *   JSON-based vector store for similarity search.
     *   Per-tree indexes for tree-specific retrieval.
-
-### Migration Path
-
-To migrate from the current structure to portable KBs:
-
-```bash
-# Future command to migrate existing tree to portable KB
-fkt kb migrate notes ./knowledge-bases/notes
-
-# This will:
-# 1. Create kb.json with tree config extracted from config.json
-# 2. Copy referenced content to kb/content/
-# 3. Move tree file to kb/trees/
-# 4. Move index file to kb/indexes/
-# 5. Update config.json to reference the new KB path
-```
 
 ---
 
@@ -686,35 +686,40 @@ The result: documentation that evolves with your codebase, maintained by the sam
 ## 7. Current Status
 
 *   **Ingestion:** Human-supervised with full audit trail. AI proposes, humans approve.
-*   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach.
-*   **Content Editing:** Inline editing for user notes, version replacement for ingested content.
+*   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach. Parallel multi-tree search.
+*   **Conversations:** Persistent chat sessions with multi-tree search scope. One tree per conversation, stored in Internal KB.
+*   **Content Editing:** Inline editing for user notes, version replacement for ingested content. Markdown rendering throughout.
+*   **Knowledge Bases:** Fully portable, self-contained KBs. Auto-discovered and auto-loaded on startup.
 *   **Maintenance:** Manual folder/content management with rule enforcement.
-*   **UI:** Functional with auto-save, resizable panels, ingestion wizard, chat with KB, and KB management.
+*   **UI:** Functional with auto-save, resizable panels, ingestion wizard, conversation management, and KB management.
 
-### 7.1. Added Parallel Multi-Tree Search (Fraktag.chat)
+### 7.1. Parallel Multi-Tree Search
 
-The serial for (const treeId of searchScope) loop is now Promise.all(searchScope.map(...)). All
-tree retrievals fire concurrently. The semaphore inside the adapter gates how many actually hit
-the LLM at once. Source indices are assigned sequentially after all results arrive, so numbering
-stays deterministic.
+Multi-tree retrieval in `Fraktag.chat` runs all tree searches concurrently via `Promise.all`. An async `Semaphore` inside each LLM adapter gates how many requests actually hit the backend at once, preventing VRAM overflow (Ollama) or rate-limit hits (OpenAI).
 
-#### 7.1.1. Config
+**Defaults:**
+- **OpenAI:** concurrency = 10 (cloud handles it)
+- **Ollama:** concurrency = 1 (serial, safe for VRAM)
 
-LLMConfig.concurrency is optional. Users can tune it in their config.json:
+**Configuration:**
+
+```json
 {
-"llm": {
-"adapter": "ollama",
-"model": "llama3",
-"concurrency": 1
+  "llm": {
+    "adapter": "ollama",
+    "model": "llama3",
+    "concurrency": 2
+  }
 }
-}
+```
 
-#### 7.1.2. Ollama Instructions for Users
+**Ollama Parallel Setup:**
 
-To enable parallelism on Ollama, the user must:
-1. Set OLLAMA_NUM_PARALLEL=N environment variable when starting the Ollama server
-2. Match "concurrency": N in their FRAKTAG config
-3. Have enough VRAM to hold N concurrent contexts (each context = model size / N)
+To run parallel inference on Ollama, you must configure both sides:
+
+1. Set `OLLAMA_NUM_PARALLEL=N` environment variable when starting the Ollama server.
+2. Match `"concurrency": N` in your FRAKTAG `config.json`.
+3. Ensure you have enough VRAM to hold N concurrent contexts. Each parallel slot divides the available context window memory.
 
 ---
 
@@ -730,7 +735,7 @@ To enable parallelism on Ollama, the user must:
 
 ## 9. Next Steps
 
-*   **Question and Answer Caching:** Some questions have been asked before, why not answer from a cache. May use conversation history as cache.
-*   **Cloud Deployment:** AWS CDK infrastructure done, still to actually deploy.
-*   **Batch Ingestion:** Process multiple files with consistent rules. BETA
+*   **Q&A Caching:** Leverage conversation history as a cache — if a similar question was asked before, surface the prior answer before hitting the LLM.
+*   **Cloud Deployment:** AWS CDK infrastructure defined, still to actually deploy.
+*   **Batch Ingestion:** Process multiple files with consistent rules (BETA).
 *   **Version History UI:** View and navigate content version history in the UI (backend complete).

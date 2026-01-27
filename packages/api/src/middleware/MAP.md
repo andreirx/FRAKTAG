@@ -7,6 +7,7 @@ Request middleware for authentication and multi-tenancy.
 ```
 authMiddleware.ts         # JWT validation / mock user injection
 tenantResolver.ts         # Determines storage path per user
+quotaMiddleware.ts        # Usage quota checking (demo limits)
 index.ts                  # Middleware chain export
 ```
 
