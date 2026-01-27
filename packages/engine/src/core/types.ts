@@ -60,9 +60,12 @@ export interface EmbeddingConfig {
   apiKey?: string;
 }
 
+export type TreeType = 'knowledge' | 'conversation';
+
 export interface TreeConfig {
   id: string;
   name: string;
+  type?: TreeType;  // 'knowledge' (default) or 'conversation'
   organizingPrinciple: string;
   autoPlace: boolean;
   placementStrategy?: string;
@@ -73,6 +76,10 @@ export interface TreeConfig {
     requiredContext?: string[];
   };
   kbId?: string;  // The KB that owns this tree (undefined = internal/legacy)
+  linkedContext?: {       // For conversation trees: what they reference
+    kbId?: string;        // The KB being discussed
+    treeIds: string[];    // Specific trees being referenced
+  };
 }
 
 export interface SeedFolder {
@@ -206,11 +213,16 @@ export type TreeNode = FolderNode | DocumentNode | FragmentNode;
 export interface Tree {
   id: string;
   name: string;
+  type: TreeType;   // 'knowledge' or 'conversation'
   organizingPrinciple: string;
   rootNodeId: string;
   createdAt: string;
   updatedAt: string;
   kbId?: string;  // The KB that owns this tree (undefined = internal/legacy)
+  linkedContext?: {       // For conversation trees: what they reference
+    kbId?: string;
+    treeIds: string[];
+  };
 }
 
 // ============ INGESTION & PROPOSALS (Human-Assisted) ============

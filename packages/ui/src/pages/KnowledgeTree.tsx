@@ -3,11 +3,10 @@ import axios from 'axios';
 import { TreeItem, TreeNode } from "@/components/fraktag/TreeItem";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Sparkles, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, MessageSquare } from "lucide-react";
+import { Loader2, Search, RefreshCw, Database, FileText, Folder, Puzzle, ChevronDown, X, Plus, FolderPlus, Check, Move, Library, History, Lock, Unlock, FilePlus, Wand2, Trash2, MessageSquare } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { IngestionDialog } from "@/components/fraktag/IngestionDialog";
-import { QueryDialog } from "@/components/fraktag/QueryDialog";
 import { ChatDialog } from "@/components/fraktag/ChatDialog";
 import { MoveDialog } from "@/components/fraktag/MoveDialog";
 import { KBManagerDialog } from "@/components/fraktag/KBManagerDialog";
@@ -58,8 +57,7 @@ export default function KnowledgeTree() {
     const [moveNodeId, setMoveNodeId] = useState<string>("");
     const [moveNodeType, setMoveNodeType] = useState<string>("");
 
-    // Query Dialog State
-    const [queryDialogOpen, setQueryDialogOpen] = useState(false);
+    // Chat Dialog State
     const [chatDialogOpen, setChatDialogOpen] = useState(false);
 
     // KB Manager Dialog State
@@ -84,6 +82,11 @@ export default function KnowledgeTree() {
 
     // Delete Node Dialog
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+    // Tree Organizing Principle
+    const [treeOrganizingPrinciple, setTreeOrganizingPrinciple] = useState("");
+    const [organizingPrincipleSaveStatus, setOrganizingPrincipleSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+    const organizingPrincipleSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     // Sidebar Resize State
     const [sidebarWidth, setSidebarWidth] = useState(560);
@@ -114,8 +117,8 @@ export default function KnowledgeTree() {
                 const kbRes = await axios.get('/api/knowledge-bases');
                 setKnowledgeBases(kbRes.data);
 
-                // Fetch all trees
-                const treeRes = await axios.get('/api/trees');
+                // Fetch knowledge trees only (exclude conversation trees)
+                const treeRes = await axios.get('/api/trees?type=knowledge');
                 setTrees(treeRes.data);
                 if (treeRes.data.length > 0) setActiveTreeId(treeRes.data[0].id);
             } catch (e) {
@@ -185,6 +188,40 @@ export default function KnowledgeTree() {
     useEffect(() => {
         if (activeTreeId) loadTreeStructure(activeTreeId);
     }, [activeTreeId]);
+
+    // Load organizing principle when activeTreeId changes
+    useEffect(() => {
+        const currentTree = trees.find(t => t.id === activeTreeId);
+        setTreeOrganizingPrinciple(currentTree?.organizingPrinciple || "");
+        setOrganizingPrincipleSaveStatus("idle");
+    }, [activeTreeId, trees]);
+
+    // Auto-save organizing principle
+    const handleOrganizingPrincipleChange = (value: string) => {
+        setTreeOrganizingPrinciple(value);
+        setOrganizingPrincipleSaveStatus("saving");
+
+        if (organizingPrincipleSaveTimeoutRef.current) {
+            clearTimeout(organizingPrincipleSaveTimeoutRef.current);
+        }
+
+        organizingPrincipleSaveTimeoutRef.current = setTimeout(async () => {
+            try {
+                await axios.patch(`/api/trees/${activeTreeId}`, {
+                    organizingPrinciple: value
+                });
+                setOrganizingPrincipleSaveStatus("saved");
+                // Update trees array with new value
+                setTrees(prev => prev.map(t =>
+                    t.id === activeTreeId ? { ...t, organizingPrinciple: value } : t
+                ));
+                setTimeout(() => setOrganizingPrincipleSaveStatus("idle"), 1500);
+            } catch (e) {
+                console.error("Failed to save organizing principle", e);
+                setOrganizingPrincipleSaveStatus("error");
+            }
+        }, 600);
+    };
 
     // Auto-generate gist when navigating away from a node with content but no gist
     useEffect(() => {
@@ -482,127 +519,151 @@ export default function KnowledgeTree() {
                 className="flex-shrink-0 border-r bg-white flex flex-col h-full shadow-sm z-10 relative"
                 style={{ width: sidebarWidth }}
             >
-                {/* Header */}
-                <div className="p-4 border-b space-y-3 flex-shrink-0 bg-white z-20">
-                    {/* KB Selector - Always show with manager button */}
-                    <div className="flex items-center gap-1">
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" className="flex-1 justify-between text-xs h-8 px-2 bg-purple-50/50 hover:bg-purple-100/50 border border-purple-100">
-                                    <div className="flex items-center gap-2 truncate">
-                                        <Library className="w-3 h-3 text-purple-500 shrink-0" />
-                                        <span className="truncate font-medium text-purple-700">{activeKbName}</span>
-                                    </div>
-                                    <ChevronDown className="w-3 h-3 opacity-50 shrink-0" />
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent className="w-[280px]" align="start">
-                                <DropdownMenuLabel className="text-xs text-zinc-400">Knowledge Bases</DropdownMenuLabel>
-                                {knowledgeBases.length > 0 ? (
-                                    <>
-                                        <DropdownMenuItem onClick={() => setActiveKbId(null)}>
-                                            <Library className="w-4 h-4 mr-2 text-zinc-400" />
-                                            <span className={!activeKbId ? "font-bold" : ""}>Internal Knowledge Base</span>
-                                        </DropdownMenuItem>
-                                        <DropdownMenuSeparator />
-                                        {knowledgeBases.map(kb => (
-                                            <DropdownMenuItem key={kb.id} onClick={() => setActiveKbId(kb.id)}>
-                                                <Library className="w-4 h-4 mr-2 text-purple-500" />
-                                                <div className="flex-1 min-w-0">
-                                                    <div className={activeKbId === kb.id ? "font-bold" : "font-medium"}>{kb.name}</div>
-                                                    <div className="text-[10px] text-zinc-400 truncate">{kb.organizingPrinciple.slice(0, 50)}...</div>
-                                                </div>
-                                            </DropdownMenuItem>
-                                        ))}
-                                    </>
-                                ) : (
-                                    <div className="px-2 py-3 text-xs text-zinc-400 text-center">
-                                        No knowledge bases loaded.<br/>
-                                        Click + to create one.
-                                    </div>
-                                )}
-                            </DropdownMenuContent>
-                        </DropdownMenu>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0 border border-purple-100 bg-purple-50/50 hover:bg-purple-100"
-                            onClick={() => setKbManagerOpen(true)}
-                            title="Manage Knowledge Bases"
-                        >
-                            <Plus className="w-3 h-3 text-purple-600" />
-                        </Button>
-                    </div>
-
-                    {/* Tree Selector */}
-                    <div className="flex items-center gap-2">
-                        <div className="flex-1 min-w-0">
+                {/* Header - Two Cards */}
+                <div className="p-3 border-b space-y-3 flex-shrink-0 bg-zinc-50/50 z-20">
+                    {/* Card 1: Knowledge Base Management */}
+                    <div className="bg-white rounded-lg border border-zinc-200 p-3 shadow-sm">
+                        <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">Knowledge Base</div>
+                        <div className="flex items-center gap-1">
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                    <Button variant="outline" className="w-full justify-between font-bold text-sm h-10 px-3">
+                                    <Button variant="ghost" className="flex-1 justify-between text-xs h-8 px-2 bg-purple-50/50 hover:bg-purple-100/50 border border-purple-100">
                                         <div className="flex items-center gap-2 truncate">
-                                            <Database className="w-4 h-4 text-purple-600 shrink-0" />
-                                            <span className="truncate">{activeTreeName}</span>
+                                            <Library className="w-3 h-3 text-purple-500 shrink-0" />
+                                            <span className="truncate font-medium text-purple-700">{activeKbName}</span>
                                         </div>
                                         <ChevronDown className="w-3 h-3 opacity-50 shrink-0" />
                                     </Button>
                                 </DropdownMenuTrigger>
-                                <DropdownMenuContent className="w-[250px]" align="start">
-                                    {filteredTrees.map(t => (
-                                        <DropdownMenuItem key={t.id} onClick={() => setActiveTreeId(t.id)}>
-                                            <span className="font-medium">{t.name}</span>
-                                        </DropdownMenuItem>
-                                    ))}
+                                <DropdownMenuContent className="w-[280px]" align="start">
+                                    <DropdownMenuLabel className="text-xs text-zinc-400">Knowledge Bases</DropdownMenuLabel>
+                                    {knowledgeBases.length > 0 ? (
+                                        <>
+                                            <DropdownMenuItem onClick={() => setActiveKbId(null)}>
+                                                <Library className="w-4 h-4 mr-2 text-zinc-400" />
+                                                <span className={!activeKbId ? "font-bold" : ""}>Internal Knowledge Base</span>
+                                            </DropdownMenuItem>
+                                            <DropdownMenuSeparator />
+                                            {knowledgeBases.map(kb => (
+                                                <DropdownMenuItem key={kb.id} onClick={() => setActiveKbId(kb.id)}>
+                                                    <Library className="w-4 h-4 mr-2 text-purple-500" />
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className={activeKbId === kb.id ? "font-bold" : "font-medium"}>{kb.name}</div>
+                                                        <div className="text-[10px] text-zinc-400 truncate">{kb.organizingPrinciple.slice(0, 50)}...</div>
+                                                    </div>
+                                                </DropdownMenuItem>
+                                            ))}
+                                        </>
+                                    ) : (
+                                        <div className="px-2 py-3 text-xs text-zinc-400 text-center">
+                                            No knowledge bases loaded.<br/>
+                                            Click + to create one.
+                                        </div>
+                                    )}
                                 </DropdownMenuContent>
                             </DropdownMenu>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 shrink-0 border border-purple-100 bg-purple-50/50 hover:bg-purple-100"
+                                onClick={() => setKbManagerOpen(true)}
+                                title="Manage Knowledge Bases"
+                            >
+                                <Plus className="w-3 h-3 text-purple-600" />
+                            </Button>
                         </div>
-
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => loadTreeStructure(activeTreeId)}
-                            title="Reload Tree"
-                            className="shrink-0"
-                        >
-                            <RefreshCw className="h-4 w-4"/>
-                        </Button>
-
-                        <Button
-                            variant="outline"
-                            size="icon"
-                            onClick={() => setQueryDialogOpen(true)}
-                            title="Query Knowledge Base"
-                            className="shrink-0"
-                        >
-                            <Sparkles className="h-4 w-4 text-purple-600"/>
-                        </Button>
-
-                        <Button
-                            variant="outline"
-                            size="icon"
-                            onClick={() => setChatDialogOpen(true)}
-                            title="Chat with Knowledge Base"
-                            className="shrink-0"
-                        >
-                            <MessageSquare className="h-4 w-4 text-emerald-600"/>
-                        </Button>
-
-                        <Button
-                            variant="default"
-                            size="icon"
-                            onClick={() => setIngestionOpen(true)}
-                            title="Ingest Document"
-                            className="shrink-0 bg-purple-600 hover:bg-purple-700"
-                        >
-                            <Plus className="h-4 w-4"/>
-                        </Button>
                     </div>
 
+                    {/* Card 2: Tree Management */}
+                    <div className="bg-white rounded-lg border border-zinc-200 p-3 shadow-sm space-y-3">
+                        <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Tree</div>
+
+                        {/* Tree Selector Row */}
+                        <div className="flex items-center gap-2">
+                            <div className="flex-1 min-w-0">
+                                <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                        <Button variant="outline" className="w-full justify-between font-bold text-sm h-9 px-3">
+                                            <div className="flex items-center gap-2 truncate">
+                                                <Database className="w-4 h-4 text-purple-600 shrink-0" />
+                                                <span className="truncate">{activeTreeName}</span>
+                                            </div>
+                                            <ChevronDown className="w-3 h-3 opacity-50 shrink-0" />
+                                        </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent className="w-[250px]" align="start">
+                                        {filteredTrees.map(t => (
+                                            <DropdownMenuItem key={t.id} onClick={() => setActiveTreeId(t.id)}>
+                                                <span className="font-medium">{t.name}</span>
+                                            </DropdownMenuItem>
+                                        ))}
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                            </div>
+
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => loadTreeStructure(activeTreeId)}
+                                title="Reload Tree"
+                                className="shrink-0 h-9 w-9"
+                            >
+                                <RefreshCw className="h-4 w-4"/>
+                            </Button>
+
+                            <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => setChatDialogOpen(true)}
+                                title="Chat with Knowledge Base"
+                                className="shrink-0 h-9 w-9"
+                            >
+                                <MessageSquare className="h-4 w-4 text-emerald-600"/>
+                            </Button>
+
+                            <Button
+                                variant="default"
+                                size="icon"
+                                onClick={() => setIngestionOpen(true)}
+                                title="Ingest Document"
+                                className="shrink-0 h-9 w-9 bg-purple-600 hover:bg-purple-700"
+                            >
+                                <Plus className="h-4 w-4"/>
+                            </Button>
+                        </div>
+
+                        {/* Organizing Principle */}
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                                <label className="text-[10px] font-medium text-zinc-500">Organizing Principle</label>
+                                {organizingPrincipleSaveStatus === "saving" && (
+                                    <span className="text-[10px] text-zinc-400">Saving...</span>
+                                )}
+                                {organizingPrincipleSaveStatus === "saved" && (
+                                    <span className="text-[10px] text-emerald-600 flex items-center gap-1">
+                                        <Check className="w-3 h-3" /> Saved
+                                    </span>
+                                )}
+                                {organizingPrincipleSaveStatus === "error" && (
+                                    <span className="text-[10px] text-red-500">Error saving</span>
+                                )}
+                            </div>
+                            <textarea
+                                value={treeOrganizingPrinciple}
+                                onChange={e => handleOrganizingPrincipleChange(e.target.value)}
+                                placeholder="Describe how content should be organized in this tree..."
+                                className="w-full text-xs p-2 border border-zinc-200 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300"
+                                rows={2}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Search */}
                     <div className="relative">
                         <Search className="absolute left-2 top-2.5 h-4 w-4 text-zinc-400" />
                         <Input
                             placeholder="Filter nodes..."
-                            className="pl-8 h-9 text-sm"
+                            className="pl-8 h-9 text-sm bg-white"
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
                         />
@@ -927,20 +988,10 @@ export default function KnowledgeTree() {
                 onComplete={() => loadTreeStructure(activeTreeId)}
             />
 
-            {/* Query Dialog */}
-            <QueryDialog
-                open={queryDialogOpen}
-                onOpenChange={setQueryDialogOpen}
-                treeId={activeTreeId}
-                treeName={activeTreeName}
-            />
-
             {/* Chat Dialog */}
             <ChatDialog
                 open={chatDialogOpen}
                 onOpenChange={setChatDialogOpen}
-                kbId={activeKbId || 'internal'}
-                kbName={activeKbName}
                 trees={trees}
                 defaultTreeId={activeTreeId}
             />

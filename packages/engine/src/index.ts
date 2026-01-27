@@ -218,7 +218,7 @@ export class Fraktag {
    * - Internal/legacy trees (from main engine storage)
    * - Trees from each loaded knowledge base (from KB storage)
    */
-  async listTrees(): Promise<Tree[]> {
+  async listTrees(type?: 'knowledge' | 'conversation'): Promise<Tree[]> {
     // Get internal/legacy trees from main storage
     const internalTrees = await this.treeStore.listTrees();
 
@@ -231,7 +231,17 @@ export class Fraktag {
       }
     }
 
-    return [...internalTrees, ...kbTrees];
+    const allTrees = [...internalTrees, ...kbTrees];
+
+    // Filter by type if specified
+    if (type) {
+      return allTrees.filter(t => {
+        const treeType = t.type || 'knowledge';
+        return treeType === type;
+      });
+    }
+
+    return allTrees;
   }
 
   /**
@@ -272,6 +282,27 @@ export class Fraktag {
 
     // Fall back to main storage
     return await this.treeStore.getTree(treeId);
+  }
+
+  /**
+   * Update tree config (name, organizing principle). Routes to correct storage.
+   */
+  async updateTree(treeId: string, updates: { name?: string; organizingPrinciple?: string }): Promise<Tree> {
+    // Try to find in KB storages first
+    if (this.kbManager) {
+      for (const kb of this.kbManager.list()) {
+        if (treeId.startsWith(kb.id)) {
+          try {
+            return await kb.treeStore.updateTreeConfig(treeId, updates);
+          } catch {
+            // Not found in this KB, continue
+          }
+        }
+      }
+    }
+
+    // Fall back to main storage
+    return await this.treeStore.updateTreeConfig(treeId, updates);
   }
 
   /**
@@ -1638,41 +1669,20 @@ export class Fraktag {
   // ============ CONVERSATION MANAGEMENT ============
 
   /**
-   * Get or create a conversation session for today
+   * Create a new conversation session (creates a new tree)
    */
-  async getOrCreateConversationSession(kbId: string): Promise<ConversationSession> {
-    const folder = await this.conversationManager.getOrCreateTodaySession(kbId);
-    // Use routing to get children from correct tree store
-    const treeStore = this.getTreeStoreForTree(folder.treeId);
-    const turns = await treeStore.getChildren(folder.id);
-    return {
-      id: folder.id,
-      treeId: folder.treeId,
-      title: folder.title,
-      startedAt: folder.createdAt,
-      turnCount: turns.length
-    };
+  async createConversationSession(
+    title: string,
+    linkedContext: { kbId?: string; treeIds: string[] }
+  ): Promise<ConversationSession> {
+    return this.conversationManager.createSession(title, linkedContext);
   }
 
   /**
-   * Create a new conversation session
+   * List all conversation sessions
    */
-  async createConversationSession(kbId: string, title?: string): Promise<ConversationSession> {
-    const folder = await this.conversationManager.createSession(kbId, title);
-    return {
-      id: folder.id,
-      treeId: folder.treeId,
-      title: folder.title,
-      startedAt: folder.createdAt,
-      turnCount: 0
-    };
-  }
-
-  /**
-   * List all conversation sessions for a knowledge base
-   */
-  async listConversationSessions(kbId: string): Promise<ConversationSession[]> {
-    return this.conversationManager.listSessions(kbId);
+  async listConversationSessions(): Promise<ConversationSession[]> {
+    return this.conversationManager.listSessions();
   }
 
   /**
@@ -1683,7 +1693,7 @@ export class Fraktag {
   }
 
   /**
-   * Delete a conversation session
+   * Delete a conversation session (deletes the tree)
    */
   async deleteConversationSession(sessionId: string): Promise<void> {
     return this.conversationManager.deleteSession(sessionId);
@@ -1695,36 +1705,34 @@ export class Fraktag {
   async updateConversationSession(
     sessionId: string,
     updates: { title?: string }
-  ): Promise<ConversationSession> {
+  ): Promise<void> {
     return this.conversationManager.updateSession(sessionId, updates);
   }
 
   /**
-   * Chat with memory - asks a question, logs the conversation, returns the answer
-   * This combines retrieval, generation, and conversation logging
-   * @param sourceTreeIds - array of tree IDs to search across
+   * Chat with memory - asks a question, logs the conversation, returns the answer.
+   * sessionId is the conversation tree ID (conv-{uuid}).
+   * sourceTreeIds are the reference trees to search. The conversation tree itself
+   * is always included for short-term memory.
    */
   async chat(
-    kbId: string,
     sessionId: string,
     question: string,
-    sourceTreeIds: string | string[],
+    sourceTreeIds: string[],
     onEvent?: (event: { type: 'source' | 'answer_chunk' | 'done' | 'error'; data: any }) => void
   ): Promise<{ answer: string; references: ConversationReference[] }> {
-    // Normalize to array
-    const treeIds = Array.isArray(sourceTreeIds) ? sourceTreeIds : [sourceTreeIds];
+    // Build search scope: conversation tree + reference trees
+    const searchScope = [sessionId, ...sourceTreeIds];
 
-    // References for storage (just nodeIds)
     const references: ConversationReference[] = [];
-    // Full source data for streaming events
     const sourceData: { nodeId: string; title: string }[] = [];
     const contextBlocks: string[] = [];
     let sourceIndex = 0;
 
-    console.log(`💬 Chat: "${question.slice(0, 50)}..." across ${treeIds.length} trees`);
+    console.log(`💬 Chat in ${sessionId}: "${question.slice(0, 50)}..." across ${searchScope.length} trees`);
 
-    // 1. Retrieve relevant content from all source trees
-    for (const treeId of treeIds) {
+    // 1. Retrieve relevant content from all trees in scope
+    for (const treeId of searchScope) {
       try {
         const retrieval = await this.navigator.retrieve({
           treeId,
@@ -1735,17 +1743,13 @@ export class Fraktag {
 
         for (const node of retrieval.nodes) {
           sourceIndex++;
-          // Use routing to get node from correct storage
           const treeNode = await this.getNode(node.nodeId);
           const title = treeNode?.title || 'Untitled';
           const gist = treeNode?.gist || '';
 
-          // Store just nodeId for persistence
           references.push({ nodeId: node.nodeId });
-          // Keep title for return value
           sourceData.push({ nodeId: node.nodeId, title });
 
-          // Emit source event with fullContent for popup display
           if (onEvent) {
             onEvent({
               type: 'source',
@@ -1780,7 +1784,7 @@ export class Fraktag {
         onEvent({ type: 'answer_chunk', data: { text: noContextAnswer } });
         onEvent({ type: 'done', data: { references: [] } });
       }
-      await this.conversationManager.logTurn(kbId, sessionId, {
+      await this.conversationManager.logTurn(sessionId, {
         question,
         answer: noContextAnswer,
         references: []
@@ -1808,13 +1812,11 @@ Answer:`;
       console.log(`🤖 Generating answer with LLM...`);
 
       if (onEvent && this.smartLlm.stream) {
-        // Streaming mode
         await this.smartLlm.stream(prompt, {}, (chunk: string) => {
           answer += chunk;
           onEvent({ type: 'answer_chunk', data: { text: chunk } });
         });
       } else {
-        // Non-streaming mode - still emit the answer as chunks for the client
         answer = await this.smartLlm.complete(prompt, {});
         if (onEvent) {
           onEvent({ type: 'answer_chunk', data: { text: answer } });
@@ -1836,20 +1838,13 @@ Answer:`;
     }
 
     // 3. Log the conversation turn
-    await this.conversationManager.logTurn(kbId, sessionId, {
+    await this.conversationManager.logTurn(sessionId, {
       question,
       answer,
       references
     });
 
     return { answer, references };
-  }
-
-  /**
-   * Get the conversation tree ID for a knowledge base
-   */
-  getConversationTreeId(kbId: string): string {
-    return this.conversationManager.getConversationTreeId(kbId);
   }
 
   private createLLMAdapter(config: FraktagConfig['llm']): ILLMAdapter {

@@ -180,11 +180,13 @@ app.post('/api/knowledge-bases/load', async (req, res) => {
 
 // ============ CONVERSATION ENDPOINTS ============
 
-// List conversation sessions for a knowledge base
-app.get('/api/knowledge-bases/:kbId/conversations', async (req, res) => {
+// ============ CONVERSATION ENDPOINTS ============
+
+// List all conversation sessions
+app.get('/api/conversations', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const sessions = await fraktag.listConversationSessions(req.params.kbId);
+    const sessions = await fraktag.listConversationSessions();
     res.json(sessions);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -192,29 +194,24 @@ app.get('/api/knowledge-bases/:kbId/conversations', async (req, res) => {
 });
 
 // Create a new conversation session
-app.post('/api/knowledge-bases/:kbId/conversations', async (req, res) => {
+app.post('/api/conversations', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
-    const { title } = req.body;
-    const session = await fraktag.createConversationSession(req.params.kbId, title);
+    const { title, linkedContext } = req.body;
+    if (!linkedContext || !linkedContext.treeIds || linkedContext.treeIds.length === 0) {
+      return res.status(400).json({ error: 'linkedContext with treeIds is required' });
+    }
+    const session = await fraktag.createConversationSession(
+      title || '',
+      linkedContext
+    );
     res.json(session);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Get or create today's session
-app.post('/api/knowledge-bases/:kbId/conversations/today', async (req, res) => {
-  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
-  try {
-    const session = await fraktag.getOrCreateConversationSession(req.params.kbId);
-    res.json(session);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Get turns in a session
+// Get turns in a conversation session
 app.get('/api/conversations/:sessionId/turns', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
@@ -233,8 +230,8 @@ app.patch('/api/conversations/:sessionId', async (req, res) => {
     if (!title) {
       return res.status(400).json({ error: 'title is required' });
     }
-    const updated = await fraktag.updateConversationSession(req.params.sessionId, { title });
-    res.json(updated);
+    await fraktag.updateConversationSession(req.params.sessionId, { title });
+    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -251,16 +248,15 @@ app.delete('/api/conversations/:sessionId', async (req, res) => {
   }
 });
 
-// Streaming chat endpoint (Moved to POST to support large payloads)
+// Streaming chat endpoint
 app.post('/api/chat/stream', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
 
-  // Read from BODY now, not QUERY
-  const { kbId, sessionId, question, treeIds } = req.body;
+  const { sessionId, question, treeIds } = req.body;
 
-  if (!kbId || !sessionId || !question || !treeIds || treeIds.length === 0) {
+  if (!sessionId || !question || !treeIds || treeIds.length === 0) {
     return res.status(400).json({
-      error: 'kbId, sessionId, question, and treeIds are required'
+      error: 'sessionId, question, and treeIds are required'
     });
   }
 
@@ -268,7 +264,7 @@ app.post('/api/chat/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   const sendEvent = (type: string, data: any) => {
@@ -278,7 +274,6 @@ app.post('/api/chat/stream', async (req, res) => {
 
   try {
     await fraktag.chat(
-        kbId,
         sessionId,
         question,
         treeIds,
@@ -306,51 +301,22 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 });
 
-// Chat endpoint (non-streaming)
-app.post('/api/chat', async (req, res) => {
-  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
-
-  const { kbId, sessionId, question, treeIds } = req.body;
-
-  if (!kbId || !sessionId || !question || !treeIds || !Array.isArray(treeIds) || treeIds.length === 0) {
-    return res.status(400).json({
-      error: 'kbId, sessionId, question, and treeIds array are required'
-    });
-  }
-
-  try {
-    const result = await fraktag.chat(kbId, sessionId, question, treeIds);
-    res.json(result);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Get conversation tree ID for a knowledge base
-app.get('/api/knowledge-bases/:kbId/conversation-tree', async (req, res) => {
-  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
-  try {
-    const treeId = fraktag.getConversationTreeId(req.params.kbId);
-    res.json({ treeId });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // ============ TREE ENDPOINTS ============
 
 app.get('/api/trees', async (req, res) => {
   if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
   try {
     const kbId = req.query.kbId as string | undefined;
-    // If kbId is provided, filter trees by that KB
-    // If kbId is 'all', return all trees (including internal)
-    // Otherwise return all trees (default behavior for backwards compatibility)
+    const type = req.query.type as 'knowledge' | 'conversation' | undefined;
     let trees;
     if (kbId && kbId !== 'all') {
       trees = await fraktag.listTreesForKB(kbId);
+      // Apply type filter on top of KB filter
+      if (type) {
+        trees = trees.filter(t => (t.type || 'knowledge') === type);
+      }
     } else {
-      trees = await fraktag.listTrees();
+      trees = await fraktag.listTrees(type);
     }
     res.json(trees);
   } catch (e: any) {
@@ -388,6 +354,25 @@ app.get('/api/trees/:id', async (req, res) => {
     res.json(tree);
   } catch (e: any) {
     res.status(404).json({ error: e.message });
+  }
+});
+
+// Update tree config (name, organizing principle)
+app.patch('/api/trees/:id', async (req, res) => {
+  if (!fraktag) return res.status(503).json({ error: "Engine not ready" });
+  try {
+    const { name, organizingPrinciple } = req.body;
+    if (name === undefined && organizingPrinciple === undefined) {
+      return res.status(400).json({ error: 'At least one of name or organizingPrinciple is required' });
+    }
+    const updates: { name?: string; organizingPrinciple?: string } = {};
+    if (name !== undefined) updates.name = name;
+    if (organizingPrinciple !== undefined) updates.organizingPrinciple = organizingPrinciple;
+
+    const tree = await fraktag.updateTree(req.params.id, updates);
+    res.json(tree);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -801,13 +786,13 @@ app.post('/api/ask', async (req, res) => {
 });
 
 // Streaming ask endpoint using Server-Sent Events
-app.get('/api/ask/stream', async (req, res) => {
+app.post('/api/ask/stream', async (req, res) => {
   if (!fraktag) {
     res.status(503).json({ error: "Engine not ready" });
     return;
   }
 
-  const { query, treeId } = req.query;
+  const { query, treeId } = req.body;
   if (!query || typeof query !== 'string') {
     res.status(400).json({ error: 'query is required' });
     return;

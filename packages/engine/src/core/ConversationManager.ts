@@ -1,11 +1,12 @@
 // packages/engine/src/core/ConversationManager.ts
-// Handles conversation memory as a chronological log tree
+// One Tree = One Conversation Session
+// All conversation trees stored in Internal KB (main storage)
 
 import { randomUUID } from 'crypto';
 import { TreeStore } from './TreeStore.js';
 import { ContentStore } from './ContentStore.js';
 import { VectorStore } from './VectorStore.js';
-import { FolderNode, DocumentNode, TreeConfig, ContentEditMode } from './types.js';
+import { DocumentNode, TreeConfig, ContentEditMode } from './types.js';
 
 // References are just nodeIds - content is fetched on demand (hydration)
 export interface ConversationReference {
@@ -20,11 +21,15 @@ export interface TurnData {
 }
 
 export interface ConversationSession {
-  id: string;
-  treeId: string;
+  id: string;       // Tree ID (conv-{uuid})
   title: string;
   startedAt: string;
+  updatedAt: string;
   turnCount: number;
+  linkedContext?: {
+    kbId?: string;
+    treeIds: string[];
+  };
 }
 
 export interface ConversationTurn {
@@ -37,18 +42,17 @@ export interface ConversationTurn {
 }
 
 /**
- * ConversationManager handles the "Memory" persistence layer.
- * It stores conversations as a chronological log in a dedicated tree.
+ * ConversationManager handles conversation persistence.
+ * Each conversation is its own Tree (conv-{uuid}), stored in Internal KB.
  *
- * Structure:
- * - Tree: conversations-{kbId}
- *   - Folder (L0): Session {date} - {first question gist}
- *     - Folder (Leaf): Turn 01 - {question gist}
- *       - Document: Question
- *       - Document: Answer
- *       - Document: References
- *     - Folder (Leaf): Turn 02 - {question gist}
- *       ...
+ * Structure per conversation tree:
+ * - Root
+ *   - Turn 01 - {question gist} (Folder)
+ *     - Question (Document)
+ *     - Answer (Document)
+ *     - References (Document)
+ *   - Turn 02 - ... (Folder)
+ *     ...
  */
 export class ConversationManager {
   constructor(
@@ -58,185 +62,109 @@ export class ConversationManager {
   ) {}
 
   /**
-   * Get the conversation tree ID for a knowledge base
+   * Creates a new conversation session as a separate Tree.
    */
-  getConversationTreeId(kbId: string): string {
-    return `conversations-${kbId}`;
-  }
+  async createSession(
+    title: string,
+    linkedContext: { kbId?: string; treeIds: string[] }
+  ): Promise<ConversationSession> {
+    const sessionId = `conv-${randomUUID()}`;
+    const now = new Date().toISOString();
 
-  /**
-   * Ensures the conversation tree exists for a knowledge base.
-   * Creates it if it doesn't exist.
-   */
-  async ensureConversationTree(kbId: string): Promise<string> {
-    const treeId = this.getConversationTreeId(kbId);
-
-    const exists = await this.treeStore.treeExists(treeId);
-    if (!exists) {
-      await this.treeStore.createTree({
-        id: treeId,
-        name: `Conversations (${kbId})`,
-        organizingPrinciple: 'Chronological log of user interactions and AI responses',
-        autoPlace: false
-      } as TreeConfig);
-      console.log(`📝 Created conversation tree: ${treeId}`);
-    }
-
-    return treeId;
-  }
-
-  /**
-   * Creates a new conversation session.
-   * Returns the session folder node.
-   */
-  async createSession(kbId: string, title?: string): Promise<FolderNode> {
-    const treeId = await this.ensureConversationTree(kbId);
-    const tree = await this.treeStore.getTree(treeId);
-
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const sessionTitle = title || `Session ${dateStr}`;
-
-    const sessionId = randomUUID();
-    const sessionNode: FolderNode = {
+    const config: TreeConfig = {
       id: sessionId,
-      treeId,
-      parentId: tree.rootNodeId,
-      path: `/${sessionId}/`,
-      type: 'folder',
-      title: sessionTitle,
-      gist: `Started at ${now.toLocaleString()}`,
-      sortOrder: now.getTime(),
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
+      name: title || `Chat ${new Date().toLocaleDateString()}`,
+      type: 'conversation',
+      organizingPrinciple: 'Chronological log of user interactions.',
+      autoPlace: false,
+      linkedContext,
     };
 
-    await this.treeStore.createFolder(treeId, tree.rootNodeId, sessionTitle, sessionNode.gist);
+    await this.treeStore.createTree(config);
+    console.log(`📝 Created conversation tree: ${sessionId} (${config.name})`);
 
-    // Get the actual created node
-    const children = await this.treeStore.getChildren(tree.rootNodeId);
-    const created = children.find(c => c.title === sessionTitle);
-
-    if (!created) {
-      throw new Error('Failed to create session folder');
-    }
-
-    console.log(`💬 Created conversation session: ${sessionTitle}`);
-    return created as FolderNode;
+    return {
+      id: sessionId,
+      title: config.name,
+      startedAt: now,
+      updatedAt: now,
+      turnCount: 0,
+      linkedContext,
+    };
   }
 
   /**
-   * Gets or creates a session for today
+   * List all conversation sessions (trees with type='conversation')
    */
-  async getOrCreateTodaySession(kbId: string): Promise<FolderNode> {
-    const treeId = await this.ensureConversationTree(kbId);
-    const tree = await this.treeStore.getTree(treeId);
+  async listSessions(): Promise<ConversationSession[]> {
+    const trees = await this.treeStore.listTrees();
 
-    const today = new Date().toISOString().split('T')[0];
-    const sessionTitle = `Session ${today}`;
-
-    // Check if session exists
-    const children = await this.treeStore.getChildren(tree.rootNodeId);
-    const existing = children.find(c => c.title === sessionTitle);
-
-    if (existing) {
-      return existing as FolderNode;
+    const sessions: ConversationSession[] = [];
+    for (const tree of trees) {
+      // Match by type or by conv- prefix (backward compat)
+      if (tree.type === 'conversation' || tree.id.startsWith('conv-')) {
+        const turns = await this.treeStore.getChildren(tree.rootNodeId);
+        sessions.push({
+          id: tree.id,
+          title: tree.name,
+          startedAt: tree.createdAt,
+          updatedAt: tree.updatedAt,
+          turnCount: turns.length,
+          linkedContext: tree.linkedContext,
+        });
+      }
     }
 
-    // Create new session
-    return this.createSession(kbId, sessionTitle);
+    // Sort by most recent first
+    sessions.sort((a, b) =>
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+
+    return sessions;
   }
 
   /**
-   * Logs a conversation turn into the session.
-   * This is "Programmatic Ingestion" - no AI splitting, just raw logging.
+   * Logs a conversation turn into the session's tree.
    */
   async logTurn(
-    kbId: string,
     sessionId: string,
     data: TurnData
   ): Promise<{ turnFolderId: string; turnIndex: number }> {
-    const treeId = await this.ensureConversationTree(kbId);
+    const tree = await this.treeStore.getTree(sessionId);
 
-    // Get session folder
-    const sessionNode = await this.treeStore.getNode(sessionId);
-    if (!sessionNode || sessionNode.type !== 'folder') {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    // Count existing turns to get the next index
-    const existingTurns = await this.treeStore.getChildren(sessionId);
+    // Count existing turns
+    const existingTurns = await this.treeStore.getChildren(tree.rootNodeId);
     const turnIndex = existingTurns.length + 1;
 
-    const now = new Date();
-    const timestamp = data.timestamp || now.toISOString();
-
-    // Generate gist from question
     const questionGist = data.question.length > 50
       ? data.question.slice(0, 50).trim() + '...'
       : data.question;
 
-    // 1. Create Turn Folder (Leaf Folder)
+    // 1. Create Turn Folder
     const turnTitle = `Turn ${String(turnIndex).padStart(2, '0')} - ${questionGist}`;
     const turnFolder = await this.treeStore.createFolder(
-      treeId,
       sessionId,
+      tree.rootNodeId,
       turnTitle,
       `Q: ${questionGist}`
     );
 
     // 2. Create Question Document
-    await this.createConversationDoc(
-      treeId,
-      turnFolder.id,
-      'Question',
-      data.question,
-      0,
-      'question'
-    );
+    await this.createConversationDoc(sessionId, turnFolder.id, 'Question', data.question, 0, 'question');
 
     // 3. Create Answer Document
-    await this.createConversationDoc(
-      treeId,
-      turnFolder.id,
-      'Answer',
-      data.answer,
-      1,
-      'answer'
-    );
+    await this.createConversationDoc(sessionId, turnFolder.id, 'Answer', data.answer, 1, 'answer');
 
-    // 4. Create References Document (if any) - just store nodeIds
+    // 4. Create References Document (if any)
     if (data.references.length > 0) {
-      // Extract just nodeIds for storage
       const nodeIds = data.references.map(r => r.nodeId);
-      const refJson = JSON.stringify(nodeIds);
-
-      await this.createConversationDoc(
-        treeId,
-        turnFolder.id,
-        'References',
-        refJson,
-        2,
-        'references'
-      );
+      await this.createConversationDoc(sessionId, turnFolder.id, 'References', JSON.stringify(nodeIds), 2, 'references');
     }
 
-    // Update session gist with latest turn info
-    const updatedSession = await this.treeStore.getNode(sessionId);
-    if (updatedSession) {
-      updatedSession.gist = `${existingTurns.length + 1} turns - Last: ${questionGist}`;
-      updatedSession.updatedAt = now.toISOString();
-      await this.treeStore.saveNode(updatedSession);
-    }
-
-    console.log(`📝 Logged turn ${turnIndex} in session ${sessionNode.title}`);
-
+    console.log(`📝 Logged turn ${turnIndex} in conversation ${sessionId}`);
     return { turnFolderId: turnFolder.id, turnIndex };
   }
 
-  /**
-   * Creates a document within a turn folder
-   */
   private async createConversationDoc(
     treeId: string,
     parentId: string,
@@ -245,7 +173,6 @@ export class ConversationManager {
     sortOrder: number,
     role: 'question' | 'answer' | 'references'
   ): Promise<DocumentNode> {
-    // 1. Store Content
     const atom = await this.contentStore.create({
       payload: text,
       mediaType: 'text/plain',
@@ -253,17 +180,16 @@ export class ConversationManager {
       editMode: 'readonly' as ContentEditMode
     });
 
-    // 2. Create Document Node
     const doc = await this.treeStore.createDocument(
       treeId,
       parentId,
       title,
-      text.slice(0, 100), // Gist is first 100 chars
+      text.slice(0, 100),
       atom.id,
       'readonly' as ContentEditMode
     );
 
-    // 3. Vectorize Question and Answer (not references) for recall
+    // Vectorize Q/A for recall within this conversation
     if (role === 'question' || role === 'answer') {
       try {
         await this.vectorStore.add(doc.id, text);
@@ -277,49 +203,11 @@ export class ConversationManager {
   }
 
   /**
-   * List all sessions for a knowledge base
-   */
-  async listSessions(kbId: string): Promise<ConversationSession[]> {
-    const treeId = this.getConversationTreeId(kbId);
-
-    const exists = await this.treeStore.treeExists(treeId);
-    if (!exists) {
-      return [];
-    }
-
-    const tree = await this.treeStore.getTree(treeId);
-    const sessions = await this.treeStore.getChildren(tree.rootNodeId);
-
-    const result: ConversationSession[] = [];
-    for (const session of sessions) {
-      if (session.type !== 'folder') continue;
-
-      const turns = await this.treeStore.getChildren(session.id);
-      result.push({
-        id: session.id,
-        treeId,
-        title: session.title,
-        startedAt: session.createdAt,
-        turnCount: turns.length
-      });
-    }
-
-    // Sort by most recent first
-    result.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
-
-    return result;
-  }
-
-  /**
    * Get all turns in a session
    */
   async getSessionTurns(sessionId: string): Promise<ConversationTurn[]> {
-    const session = await this.treeStore.getNode(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    const turnFolders = await this.treeStore.getChildren(sessionId);
+    const tree = await this.treeStore.getTree(sessionId);
+    const turnFolders = await this.treeStore.getChildren(tree.rootNodeId);
     const turns: ConversationTurn[] = [];
 
     for (const turnFolder of turnFolders) {
@@ -342,23 +230,18 @@ export class ConversationManager {
         } else if (doc.title === 'Answer') {
           answer = text;
         } else if (doc.title === 'References') {
-          // Parse references - supports multiple formats for backward compatibility
           try {
             const parsed = JSON.parse(text);
             if (Array.isArray(parsed)) {
-              // Could be array of strings (nodeIds) or array of objects
               for (const item of parsed) {
                 if (typeof item === 'string') {
-                  // New format: just nodeIds
                   references.push({ nodeId: item });
                 } else if (item.nodeId) {
-                  // Legacy JSON format with full objects
                   references.push({ nodeId: item.nodeId });
                 }
               }
             }
           } catch {
-            // Legacy text format: [1] **Title**\nNode: nodeId\nsnippet
             const refBlocks = text.split('\n\n---\n\n');
             for (const block of refBlocks) {
               const nodeMatch = block.match(/Node: (.+)/);
@@ -370,7 +253,6 @@ export class ConversationManager {
         }
       }
 
-      // Extract turn index from title "Turn 01 - ..."
       const turnMatch = turnFolder.title.match(/Turn (\d+)/);
       const turnIndex = turnMatch ? parseInt(turnMatch[1]) : turns.length + 1;
 
@@ -384,72 +266,27 @@ export class ConversationManager {
       });
     }
 
-    // Sort by turn index
     turns.sort((a, b) => a.turnIndex - b.turnIndex);
-
     return turns;
   }
 
   /**
-   * Update a session (title, etc.)
+   * Update a session (title, linkedContext, etc.)
    */
   async updateSession(
     sessionId: string,
     updates: { title?: string }
-  ): Promise<ConversationSession> {
-    const session = await this.treeStore.getNode(sessionId);
-    if (!session || session.type !== 'folder') {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    // Apply updates
-    if (updates.title) {
-      session.title = updates.title;
-    }
-    session.updatedAt = new Date().toISOString();
-
-    await this.treeStore.saveNode(session);
-
-    // Get turn count
-    const turns = await this.treeStore.getChildren(sessionId);
-
-    return {
-      id: session.id,
-      treeId: session.treeId,
-      title: session.title,
-      startedAt: session.createdAt,
-      turnCount: turns.length
-    };
+  ): Promise<void> {
+    const updateFields: any = {};
+    if (updates.title) updateFields.name = updates.title;
+    await this.treeStore.updateTreeConfig(sessionId, updateFields);
   }
 
   /**
-   * Delete a session and all its turns
+   * Delete a conversation session (delete the entire tree)
    */
   async deleteSession(sessionId: string): Promise<void> {
-    const session = await this.treeStore.getNode(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    // Get all turn folders
-    const turns = await this.treeStore.getChildren(sessionId);
-
-    // Delete each turn's documents and content
-    for (const turn of turns) {
-      const docs = await this.treeStore.getChildren(turn.id);
-      for (const doc of docs) {
-        if (doc.type === 'document') {
-          // Delete content
-          await this.contentStore.delete((doc as DocumentNode).contentId);
-          // Remove from vector store
-          await this.vectorStore.remove(doc.id);
-        }
-      }
-    }
-
-    // Delete the session folder (cascades to children)
-    await this.treeStore.deleteNode(sessionId);
-
-    console.log(`🗑️ Deleted conversation session: ${session.title}`);
+    await this.treeStore.deleteTree(sessionId);
+    console.log(`🗑️ Deleted conversation: ${sessionId}`);
   }
 }

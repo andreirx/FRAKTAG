@@ -18,7 +18,6 @@ import {
   Trash2,
   Plus,
   Database,
-  MessagesSquare,
   ChevronDown,
   ChevronRight,
   Settings2,
@@ -34,10 +33,14 @@ interface Tree {
 
 interface ConversationSession {
   id: string;
-  treeId: string;
   title: string;
   startedAt: string;
+  updatedAt: string;
   turnCount: number;
+  linkedContext?: {
+    kbId?: string;
+    treeIds: string[];
+  };
 }
 
 // References are just nodeIds - content is hydrated on demand
@@ -75,8 +78,6 @@ interface StreamingSource {
 interface ChatDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  kbId: string;
-  kbName: string;
   trees: Tree[];
   defaultTreeId?: string;
 }
@@ -84,8 +85,6 @@ interface ChatDialogProps {
 export function ChatDialog({
                              open,
                              onOpenChange,
-                             kbId,
-                             kbName,
                              trees,
                              defaultTreeId,
                            }: ChatDialogProps) {
@@ -149,7 +148,7 @@ export function ChatDialog({
 
   // Initialize on open
   useEffect(() => {
-    if (open && kbId) {
+    if (open) {
       loadSessions();
       // Default to selecting the default tree if provided
       if (defaultTreeId && trees.some(t => t.id === defaultTreeId)) {
@@ -161,7 +160,7 @@ export function ChatDialog({
         eventSourceRef.current.close();
       }
     };
-  }, [open, kbId, defaultTreeId, trees]);
+  }, [open, defaultTreeId, trees]);
 
   // Load turns when session changes
   useEffect(() => {
@@ -175,7 +174,7 @@ export function ChatDialog({
   const loadSessions = async () => {
     setLoadingSessions(true);
     try {
-      const res = await axios.get(`/api/knowledge-bases/${kbId}/conversations`);
+      const res = await axios.get('/api/conversations');
       setSessions(res.data);
     } catch (e: any) {
       console.error("Failed to load sessions:", e);
@@ -187,8 +186,11 @@ export function ChatDialog({
   const createSessionWithQuestion = async (question: string): Promise<ConversationSession> => {
     // Generate a short gist for the session title
     const gist = question.length > 60 ? question.slice(0, 60).trim() + "..." : question;
-    const res = await axios.post(`/api/knowledge-bases/${kbId}/conversations`, {
+    // linkedContext: the selected trees at the time of conversation creation
+    const treeIds = Array.from(selectedTreeIds);
+    const res = await axios.post('/api/conversations', {
       title: gist,
+      linkedContext: { treeIds },
     });
     return res.data;
   };
@@ -339,9 +341,8 @@ export function ChatDialog({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          kbId,
           sessionId,
-          question, // Massive payload goes here safely
+          question,
           treeIds: Array.from(selectedTreeIds),
         }),
         signal: abortController.signal,
@@ -442,27 +443,12 @@ export function ChatDialog({
         }
       }, 500);
 
-      // Auto-include conversation tree context
-      const conversationTreeId = `conversations-${kbId}`;
-      if (trees.some(t => t.id === conversationTreeId)) {
-        setSelectedTreeIds(prev => {
-          if (prev.has(conversationTreeId)) return prev;
-          const next = new Set(prev);
-          next.add(conversationTreeId);
-          return next;
-        });
-      }
-
     } catch (e: any) {
       if (e.name === 'AbortError') return;
       setError(e.response?.data?.error || e.message);
       setIsStreaming(false);
     }
   };
-
-  // Separate trees into knowledge trees and conversation trees
-  const knowledgeTrees = trees.filter(t => !t.id.startsWith("conversations-"));
-  const conversationTrees = trees.filter(t => t.id.startsWith("conversations-"));
 
   // Get names of selected trees for display
   const selectedTreeNames = trees
@@ -474,7 +460,7 @@ export function ChatDialog({
         <DialogContent className="w-[95vw] max-w-6xl h-[90vh] p-0 gap-0 flex">
           {/* ACCESSIBILITY FIX: Hidden Title */}
           <DialogTitle className="sr-only">
-            Chat Interface with {kbName}
+            Chat Interface
           </DialogTitle>
           {/* Sidebar */}
           <div className="w-64 shrink-0 bg-zinc-200 text-black flex flex-col">
@@ -530,9 +516,9 @@ export function ChatDialog({
               </div>
             </ScrollArea>
 
-            {/* KB Info */}
+            {/* Session count */}
             <div className="p-3 border-t border-zinc-700 text-xs text-zinc-500">
-              <div className="truncate">{kbName || "Internal Knowledge Base"}</div>
+              <div className="truncate">{sessions.length} conversation{sessions.length !== 1 ? 's' : ''}</div>
             </div>
           </div>
 
@@ -596,50 +582,20 @@ export function ChatDialog({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                      {/* Knowledge Trees */}
-                      {knowledgeTrees.length > 0 && (
-                          <div className="space-y-1">
-                            <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                              Knowledge Trees
-                            </div>
-                            {knowledgeTrees.map((tree) => (
-                                <label
-                                    key={tree.id}
-                                    className="flex items-center gap-2 p-1.5 rounded hover:bg-zinc-50 cursor-pointer"
-                                >
-                                  <Checkbox
-                                      checked={selectedTreeIds.has(tree.id)}
-                                      onCheckedChange={() => toggleTreeSelection(tree.id)}
-                                  />
-                                  <Database className="w-3.5 h-3.5 text-purple-500" />
-                                  <span className="text-sm truncate">{tree.name}</span>
-                                </label>
-                            ))}
-                          </div>
-                      )}
-
-                      {/* Conversation Trees */}
-                      {conversationTrees.length > 0 && (
-                          <div className="space-y-1">
-                            <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                              Conversation History
-                            </div>
-                            {conversationTrees.map((tree) => (
-                                <label
-                                    key={tree.id}
-                                    className="flex items-center gap-2 p-1.5 rounded hover:bg-zinc-50 cursor-pointer"
-                                >
-                                  <Checkbox
-                                      checked={selectedTreeIds.has(tree.id)}
-                                      onCheckedChange={() => toggleTreeSelection(tree.id)}
-                                  />
-                                  <MessagesSquare className="w-3.5 h-3.5 text-emerald-500" />
-                                  <span className="text-sm truncate">{tree.name}</span>
-                                </label>
-                            ))}
-                          </div>
-                      )}
+                    <div className="space-y-1">
+                      {trees.map((tree) => (
+                          <label
+                              key={tree.id}
+                              className="flex items-center gap-2 p-1.5 rounded hover:bg-zinc-50 cursor-pointer"
+                          >
+                            <Checkbox
+                                checked={selectedTreeIds.has(tree.id)}
+                                onCheckedChange={() => toggleTreeSelection(tree.id)}
+                            />
+                            <Database className="w-3.5 h-3.5 text-purple-500" />
+                            <span className="text-sm truncate">{tree.name}</span>
+                          </label>
+                      ))}
                     </div>
                   </div>
               )}

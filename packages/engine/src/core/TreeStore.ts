@@ -5,6 +5,7 @@ import {
   Tree,
   TreeNode,
   TreeConfig,
+  TreeType,
   FolderNode,
   DocumentNode,
   FragmentNode,
@@ -66,11 +67,13 @@ export class TreeStore {
     const treeMeta: Tree = {
       id: config.id,
       name: config.name,
+      type: config.type || 'knowledge',
       organizingPrinciple: config.organizingPrinciple,
       rootNodeId,
       createdAt: now,
       updatedAt: now,
       kbId: config.kbId, // Track which KB owns this tree
+      linkedContext: config.linkedContext,
     };
 
     const rootNode: FolderNode = {
@@ -142,6 +145,28 @@ export class TreeStore {
 
   async getTree(treeId: string): Promise<Tree> {
     const file = await this.loadTreeFile(treeId);
+    // Backward compatibility: default type to 'knowledge' for old trees
+    if (!file.config.type) {
+      file.config.type = 'knowledge';
+    }
+    return file.config;
+  }
+
+  async updateTreeConfig(treeId: string, updates: Partial<Pick<Tree, 'name' | 'organizingPrinciple' | 'linkedContext'>>): Promise<Tree> {
+    const file = await this.loadTreeFile(treeId);
+
+    if (updates.name !== undefined) {
+      file.config.name = updates.name;
+    }
+    if (updates.organizingPrinciple !== undefined) {
+      file.config.organizingPrinciple = updates.organizingPrinciple;
+    }
+    if (updates.linkedContext !== undefined) {
+      file.config.linkedContext = updates.linkedContext;
+    }
+
+    file.config.updatedAt = new Date().toISOString();
+    await this.saveTreeFile(treeId, file);
     return file.config;
   }
 
@@ -152,7 +177,13 @@ export class TreeStore {
       if (f.endsWith('.json')) {
         try {
           const file = await this.storage.read<TreeFile>(`trees/${f}`);
-          if (file?.config) trees.push(file.config);
+          if (file?.config) {
+            // Backward compatibility: default type to 'knowledge'
+            if (!file.config.type) {
+              file.config.type = 'knowledge';
+            }
+            trees.push(file.config);
+          }
         } catch (e) {}
       }
     }
