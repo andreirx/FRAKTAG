@@ -18,6 +18,10 @@ export interface TurnData {
   answer: string;
   references: ConversationReference[];
   timestamp?: string;
+  /** AI-generated gist for the answer document. Falls back to slice if not provided. */
+  answerGist?: string;
+  /** AI-generated gist for the turn folder. Falls back to question slice if not provided. */
+  turnGist?: string;
 }
 
 export interface ConversationSession {
@@ -140,20 +144,21 @@ export class ConversationManager {
       ? data.question.slice(0, 50).trim() + '...'
       : data.question;
 
-    // 1. Create Turn Folder
+    // 1. Create Turn Folder (use AI gist if provided)
     const turnTitle = `Turn ${String(turnIndex).padStart(2, '0')} - ${questionGist}`;
+    const turnFolderGist = data.turnGist || `Q: ${questionGist}`;
     const turnFolder = await this.treeStore.createFolder(
       sessionId,
       tree.rootNodeId,
       turnTitle,
-      `Q: ${questionGist}`
+      turnFolderGist
     );
 
-    // 2. Create Question Document
+    // 2. Create Question Document (question is already concise user input)
     await this.createConversationDoc(sessionId, turnFolder.id, 'Question', data.question, 0, 'question');
 
-    // 3. Create Answer Document
-    await this.createConversationDoc(sessionId, turnFolder.id, 'Answer', data.answer, 1, 'answer');
+    // 3. Create Answer Document (use AI gist if provided)
+    await this.createConversationDoc(sessionId, turnFolder.id, 'Answer', data.answer, 1, 'answer', data.answerGist);
 
     // 4. Create References Document (if any)
     if (data.references.length > 0) {
@@ -171,7 +176,8 @@ export class ConversationManager {
     title: string,
     text: string,
     sortOrder: number,
-    role: 'question' | 'answer' | 'references'
+    role: 'question' | 'answer' | 'references',
+    gistOverride?: string
   ): Promise<DocumentNode> {
     const atom = await this.contentStore.create({
       payload: text,
@@ -180,11 +186,12 @@ export class ConversationManager {
       editMode: 'readonly' as ContentEditMode
     });
 
+    const gist = gistOverride || text.slice(0, 100);
     const doc = await this.treeStore.createDocument(
       treeId,
       parentId,
       title,
-      text.slice(0, 100),
+      gist,
       atom.id,
       'readonly' as ContentEditMode
     );

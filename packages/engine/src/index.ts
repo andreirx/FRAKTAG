@@ -1884,11 +1884,28 @@ Answer:`;
       answer = errorMsg;
     }
 
-    // 3. Log the conversation turn
+    // 3. Generate AI gists for answer and turn folder, then log
+    let answerGist: string | undefined;
+    let turnGist: string | undefined;
+    try {
+      const gistPrompt = `Summarize this AI answer in 1-2 sentences. Do not start with "This answer..." — just state the key point.\n\n${answer.slice(0, 3000)}`;
+      const turnPrompt = `Summarize this Q&A exchange in one sentence.\n\nQuestion: ${question}\nAnswer: ${answer.slice(0, 2000)}`;
+      const [aGist, tGist] = await Promise.all([
+        this.basicLlm.complete(gistPrompt, {}),
+        this.basicLlm.complete(turnPrompt, {})
+      ]);
+      answerGist = aGist.trim().slice(0, 200);
+      turnGist = tGist.trim().slice(0, 200);
+    } catch (e) {
+      console.warn('⚠️ Could not generate AI gists for conversation turn:', e);
+    }
+
     await this.conversationManager.logTurn(sessionId, {
       question,
       answer,
-      references
+      references,
+      answerGist,
+      turnGist
     });
 
     return { answer, references };
