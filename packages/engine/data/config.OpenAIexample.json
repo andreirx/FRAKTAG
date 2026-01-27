@@ -4,8 +4,8 @@
   "llm": {
     "adapter": "openai",
     "model": "gpt-4.1-mini",
-    "basicModel": "gpt-4.1-nano",
-    "expertModel": "gpt-5",
+    "basicModel": "gpt-4.1-mini",
+    "expertModel": "gpt-4.1",
     "apiKey": "sk-proj-...",
     "timeoutMs": 60000
   },

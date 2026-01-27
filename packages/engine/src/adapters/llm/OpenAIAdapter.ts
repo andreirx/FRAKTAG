@@ -2,6 +2,7 @@
 
 import { ILLMAdapter } from './ILLMAdapter.js';
 import { substituteTemplate } from '../../prompts/default.js';
+import { Semaphore } from '../../utils/Semaphore.js';
 
 export interface OpenAIConfig {
     apiKey: string;
@@ -9,6 +10,7 @@ export interface OpenAIConfig {
     endpoint?: string;
     maxRetries?: number;
     timeoutMs?: number;
+    concurrency?: number;
 }
 
 export class OpenAIAdapter implements ILLMAdapter {
@@ -17,6 +19,7 @@ export class OpenAIAdapter implements ILLMAdapter {
     private endpoint: string;
     private maxRetries: number;
     private timeoutMs: number;
+    private semaphore: Semaphore;
 
     constructor(config: OpenAIConfig) {
         this.apiKey = config.apiKey;
@@ -27,6 +30,8 @@ export class OpenAIAdapter implements ILLMAdapter {
         // GPT-5/O-Series need way more time to think.
         const isReasoning = this.model.includes('gpt-5') || this.model.includes('o1') || this.model.includes('o3');
         this.timeoutMs = config.timeoutMs ?? (isReasoning ? 120_000 : 30_000); // 2 minutes for experts
+        // Default 10 for OpenAI (cloud can handle it), user can tune
+        this.semaphore = new Semaphore(config.concurrency || 10);
     }
 
     private log(msg: string, data?: any) {
@@ -36,6 +41,14 @@ export class OpenAIAdapter implements ILLMAdapter {
     }
 
     async complete(
+        prompt: string,
+        variables: Record<string, string | number | string[]>,
+        options?: { maxTokens?: number }
+    ): Promise<string> {
+        return this.semaphore.run(() => this._complete(prompt, variables, options));
+    }
+
+    private async _complete(
         prompt: string,
         variables: Record<string, string | number | string[]>,
         options?: { maxTokens?: number }
@@ -245,6 +258,15 @@ export class OpenAIAdapter implements ILLMAdapter {
      * Stream a completion, calling onChunk for each piece of text received
      */
     async stream(
+        prompt: string,
+        variables: Record<string, string | number | string[]>,
+        onChunk: (chunk: string) => void,
+        options?: { maxTokens?: number }
+    ): Promise<string> {
+        return this.semaphore.run(() => this._stream(prompt, variables, onChunk, options));
+    }
+
+    private async _stream(
         prompt: string,
         variables: Record<string, string | number | string[]>,
         onChunk: (chunk: string) => void,

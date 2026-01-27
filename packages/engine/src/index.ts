@@ -1743,8 +1743,8 @@ export class Fraktag {
 
     console.log(`💬 Chat in ${sessionId}: "${question.slice(0, 50)}..." across ${searchScope.length} trees`);
 
-    // 1. Retrieve relevant content from all trees in scope
-    for (const treeId of searchScope) {
+    // 1. Retrieve relevant content from all trees in scope (PARALLEL)
+    const retrievalPromises = searchScope.map(async (treeId) => {
       try {
         const retrieval = await this.navigator.retrieve({
           treeId,
@@ -1753,36 +1753,54 @@ export class Fraktag {
           resolution: 'L2'
         });
 
+        const treeResults: Array<{
+          nodeId: string; title: string; gist: string;
+          path: string; content: string; treeId: string;
+        }> = [];
+
         for (const node of retrieval.nodes) {
-          sourceIndex++;
           const treeNode = await this.getNode(node.nodeId);
-          const title = treeNode?.title || 'Untitled';
-          const gist = treeNode?.gist || '';
-
-          references.push({ nodeId: node.nodeId });
-          sourceData.push({ nodeId: node.nodeId, title });
-
-          if (onEvent) {
-            onEvent({
-              type: 'source',
-              data: {
-                index: sourceIndex,
-                title,
-                path: node.path,
-                preview: node.content.slice(0, 200),
-                fullContent: node.content,
-                gist,
-                nodeId: node.nodeId,
-                treeId
-              }
-            });
-          }
-
-          contextBlocks.push(`--- [SOURCE ${sourceIndex}] ${title} ---\n${node.content}`);
+          treeResults.push({
+            nodeId: node.nodeId,
+            title: treeNode?.title || 'Untitled',
+            gist: treeNode?.gist || '',
+            path: node.path,
+            content: node.content,
+            treeId
+          });
         }
+        return treeResults;
       } catch (e) {
         console.warn(`Failed to retrieve from tree ${treeId}:`, e);
+        return [];
       }
+    });
+
+    const allResults = (await Promise.all(retrievalPromises)).flat();
+
+    // Assign sequential source indices and emit events
+    for (const result of allResults) {
+      sourceIndex++;
+      references.push({ nodeId: result.nodeId });
+      sourceData.push({ nodeId: result.nodeId, title: result.title });
+
+      if (onEvent) {
+        onEvent({
+          type: 'source',
+          data: {
+            index: sourceIndex,
+            title: result.title,
+            path: result.path,
+            preview: result.content.slice(0, 200),
+            fullContent: result.content,
+            gist: result.gist,
+            nodeId: result.nodeId,
+            treeId: result.treeId
+          }
+        });
+      }
+
+      contextBlocks.push(`--- [SOURCE ${sourceIndex}] ${result.title} ---\n${result.content}`);
     }
 
     console.log(`📚 Found ${sourceIndex} sources for context`);
@@ -1866,14 +1884,15 @@ Answer:`;
           endpoint: config.endpoint ?? 'http://localhost:11434',
           model: config.model,
           timeoutMs: config.timeoutMs,
-          numCtx: config.numCtx
+          numCtx: config.numCtx,
+          concurrency: config.concurrency
         });
       case 'openai':
         const apiKey = config.apiKey || process.env.FRAKTAG_OPENAI_KEY || process.env.OPENAI_API_KEY;
         if (!apiKey) {
           throw new Error('OpenAI adapter requires apiKey (config or FRAKTAG_OPENAI_KEY env var)');
         }
-        return new OpenAIAdapter({ ...config, apiKey });
+        return new OpenAIAdapter({ ...config, apiKey, concurrency: config.concurrency });
       case 'anthropic':
         throw new Error('Anthropic adapter not yet implemented');
       default:

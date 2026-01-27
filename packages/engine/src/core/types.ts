@@ -50,6 +50,7 @@ export interface LLMConfig {
   apiKey?: string;
   timeoutMs?: number;
   numCtx?: number;
+  concurrency?: number;  // Max parallel LLM requests (default: 1 for Ollama, 10 for OpenAI)
   prompts?: Partial<PromptSet>;
 }
 

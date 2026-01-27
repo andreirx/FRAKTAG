@@ -689,7 +689,32 @@ The result: documentation that evolves with your codebase, maintained by the sam
 *   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach.
 *   **Content Editing:** Inline editing for user notes, version replacement for ingested content.
 *   **Maintenance:** Manual folder/content management with rule enforcement.
-*   **UI:** Functional with auto-save, resizable panels, ingestion wizard, and KB management.
+*   **UI:** Functional with auto-save, resizable panels, ingestion wizard, chat with KB, and KB management.
+
+### 7.1. Added Parallel Multi-Tree Search (Fraktag.chat)
+
+The serial for (const treeId of searchScope) loop is now Promise.all(searchScope.map(...)). All
+tree retrievals fire concurrently. The semaphore inside the adapter gates how many actually hit
+the LLM at once. Source indices are assigned sequentially after all results arrive, so numbering
+stays deterministic.
+
+#### 7.1.1. Config
+
+LLMConfig.concurrency is optional. Users can tune it in their config.json:
+{
+"llm": {
+"adapter": "ollama",
+"model": "llama3",
+"concurrency": 1
+}
+}
+
+#### 7.1.2. Ollama Instructions for Users
+
+To enable parallelism on Ollama, the user must:
+1. Set OLLAMA_NUM_PARALLEL=N environment variable when starting the Ollama server
+2. Match "concurrency": N in their FRAKTAG config
+3. Have enough VRAM to hold N concurrent contexts (each context = model size / N)
 
 ---
 

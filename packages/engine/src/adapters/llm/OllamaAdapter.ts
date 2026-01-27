@@ -1,5 +1,6 @@
 import { ILLMAdapter } from './ILLMAdapter.js';
 import { substituteTemplate } from '../../prompts/default.js';
+import { Semaphore } from '../../utils/Semaphore.js';
 // We need to import undici types to satisfy TS, or use any if not installed
 import { Agent } from 'undici';
 
@@ -8,6 +9,7 @@ export interface OllamaConfig {
   model: string;
   timeoutMs?: number;
   numCtx?: number;
+  concurrency?: number;
 }
 
 export class OllamaAdapter implements ILLMAdapter {
@@ -15,12 +17,15 @@ export class OllamaAdapter implements ILLMAdapter {
   private model: string;
   private timeoutMs: number;
   private numCtx: number;
+  private semaphore: Semaphore;
 
   constructor(config: OllamaConfig) {
     this.endpoint = config.endpoint.endsWith('/') ? config.endpoint.slice(0, -1) : config.endpoint;
     this.model = config.model;
     this.timeoutMs = config.timeoutMs || 600000; // Default 10 minutes (up from 5)
     this.numCtx = config.numCtx || 32768;        // Default 32k (down from 128k)
+    // Default 1 for Ollama (serial) - user must set OLLAMA_NUM_PARALLEL on their server to match
+    this.semaphore = new Semaphore(config.concurrency || 1);
   }
 
   private log(msg: string, data?: any) {
@@ -33,6 +38,14 @@ export class OllamaAdapter implements ILLMAdapter {
   }
 
   async complete(
+      prompt: string,
+      variables: Record<string, string | number | string[]> = {},
+      options?: { maxTokens?: number }
+  ): Promise<string> {
+    return this.semaphore.run(() => this._complete(prompt, variables, options));
+  }
+
+  private async _complete(
       prompt: string,
       variables: Record<string, string | number | string[]> = {},
       options?: { maxTokens?: number }
@@ -136,6 +149,15 @@ export class OllamaAdapter implements ILLMAdapter {
   }
 
   async stream(
+      prompt: string,
+      variables: Record<string, string | number | string[]> = {},
+      onChunk: (chunk: string) => void,
+      options?: { maxTokens?: number }
+  ): Promise<string> {
+    return this.semaphore.run(() => this._stream(prompt, variables, onChunk, options));
+  }
+
+  private async _stream(
       prompt: string,
       variables: Record<string, string | number | string[]> = {},
       onChunk: (chunk: string) => void,
