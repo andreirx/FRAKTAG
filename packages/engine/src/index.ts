@@ -1805,10 +1805,26 @@ export class Fraktag {
 
     console.log(`📚 Found ${sourceIndex} sources for context`);
 
-    // 2. Generate answer
-    const context = contextBlocks.join('\n\n');
+    // 2. Context Injection (Short-Term Memory)
+    // Fetch recent turns so the LLM can resolve follow-up references like "it", "that", "explain more"
+    const history = await this.conversationManager.getSessionTurns(sessionId);
+    const recentTurns = history.slice(-3); // Last 3 turns
 
-    if (contextBlocks.length === 0) {
+    let historyContext = '';
+    if (recentTurns.length > 0) {
+      historyContext = 'RECENT CONVERSATION HISTORY:\n';
+      for (const turn of recentTurns) {
+        const truncatedAnswer = turn.answer.length > 1000
+          ? turn.answer.slice(0, 1000) + '...(truncated)'
+          : turn.answer;
+        historyContext += `User: ${turn.question}\nAI: ${truncatedAnswer}\n---\n`;
+      }
+    }
+
+    // 3. Generate answer
+    const ragContext = contextBlocks.join('\n\n');
+
+    if (contextBlocks.length === 0 && historyContext === '') {
       const noContextAnswer = "I couldn't find any relevant information in the selected knowledge sources to answer your question.";
       if (onEvent) {
         onEvent({ type: 'answer_chunk', data: { text: noContextAnswer } });
@@ -1822,15 +1838,16 @@ export class Fraktag {
       return { answer: noContextAnswer, references: [] };
     }
 
-    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
+    const prompt = `You are the Oracle. Answer the User Question using the provided Context and History.
 
 Guidelines:
-- Cite sources as [1], [2], etc.
-- If you cannot answer from the context, say so honestly.
-- Be concise but thorough.
+1. **Prioritize Context:** Use [SOURCE X] to answer facts. Cite them as [1], [2].
+2. **Use History:** Use "Recent Conversation History" to understand follow-up questions (e.g. "explain that", "rewrite code", "what about...").
+3. **Honesty:** If the answer isn't in Context or History, say so.
+4. Be concise but thorough.
 
-Context:
-${context}
+${historyContext}
+${ragContext ? `CONTEXT (Search Results):\n${ragContext}` : '(No search results found — rely on conversation history if available.)'}
 
 User Question: ${question}
 
