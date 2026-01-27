@@ -182,10 +182,22 @@ export class Fraktag {
           .map(kb => kb.path);
 
         await instance.kbManager.loadFromPaths(kbPaths);
-
-        // Initialize trees from loaded KBs
-        await instance.initializeKnowledgeBases();
       }
+
+      // Auto-load all discovered KBs that aren't already loaded
+      const discovered = await instance.kbManager.discover();
+      for (const kb of discovered) {
+        if (!kb.isLoaded) {
+          try {
+            await instance.kbManager.load(kb.path);
+          } catch (err: any) {
+            console.warn(`⚠️ Failed to auto-load KB "${kb.name}": ${err.message}`);
+          }
+        }
+      }
+
+      // Initialize trees from all loaded KBs
+      await instance.initializeKnowledgeBases();
 
       // Also initialize legacy inline trees
       await instance.initializeTrees();

@@ -63,6 +63,9 @@ export default function KnowledgeTree() {
     // KB Manager Dialog State
     const [kbManagerOpen, setKbManagerOpen] = useState(false);
 
+    // Show conversation trees toggle (debug)
+    const [showConversationTrees, setShowConversationTrees] = useState(false);
+
     // Content Editing State
     const [editableContent, setEditableContent] = useState<string>("");
     const [contentSaveStatus, setContentSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -110,23 +113,45 @@ export default function KnowledgeTree() {
     }, [resize, stopResizing]);
 
     // Initial Load - Fetch KBs and Trees
+    const fetchTrees = useCallback(async (includeConversations: boolean) => {
+        try {
+            const url = includeConversations ? '/api/trees' : '/api/trees?type=knowledge';
+            const treeRes = await axios.get(url);
+            setTrees(treeRes.data);
+            return treeRes.data;
+        } catch (e) {
+            console.error("Failed to load trees", e);
+            return [];
+        }
+    }, []);
+
     useEffect(() => {
         async function fetchData() {
             try {
-                // Fetch knowledge bases
                 const kbRes = await axios.get('/api/knowledge-bases');
                 setKnowledgeBases(kbRes.data);
 
-                // Fetch knowledge trees only (exclude conversation trees)
-                const treeRes = await axios.get('/api/trees?type=knowledge');
-                setTrees(treeRes.data);
-                if (treeRes.data.length > 0) setActiveTreeId(treeRes.data[0].id);
+                const loadedTrees = await fetchTrees(false);
+                if (loadedTrees.length > 0) setActiveTreeId(loadedTrees[0].id);
             } catch (e) {
                 console.error("Failed to load data", e);
             }
         }
         fetchData();
     }, []);
+
+    // Re-fetch trees when conversation toggle changes
+    useEffect(() => {
+        fetchTrees(showConversationTrees).then((loaded: any[]) => {
+            // If the active tree is no longer in the list, navigate to first tree in current KB
+            if (activeTreeId && !loaded.some((t: any) => t.id === activeTreeId)) {
+                const kbTrees = activeKbId
+                    ? loaded.filter((t: any) => t.kbId === activeKbId)
+                    : loaded.filter((t: any) => !t.kbId);
+                setActiveTreeId(kbTrees.length > 0 ? kbTrees[0].id : loaded[0]?.id || '');
+            }
+        });
+    }, [showConversationTrees]);
 
     // Filter trees by active KB
     const filteredTrees = useMemo(() => {
@@ -656,6 +681,17 @@ export default function KnowledgeTree() {
                                 rows={2}
                             />
                         </div>
+
+                        {/* Show conversation trees toggle */}
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                                type="checkbox"
+                                checked={showConversationTrees}
+                                onChange={e => setShowConversationTrees(e.target.checked)}
+                                className="rounded border-zinc-300 text-purple-600 focus:ring-purple-500/20 w-3.5 h-3.5"
+                            />
+                            <span className="text-[10px] text-zinc-400">Show conversation trees</span>
+                        </label>
                     </div>
 
                     {/* Search */}

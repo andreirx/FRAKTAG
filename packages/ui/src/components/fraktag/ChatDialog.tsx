@@ -457,15 +457,15 @@ export function ChatDialog({
 
   return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="w-[95vw] max-w-6xl h-[90vh] p-0 gap-0 flex">
+        <DialogContent className="w-[95vw] max-w-6xl h-[90vh] p-0 gap-0 flex" aria-describedby={undefined}>
           {/* ACCESSIBILITY FIX: Hidden Title */}
           <DialogTitle className="sr-only">
             Chat Interface
           </DialogTitle>
           {/* Sidebar */}
-          <div className="w-64 shrink-0 bg-zinc-200 text-black flex flex-col">
+          <div className="w-80 shrink-0 bg-zinc-200 text-black flex flex-col border-r border-zinc-300">
             {/* New Chat Button */}
-            <div className="p-3 border-b border-zinc-700">
+            <div className="p-3 border-b border-zinc-300">
               <Button
                   onClick={startNewConversation}
                   className="w-full bg-zinc-700 hover:bg-zinc-600 text-white border border-zinc-600 gap-2"
@@ -491,25 +491,37 @@ export function ChatDialog({
                         <div
                             key={session.id}
                             onClick={() => setCurrentSession(session)}
-                            className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-colors ${
+                            className={`group relative grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 items-center pr-10 p-3 rounded-lg cursor-pointer transition-colors ${
                                 currentSession?.id === session.id
-                                    ? "bg-zinc-400"
-                                    : "hover:bg-zinc-300"
+                                    ? "bg-zinc-300 shadow-inner"
+                                    : "hover:bg-zinc-300/50"
                             }`}
                         >
-                          <MessageSquare className="w-4 h-4 shrink-0 text-zinc-400" />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm truncate">{session.title}</div>
-                            <div className="text-xs text-zinc-500">
-                              {session.turnCount} turn{session.turnCount !== 1 ? "s" : ""}
+                          {/* COL 1: Icon */}
+                          <MessageSquare className="w-4 h-4 shrink-0 text-zinc-500" />
+                          {/* COL 2: Text - minmax(0,1fr) forces truncation */}
+                          <div className="min-w-0 flex flex-col gap-0.5">
+                            <div className="text-sm font-medium truncate text-zinc-800">
+                              {session.title}
+                            </div>
+                            <div className="text-[10px] text-zinc-500 flex items-center gap-2">
+                              <span>{new Date(session.startedAt).toLocaleDateString()}</span>
+                              <span>&bull;</span>
+                              <span>{session.turnCount} turn{session.turnCount !== 1 ? 's' : ''}</span>
                             </div>
                           </div>
-                          <button
-                              onClick={(e) => deleteSession(session.id, e)}
-                              className="shrink-0 opacity-0 group-hover:opacity-100 p-1 hover:bg-zinc-600 rounded transition-opacity"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-zinc-400 hover:text-red-400" />
-                          </button>
+                          {/* ABSOLUTE LAYER: Delete button floats over pr-10 zone */}
+                          <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center z-20">
+                            <div className="flex items-center bg-zinc-200/90 backdrop-blur-[2px] shadow-sm border border-zinc-300 rounded-md p-0.5">
+                              <button
+                                  onClick={(e) => deleteSession(session.id, e)}
+                                  className="p-1 rounded hover:bg-red-50 text-zinc-400 hover:text-red-600 transition-colors"
+                                  title="Delete Conversation"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
                         </div>
                     ))
                 )}
@@ -517,7 +529,7 @@ export function ChatDialog({
             </ScrollArea>
 
             {/* Session count */}
-            <div className="p-3 border-t border-zinc-700 text-xs text-zinc-500">
+            <div className="p-3 border-t border-zinc-300 text-xs text-zinc-500">
               <div className="truncate">{sessions.length} conversation{sessions.length !== 1 ? 's' : ''}</div>
             </div>
           </div>
@@ -525,7 +537,7 @@ export function ChatDialog({
           {/* Main Chat Area */}
           <div className="flex-1 flex flex-col min-w-0 bg-white">
             {/* Tree Selection Header */}
-            <div className="shrink-0 border-b bg-zinc-50 px-4 py-2">
+            <div className="shrink-0 border-b bg-zinc-50 px-4 py-2 relative">
               <div className="flex items-center gap-2">
                 <button
                     onClick={() => setShowTreeSelector(!showTreeSelector)}
@@ -561,7 +573,7 @@ export function ChatDialog({
 
               {/* Expanded Tree Selector */}
               {showTreeSelector && (
-                  <div className="mt-3 p-3 bg-white rounded-lg border shadow-sm">
+                  <div className="absolute left-4 right-4 top-full mt-1 z-50 p-3 bg-white rounded-lg border shadow-xl">
                     <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
                     Select Knowledge Sources
@@ -582,7 +594,7 @@ export function ChatDialog({
                       </div>
                     </div>
 
-                    <div className="space-y-1">
+                    <div className="space-y-1 max-h-60 overflow-y-auto">
                       {trees.map((tree) => (
                           <label
                               key={tree.id}
@@ -593,7 +605,7 @@ export function ChatDialog({
                                 onCheckedChange={() => toggleTreeSelection(tree.id)}
                             />
                             <Database className="w-3.5 h-3.5 text-purple-500" />
-                            <span className="text-sm truncate">{tree.name}</span>
+                            <span className="text-sm truncate" title={tree.name}>{tree.name}</span>
                           </label>
                       ))}
                     </div>
