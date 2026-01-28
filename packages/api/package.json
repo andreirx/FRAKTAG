@@ -23,8 +23,5 @@
     "@fraktag/engine": "*",
     "cors": "^2.8.5",
     "express": "^5.2.1"
-  },
-  "optionalDependencies": {
-    "aws-jwt-verify": "^4.0.0"
   }
 }

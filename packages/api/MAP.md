@@ -6,14 +6,7 @@ The API package is a lightweight Express server that bridges the engine to the U
 
 ```
 src/
-├── server.ts           # Express server with all endpoints
-├── config/
-│   └── env.ts          # Environment variable validation and defaults
-└── middleware/
-    ├── authMiddleware.ts    # JWT validation / mock user injection
-    ├── tenantResolver.ts    # Determines storage path per user
-    ├── quotaMiddleware.ts   # Usage quota checking
-    └── index.ts             # Middleware chain export
+└── server.ts    # Express server with all endpoints
 ```
 
 ## Server Structure

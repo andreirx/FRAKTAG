@@ -29,9 +29,8 @@ src/
 │   │   └── OllamaEmbeddingAdapter.ts
 │   ├── storage/          # Storage adapters
 │   │   ├── IStorage.ts
-│   │   ├── JsonStorage.ts    # Local filesystem (default)
-│   │   ├── S3Storage.ts      # AWS S3 (cloud/enterprise)
-│   │   └── index.ts          # Factory + exports
+│   │   ├── JsonStorage.ts    # Local filesystem (JSON files)
+│   │   └── index.ts          # Exports
 │   └── parsing/          # File parsing adapters
 │       ├── IFileParser.ts
 │       ├── TextParser.ts
@@ -345,24 +344,8 @@ interface IStorage {
 }
 ```
 
-**Implementations:**
-- `JsonStorage` - Local filesystem with JSON files (default)
-- `S3Storage` - AWS S3 backend for cloud/enterprise deployments
-
-**Factory Function (`createStorage`):**
-```typescript
-function createStorage(config?: Partial<StorageConfig>): IStorage;
-
-// Reads STORAGE_ADAPTER env var ('fs' | 's3')
-// For S3: requires S3_BUCKET_DATA, optional STORAGE_PREFIX
-// For fs: uses STORAGE_ROOT or './data'
-```
-
-**S3Storage Features:**
-- Multi-tenancy via prefix (e.g., `tenants/{userId}/`)
-- Automatic corruption detection and recovery
-- Virtual directories (S3 key prefixes)
-- Read-modify-write for append operations
+**Implementation:**
+- `JsonStorage` - Local filesystem with JSON files
 
 ### Parsing Adapters
 
@@ -420,9 +403,9 @@ LLM synthesis (askStream for real-time)
 Answer with references
 ```
 
-### Store Resolution (Multi-tenant / KB Context)
+### Store Resolution (KB Context)
 
-When working with KBs or in cloud mode, the engine resolves the correct storage context:
+When working with KBs, the engine resolves the correct storage context:
 
 ```
 Request comes in
@@ -432,7 +415,6 @@ Determine context (Internal vs KB)
 ┌─────────────────────────────────────┐
 │ Internal: Use main storage          │
 │ KB: Use KB's isolated storage       │
-│ Cloud: Use S3 with tenant prefix    │
 └─────────────────────────────────────┘
     ↓
 Navigator/Fractalizer use resolved stores

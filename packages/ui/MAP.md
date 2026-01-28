@@ -32,19 +32,8 @@ src/
 │   │   ├── ReplaceVersionDialog.tsx  # Content version replacement dialog
 │   │   ├── CreateFolderDialog.tsx    # Folder creation dialog
 │   │   └── KBManagerDialog.tsx       # Knowledge base management dialog
-│   ├── auth/                     # Authentication components (cloud mode)
-│   │   ├── AuthProvider.tsx
-│   │   ├── AuthGuard.tsx
-│   │   ├── LoginScreen.tsx
-│   │   └── UserMenu.tsx
-│   └── subscription/             # Paddle payment components (cloud mode)
-│       ├── PricingTable.tsx
-│       ├── UpgradeModal.tsx
-│       └── SubscriptionStatus.tsx
 └── lib/
-    ├── utils.ts                  # Utility functions (cn for classnames)
-    ├── api.ts                    # Axios instance with auth interceptor
-    └── paddle.ts                 # Paddle.js SDK wrapper
+    └── utils.ts                  # Utility functions (cn for classnames)
 ```
 
 ## Tech Stack
