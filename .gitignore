@@ -1,5 +1,10 @@
 node_modules/
 dist/
+content/
+indexes/
+trees/
+knowledge-bases/
+
 *.log
 .DS_Store
 .env
@@ -9,6 +14,8 @@ dist/
 # Data directory contents (keep structure, ignore runtime data)
 packages/engine/data/content/*
 packages/engine/data/trees/*
+packages/engine/data/indexes/*
+packages/engine/data/knowledge-bases/*
 packages/engine/data/*.json
 !packages/engine/data/content/.gitkeep
 !packages/engine/data/trees/.gitkeep

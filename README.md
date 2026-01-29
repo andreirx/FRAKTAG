@@ -265,6 +265,11 @@ The old version is preserved in history (via `supersedes` chain), and the node p
 *   **Cloud:** AWS CDK (TypeScript).
 *   **Services:** S3 (Storage), API Gateway + Lambda (Compute), Cognito (Auth).
 
+**PREREQUISITES:**
+*   **OpenAI:** an API key.
+*   **Ollama:** having Ollama installed plus a few relevant models.
+*   **MLX:** an Apple Silicon Mac, python 3.10 or newer, and `pip install mlx-lm fastapi uvicorn pydantic sse-starlette sentence-transformers einops` - and run the download.py script then mlx_runner.py from engine/scripts.
+
 ---
 
 ## 4. Component Breakdown

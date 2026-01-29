@@ -11,6 +11,7 @@ import { JsonStorage } from './adapters/storage/JsonStorage.js';
 import { ILLMAdapter } from './adapters/llm/ILLMAdapter.js';
 import { OllamaAdapter } from './adapters/llm/OllamaAdapter.js';
 import { OpenAIAdapter } from "./adapters/llm/OpenAIAdapter.js";
+import { MLXAdapter } from './adapters/llm/MLXAdapter.js';
 import { DEFAULT_PROMPTS } from './prompts/default.js';
 import {
   FraktagConfig,
@@ -1921,6 +1922,14 @@ Answer:`;
           numCtx: config.numCtx,
           concurrency: config.concurrency
         });
+      case 'mlx':
+        return new MLXAdapter({
+          endpoint: config.endpoint, // Defaults to http://localhost:8080/v1 inside adapter
+          model: config.model,
+          timeoutMs: config.timeoutMs,
+          concurrency: config.concurrency
+        });
+
       case 'openai':
         const apiKey = config.apiKey || process.env.FRAKTAG_OPENAI_KEY || process.env.OPENAI_API_KEY;
         if (!apiKey) {

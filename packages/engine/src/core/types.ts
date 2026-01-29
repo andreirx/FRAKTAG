@@ -42,7 +42,7 @@ export interface FraktagConfig {
 }
 
 export interface LLMConfig {
-  adapter: 'ollama' | 'openai' | 'anthropic';
+  adapter: 'ollama' | 'openai' | 'anthropic' | 'mlx';
   model: string;
   basicModel?: string;
   expertModel?: string;
