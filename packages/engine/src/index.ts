@@ -12,7 +12,12 @@ import { ILLMAdapter } from './adapters/llm/ILLMAdapter.js';
 import { OllamaAdapter } from './adapters/llm/OllamaAdapter.js';
 import { OpenAIAdapter } from "./adapters/llm/OpenAIAdapter.js";
 import { MLXAdapter } from './adapters/llm/MLXAdapter.js';
-import { DEFAULT_PROMPTS } from './prompts/default.js';
+import { DEFAULT_PROMPTS, substituteTemplate } from './prompts/default.js';
+import { OracleAskNugget } from './nuggets/OracleAsk.js';
+import { OracleChatNugget } from './nuggets/OracleChat.js';
+import { AnswerGistNugget } from './nuggets/AnswerGist.js';
+import { TurnGistNugget } from './nuggets/TurnGist.js';
+import { AnalyzeTreeStructureNugget } from './nuggets/AnalyzeTreeStructure.js';
 import {
   FraktagConfig,
   IngestRequest,
@@ -140,13 +145,19 @@ export class Fraktag {
   private createEmbeddingAdapter(config?: EmbeddingConfig): IEmbeddingAdapter {
     if (!config || config.adapter === 'ollama') {
       return new OllamaEmbeddingAdapter(
-        config?.endpoint,
-        config?.model || 'nomic-embed-text'
+          config?.endpoint,
+          config?.model || 'nomic-embed-text'
       );
     }
     if (config.adapter === 'openai') {
       if (!config.apiKey) throw new Error("OpenAI embedding requires apiKey");
-      return new OpenAIEmbeddingAdapter(config.apiKey, config.model);
+
+      // PASS THE ENDPOINT HERE
+      return new OpenAIEmbeddingAdapter(
+          config.apiKey,
+          config.model,
+          config.endpoint // <--- Add this
+      );
     }
     throw new Error(`Unknown embedding adapter: ${config.adapter}`);
   }
@@ -1004,24 +1015,10 @@ export class Fraktag {
     const contextBlocks = await Promise.all(contextPromises);
     const context = contextBlocks.join('\n\n');
 
-    const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
-
-    Guidelines:
-    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
-    - Use the Titles provided in the context to explain where information comes from.
-    - If the context mentions specific terms, define them as the text does.
-    - Do not use outside knowledge. If the answer isn't in the text, say so.
-
-    Context:
-    ${context}
-
-    Question: ${query}
-
-    Answer:`;
-
     console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
 
-    const answer = await this.smartLlm.complete(prompt, {});
+    const oracleAsk = new OracleAskNugget(this.smartLlm);
+    const answer = await oracleAsk.run({ context, query });
 
     return {
       answer,
@@ -1102,22 +1099,12 @@ export class Fraktag {
 
       const context = contextBlocks.join('\n\n');
 
-      const prompt = `You are the Oracle. Answer the user's question using ONLY the provided context.
-
-    Guidelines:
-    - Cite your sources using the source as [number], AND also mention the Title for example "according to ... [1]".
-    - Use the Titles provided in the context to explain where information comes from.
-    - If the context mentions specific terms, define them as the text does.
-    - Do not use outside knowledge. If the answer isn't in the text, say so.
-
-    Context:
-    ${context}
-
-    Question: ${query}
-
-    Answer:`;
-
       console.log(`   📝 Streaming answer from ${retrieval.nodes.length} sources...`);
+
+      // Use OracleAskNugget as single source of truth for the prompt
+      const oracleAsk = new OracleAskNugget(this.smartLlm);
+      const vars = oracleAsk.prepareVariables({ context, query });
+      const prompt = substituteTemplate(oracleAsk.promptTemplate, vars);
 
       // Check if the LLM adapter supports streaming
       if (this.smartLlm.stream) {
@@ -1217,20 +1204,16 @@ export class Fraktag {
       ? JSON.stringify((treeConfig as any).dogma)
       : "None";
 
-    const resultJson = await this.expertLlm.complete(
-      DEFAULT_PROMPTS.analyzeTreeStructure,
-      {
+    try {
+      const nugget = new AnalyzeTreeStructureNugget(this.expertLlm);
+      return await nugget.run({
         treeMap,
         organizingPrinciple: treeConfig.organizingPrinciple,
-        dogma
-      }
-    );
-
-    try {
-      return JSON.parse(resultJson);
+        dogma,
+      });
     } catch (e) {
       console.error("Gardener returned invalid JSON", e);
-      return { issues: [], raw: resultJson };
+      return { issues: [] };
     }
   }
 
@@ -1275,6 +1258,12 @@ export class Fraktag {
 
     console.log(`✅ Tree ${treeId} reset to factory settings.`);
   }
+
+  // ============ LLM ACCESSORS (for nuggets / external use) ============
+
+  getBasicLlm(): ILLMAdapter { return this.basicLlm; }
+  getSmartLlm(): ILLMAdapter { return this.smartLlm; }
+  getExpertLlm(): ILLMAdapter { return this.expertLlm; }
 
   clearCache(treeId?: string) {
     // Clear cache on internal store
@@ -1744,8 +1733,12 @@ export class Fraktag {
 
     console.log(`💬 Chat in ${sessionId}: "${question.slice(0, 50)}..." across ${searchScope.length} trees`);
 
-    // 1. Retrieve relevant content from all trees in scope (PARALLEL)
-    const retrievalPromises = searchScope.map(async (treeId) => {
+    // 1. Retrieve relevant content from all trees in scope
+    // Local LLMs (MLX, Ollama) are serial — parallelizing retrieval across trees
+    // causes semaphore queuing, timeouts, and context thrashing on the GPU.
+    const isLocalLLM = this.config.llm.adapter === 'mlx' || this.config.llm.adapter === 'ollama';
+
+    const retrieveFromTree = async (treeId: string) => {
       try {
         const retrieval = await this.navigator.retrieve({
           treeId,
@@ -1775,9 +1768,24 @@ export class Fraktag {
         console.warn(`Failed to retrieve from tree ${treeId}:`, e);
         return [];
       }
-    });
+    };
 
-    const allResults = (await Promise.all(retrievalPromises)).flat();
+    let allResults: Array<{
+      nodeId: string; title: string; gist: string;
+      path: string; content: string; treeId: string;
+    }>;
+
+    if (isLocalLLM) {
+      console.log(`🐢 Serializing retrieval for local LLM (${this.config.llm.adapter})...`);
+      allResults = [];
+      for (const treeId of searchScope) {
+        const results = await retrieveFromTree(treeId);
+        allResults.push(...results);
+      }
+    } else {
+      const retrievalPromises = searchScope.map(retrieveFromTree);
+      allResults = (await Promise.all(retrievalPromises)).flat();
+    }
 
     // Assign sequential source indices and emit events
     for (const result of allResults) {
@@ -1839,20 +1847,14 @@ export class Fraktag {
       return { answer: noContextAnswer, references: [] };
     }
 
-    const prompt = `You are the Oracle. Answer the User Question using the provided Context and History.
-
-Guidelines:
-1. **Prioritize Context:** Use [SOURCE X] to answer facts. Cite them as [1], [2].
-2. **Use History:** Use "Recent Conversation History" to understand follow-up questions (e.g. "explain that", "rewrite code", "what about...").
-3. **Honesty:** If the answer isn't in Context or History, say so.
-4. Be concise but thorough.
-
-${historyContext}
-${ragContext ? `CONTEXT (Search Results):\n${ragContext}` : '(No search results found — rely on conversation history if available.)'}
-
-User Question: ${question}
-
-Answer:`;
+    // Use OracleChatNugget as single source of truth for the prompt
+    const oracleChat = new OracleChatNugget(this.smartLlm);
+    const chatVars = oracleChat.prepareVariables({
+      historyContext,
+      ragContext: ragContext ? `CONTEXT (Search Results):\n${ragContext}` : '(No search results found — rely on conversation history if available.)',
+      question,
+    });
+    const prompt = substituteTemplate(oracleChat.promptTemplate, chatVars);
 
     let answer = '';
 
@@ -1889,14 +1891,10 @@ Answer:`;
     let answerGist: string | undefined;
     let turnGist: string | undefined;
     try {
-      const gistPrompt = `Summarize this AI answer in 1-2 sentences. Do not start with "This answer..." — just state the key point.\n\n${answer.slice(0, 3000)}`;
-      const turnPrompt = `Summarize this Q&A exchange in one sentence.\n\nQuestion: ${question}\nAnswer: ${answer.slice(0, 2000)}`;
-      const [aGist, tGist] = await Promise.all([
-        this.basicLlm.complete(gistPrompt, {}),
-        this.basicLlm.complete(turnPrompt, {})
-      ]);
-      answerGist = aGist.trim().slice(0, 200);
-      turnGist = tGist.trim().slice(0, 200);
+      const answerGistNugget = new AnswerGistNugget(this.basicLlm);
+      answerGist = await answerGistNugget.run({ answer: answer.slice(0, 3000) });
+      const turnGistNugget = new TurnGistNugget(this.basicLlm);
+      turnGist = await turnGistNugget.run({ question, answer: answer.slice(0, 2000) });
     } catch (e) {
       console.warn('⚠️ Could not generate AI gists for conversation turn:', e);
     }

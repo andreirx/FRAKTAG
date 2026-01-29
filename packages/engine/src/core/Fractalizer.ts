@@ -17,6 +17,10 @@ import {
   hasContent
 } from './types.js';
 import { VectorStore } from './VectorStore.js';
+import { GenerateGistNugget } from '../nuggets/GenerateGist.js';
+import { GenerateTitleNugget } from '../nuggets/GenerateTitle.js';
+import { AiSplitNugget } from '../nuggets/AiSplit.js';
+import { ProposePlacementNugget } from '../nuggets/ProposePlacement.js';
 
 /**
  * Store resolver interface for KB-aware operations
@@ -29,6 +33,10 @@ export interface StoreResolver {
 
 export class Fractalizer {
   private storeResolver?: StoreResolver;
+  private gistNugget: GenerateGistNugget;
+  private titleNugget: GenerateTitleNugget;
+  private aiSplitNugget: AiSplitNugget;
+  private placementNugget: ProposePlacementNugget;
 
   constructor(
     private contentStore: ContentStore,
@@ -38,7 +46,12 @@ export class Fractalizer {
     private smartLlm: ILLMAdapter,
     private config: IngestionConfig,
     private prompts: PromptSet
-  ) {}
+  ) {
+    this.gistNugget = new GenerateGistNugget(basicLlm, prompts.generateGist);
+    this.titleNugget = new GenerateTitleNugget(basicLlm, prompts.generateTitle || prompts.generateGist);
+    this.aiSplitNugget = new AiSplitNugget(smartLlm);
+    this.placementNugget = new ProposePlacementNugget(smartLlm, prompts.proposePlacement);
+  }
 
   /**
    * Set a store resolver for KB-aware operations.
@@ -519,14 +532,10 @@ export class Fractalizer {
     try {
       const treeStore = this.getTreeStore(treeId);
       const tree = await treeStore.getTree(treeId);
-      const gist = await this.basicLlm.complete(
-        this.prompts.generateGist,
-        {
-          content: content.slice(0, 3000),
-          organizingPrinciple: tree.organizingPrinciple
-        }
-      );
-      return gist.trim();
+      return await this.gistNugget.run({
+        content: content.slice(0, 3000),
+        organizingPrinciple: tree.organizingPrinciple,
+      });
     } catch (e) {
       // Fallback: first 100 chars
       return content.slice(0, 100).replace(/\n/g, ' ').trim() + '...';
@@ -540,14 +549,10 @@ export class Fractalizer {
     try {
       const treeStore = this.getTreeStore(treeId);
       const tree = await treeStore.getTree(treeId);
-      const title = await this.basicLlm.complete(
-        this.prompts.generateTitle || this.prompts.generateGist,
-        {
-          content: content.slice(0, 2000),
-          organizingPrinciple: tree.organizingPrinciple
-        }
-      );
-      return title.trim().slice(0, 100); // Cap title length
+      return await this.titleNugget.run({
+        content: content.slice(0, 2000),
+        organizingPrinciple: tree.organizingPrinciple,
+      });
     } catch (e) {
       return 'Untitled Document';
     }
@@ -657,35 +662,10 @@ export class Fractalizer {
     try {
       const treeStore = this.getTreeStore(treeId);
       const tree = await treeStore.getTree(treeId);
-
-      const prompt = `Analyze this content and split it into logical sections. Each section should be self-contained and cover a distinct topic.
-
-Organizing principle: ${tree.organizingPrinciple}
-
-Content:
----
-${content.slice(0, 8000)}
----
-
-Return a JSON array of sections with "title" and "text" properties.
-Example: [{"title": "Introduction", "text": "content here..."}, {"title": "Main Topic", "text": "..."}]
-
-IMPORTANT: Return ONLY valid JSON array, no other text.`;
-
-      const response = await this.smartLlm.complete(prompt, {});
-
-      // Try to parse JSON from response
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        console.warn('AI split response was not valid JSON, falling back to single section');
-        return [{ title: await this.generateTitle(content, treeId), text: content }];
-      }
-
-      const splits = JSON.parse(jsonMatch[0]);
-      return splits.map((s: any) => ({
-        title: String(s.title || 'Untitled Section'),
-        text: String(s.text || '')
-      }));
+      return await this.aiSplitNugget.run({
+        content: content.slice(0, 8000),
+        organizingPrinciple: tree.organizingPrinciple,
+      });
     } catch (e) {
       console.error('AI split failed:', e);
       // Fallback: return content as single section
@@ -704,7 +684,6 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
   ): Promise<{ folderId: string; reasoning: string; confidence: number }> {
     try {
       const treeStore = this.getTreeStore(treeId);
-      const tree = await treeStore.getTree(treeId);
       const leafFolders = await treeStore.getLeafFolders(treeId);
 
       if (leafFolders.length === 0) {
@@ -724,32 +703,15 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
         `- ID: ${f.id}\n  Title: ${f.title}\n  Gist: ${f.gist}\n  Path: ${f.path}`
       ).join('\n\n');
 
-      const response = await this.smartLlm.complete(
-        this.prompts.proposePlacement,
-        {
-          documentTitle,
-          documentGist: documentGist || 'No summary available',
-          leafFolders: folderList
-        }
-      );
-
-      // Try to parse JSON from response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        // Fallback to first folder
-        return {
-          folderId: leafFolders[0].id,
-          reasoning: 'AI response was not valid JSON',
-          confidence: 0.5
-        };
-      }
-
-      const proposal = JSON.parse(jsonMatch[0]);
+      const proposal = await this.placementNugget.run({
+        documentTitle,
+        documentGist: documentGist || 'No summary available',
+        leafFolders: folderList,
+      });
 
       // Validate the proposed folder exists
       const validFolder = leafFolders.find(f => f.id === proposal.targetFolderId);
       if (!validFolder) {
-        // AI proposed invalid folder, use first one
         return {
           folderId: leafFolders[0].id,
           reasoning: proposal.reasoning || 'Default folder selected',
@@ -760,11 +722,10 @@ IMPORTANT: Return ONLY valid JSON array, no other text.`;
       return {
         folderId: proposal.targetFolderId,
         reasoning: proposal.reasoning || 'AI-selected folder',
-        confidence: typeof proposal.confidence === 'number' ? proposal.confidence : 0.7
+        confidence: proposal.confidence
       };
     } catch (e) {
       console.error('Placement proposal failed:', e);
-      // Get first leaf folder as fallback
       const treeStore = this.getTreeStore(treeId);
       const leafFolders = await treeStore.getLeafFolders(treeId);
       return {

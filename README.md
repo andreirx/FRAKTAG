@@ -153,7 +153,7 @@ The system follows a **Hexagonal (Ports & Adapters)** architecture, ensuring the
 *   **The Brain (Engine):** Pure TypeScript logic for ingestion, organization, and retrieval.
 *   **The Memory (Storage):** Content Addressable Storage (CAS) for raw data + Monolithic JSON for structure.
 *   **The Interface (UI):** A React-based visualizer with human-supervised ingestion workflow.
-*   **The Nervous System (LLM Adapters):** A tiered multi-model approach (Basic vs Smart vs Expert).
+*   **The Nervous System (LLM Adapters):** A tiered multi-model approach (Basic vs Smart vs Expert). Each adapter exposes `modelName` and `adapterName` for diagnostics.
 
 ### The "Council of Three" AI Strategy
 The engine utilizes different classes of models for specific tasks to balance cost, latency, and intelligence:
@@ -268,7 +268,7 @@ The old version is preserved in history (via `supersedes` chain), and the node p
 **PREREQUISITES:**
 *   **OpenAI:** an API key.
 *   **Ollama:** having Ollama installed plus a few relevant models.
-*   **MLX:** an Apple Silicon Mac, python 3.10 or newer, and `pip install mlx-lm fastapi uvicorn pydantic sse-starlette sentence-transformers einops` - and run the download.py script then mlx_runner.py from engine/scripts.
+*   **MLX:** an Apple Silicon Mac, python 3.10 or newer, and `pip install mlx-lm fastapi uvicorn pydantic sse-starlette sentence-transformers "huggingface_hub[cli]" einops` inside a dedicated venv - and run the download.py script then mlx_runner.py from engine/scripts.
 
 ---
 
@@ -283,6 +283,18 @@ Responsible for turning raw documents into the Tree.
 *   **Surgical Splitting:** Uses a "Census" approach. It counts Headers (`#`, `##`), PDF Page markers, and Delimiters (`---`) to deterministically split large documents into logical chunks without hallucination.
 *   **Smart Title Detection:** Recognizes when headers are used as delimiters (e.g., repeated `## Point`) and extracts actual titles from content.
 *   **Auto-Placement (with human override):** Intelligently routes new content into the existing tree hierarchy based on semantic fit.
+
+#### LLM Nuggets (`src/nuggets/`)
+All LLM calls in the engine are wrapped in **Nuggets** — typed functions that encapsulate a prompt, its input/output contracts, and output parsing:
+*   **BaseNugget<TInput, TOutput>:** Abstract base with `run()`, `extractJSON()` sanitization (handles markdown fences, double-quoted key hallucinations, trailing commas), and `parseJSONArray()`.
+*   **Navigator nuggets:** `GlobalMapScan`, `AssessVectorCandidates`, `AssessNeighborhood` — tree scanning and relevance filtering.
+*   **Fractalizer nuggets:** `GenerateGist`, `GenerateTitle`, `ProposePlacement`, `AiSplit` — ingestion and content processing.
+*   **Oracle nuggets:** `OracleAsk`, `OracleChat`, `AnswerGist`, `TurnGist` — RAG synthesis and conversation.
+*   **Maintenance nuggets:** `AnalyzeTreeStructure` — structural auditing.
+*   **DiagnosticLLMProxy:** Test-time adapter wrapper that records rendered prompts, raw outputs, timing, and model metadata.
+*   **NuggetTester:** Runs all 12 nuggets with sample inputs, validates output shape, and generates a full diagnostic `.txt` report.
+
+Each nugget declares `expectsJSON` as a fixed property — the adapter uses this to request JSON mode from the LLM (e.g., `response_format: json_object` for OpenAI, `format: 'json'` for Ollama) without fragile heuristic detection.
 
 #### 2. The Navigator (Retrieval)
 Responsible for finding information. Uses an **Ensemble Strategy**:
@@ -650,6 +662,15 @@ fkt retrieve <query> [treeId]  # Vector + graph search
 fkt ask <query> [treeId]       # RAG synthesis
 fkt browse [treeId] [nodeId]   # Navigate structure
 ```
+
+**Nugget Testing:**
+```bash
+fkt test-nuggets               # Run all 12 nugget tests, write diagnostic report
+fkt test-nuggets GenerateGist  # Test one nugget by name
+fkt test-nuggets --json        # JSON output (report file still written)
+```
+
+Each run writes a timestamped `nugget-report-{timestamp}.txt` with: rendered prompts, raw LLM output, parsed output, adapter/model metadata, timing, and validation results.
 
 ### Integration with Coding Agents
 

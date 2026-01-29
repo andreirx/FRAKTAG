@@ -5,6 +5,11 @@
  * Provides a unified interface for different LLM providers
  */
 export interface ILLMAdapter {
+  /** Human-readable model identifier (e.g. "gpt-4o-mini", "llama3.2:3b") */
+  readonly modelName?: string;
+  /** Adapter type (e.g. "openai", "ollama", "mlx") */
+  readonly adapterName?: string;
+
   /**
    * Complete a prompt with the configured LLM
    * @param prompt - The prompt template or direct prompt text
@@ -15,7 +20,7 @@ export interface ILLMAdapter {
   complete(
     prompt: string,
     variables: Record<string, string | number | string[]>,
-    options?: { maxTokens?: number }
+    options?: { maxTokens?: number; expectsJSON?: boolean }
   ): Promise<string>;
 
   /**

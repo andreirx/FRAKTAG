@@ -3,9 +3,9 @@
   "storagePath": ".",
   "llm": {
     "adapter": "mlx",
-    "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-    "basicModel": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-    "expertModel": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+    "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-6bit",
+    "basicModel": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-6bit",
+    "expertModel": "mlx-community/Qwen3-Next-80B-A3B-Instruct-6bit",
     "endpoint": "http://127.0.0.1:11434/v1",
     "numCtx": 65536,
     "timeoutMs": 600000,
@@ -17,7 +17,8 @@
     "endpoint": "http://127.0.0.1:11434/v1",
     "apiKey": "dummy"
   },
-  "trees": [    {
+  "trees": [
+    {
     "id": "notes",
     "name": "Master Notes",
     "organizingPrinciple": "Universal Knowledge Base. Organized by Domain (Tech/Personal), Project, and Status.",

@@ -4,6 +4,7 @@ content/
 indexes/
 trees/
 knowledge-bases/
+fraktag-env/
 
 *.log
 .DS_Store

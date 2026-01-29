@@ -784,6 +784,41 @@ HUMAN EXAMPLES:
         break;
       }
 
+      case 'test-nuggets': {
+        const { runNuggetTests, generateTextReport } = await import('./nuggets/NuggetTester.js');
+        const filterName = (ARG1 && !ARG1.startsWith('--')) ? ARG1 : undefined;
+        const llm = fraktag.getBasicLlm();
+
+        log('🧪 Running nugget tests...\n');
+        const results = await runNuggetTests(llm, filterName);
+
+        if (OUTPUT_JSON) {
+          output(results);
+        } else {
+          let passed = 0;
+          let failed = 0;
+          for (const r of results) {
+            const icon = r.pass ? '✅' : '❌';
+            console.log(`${icon} ${r.name} (${r.durationMs}ms)`);
+            if (r.validationMessage) console.log(`   ${r.validationMessage}`);
+            if (r.error) console.log(`   Error: ${r.error}`);
+            if (r.pass) passed++; else failed++;
+          }
+          console.log(`\n🧪 Results: ${passed} passed, ${failed} failed out of ${results.length}`);
+        }
+
+        // Always write the full diagnostic report
+        const report = generateTextReport(results);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const reportName = filterName
+          ? `nugget-report-${filterName}-${timestamp}.txt`
+          : `nugget-report-${timestamp}.txt`;
+        const reportPath = join(resolve(process.cwd()), reportName);
+        await writeFile(reportPath, report, 'utf-8');
+        log(`\n📄 Full report: ${reportPath}`);
+        break;
+      }
+
       default:
         output({ error: `Unknown command: ${COMMAND}` }, `Unknown: ${COMMAND}. Run "fkt help" for usage.`);
         process.exit(1);

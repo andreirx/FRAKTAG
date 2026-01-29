@@ -72,11 +72,28 @@ packages/
 │   ├── src/
 │   │   ├── core/    # ContentStore, TreeStore, VectorStore, Fractalizer, Navigator, Arborist
 │   │   ├── adapters/
-│   │   │   ├── llm/        # ILLMAdapter → OllamaAdapter, OpenAIAdapter
+│   │   │   ├── llm/        # ILLMAdapter → BaseLLMAdapter → OllamaAdapter, OpenAIAdapter, MLXAdapter
 │   │   │   ├── embeddings/ # IEmbeddingAdapter → Ollama, OpenAI
 │   │   │   ├── storage/    # IStorage → JsonStorage
 │   │   │   └── parsing/    # IFileParser → PdfParser, TextParser
-│   │   ├── prompts/        # LLM prompt templates
+│   │   ├── nuggets/        # LLM Nuggets — typed wrappers for all LLM calls
+│   │   │   ├── BaseNugget.ts          # Abstract base: run(), extractJSON(), parseJSONArray()
+│   │   │   ├── index.ts              # Re-exports for all nuggets
+│   │   │   ├── all.ts                # Barrel import
+│   │   │   ├── NuggetTester.ts       # Test runner + DiagnosticLLMProxy + report generator
+│   │   │   ├── GlobalMapScan.ts      # Navigator: scan tree map for targets
+│   │   │   ├── AssessVectorCandidates.ts  # Navigator: filter vector results
+│   │   │   ├── AssessNeighborhood.ts      # Navigator: evaluate children relevance
+│   │   │   ├── GenerateGist.ts       # Fractalizer: 1-2 sentence summary
+│   │   │   ├── GenerateTitle.ts      # Fractalizer: 3-10 word title
+│   │   │   ├── ProposePlacement.ts   # Fractalizer: document placement
+│   │   │   ├── AiSplit.ts            # Fractalizer: AI-assisted content splitting
+│   │   │   ├── OracleAsk.ts          # RAG synthesis (single query)
+│   │   │   ├── OracleChat.ts         # RAG synthesis (conversational)
+│   │   │   ├── AnswerGist.ts         # Summarize answer
+│   │   │   ├── TurnGist.ts           # Summarize Q&A turn
+│   │   │   └── AnalyzeTreeStructure.ts # AI structural audit
+│   │   ├── prompts/        # LLM prompt templates (legacy DEFAULT_PROMPTS)
 │   │   └── cli.ts          # CLI binary (fkt command)
 │   └── data/               # Runtime data (config, content, trees, indexes)
 ├── api/             # Express REST bridge (tsx, port 3000)
@@ -174,6 +191,7 @@ fkt retrieve <query>   # Query retrieval
 fkt ask <query>        # RAG synthesis with sources
 fkt audit [--apply]    # Tree audit with optional auto-fix
 fkt reset [--prune]    # Clear tree
+fkt test-nuggets [name] [--json]  # Run nugget tests, write diagnostic report
 ```
 
 ## Configuration
@@ -254,8 +272,13 @@ To share a knowledge base:
   - `packages/ui/src/components/fraktag/MoveDialog.tsx` - Node relocation with folder creation
   - `packages/ui/src/components/fraktag/TreeItem.tsx` - Recursive tree renderer
 - **LLM Adapters:**
-  - `packages/engine/src/adapters/llm/ILLMAdapter.ts` - Interface with `complete()` and `stream()` methods
+  - `packages/engine/src/adapters/llm/ILLMAdapter.ts` - Interface with `complete()`, `stream()`, `modelName`, `adapterName`
+  - `packages/engine/src/adapters/llm/BaseLLMAdapter.ts` - Abstract base: semaphore, template substitution, JSON extraction, `expectsJSON` support
   - `packages/engine/src/adapters/llm/OpenAIAdapter.ts` - OpenAI implementation with streaming support
+- **LLM Nuggets:**
+  - `packages/engine/src/nuggets/BaseNugget.ts` - Abstract base: `run()`, `extractJSON()` with sanitization, `parseJSONArray()`
+  - `packages/engine/src/nuggets/NuggetTester.ts` - Test runner with `DiagnosticLLMProxy`, `generateTextReport()`
+  - `packages/engine/src/nuggets/index.ts` - Re-exports for all 12 nuggets
 
 ## Package MAP Files
 
@@ -270,6 +293,7 @@ Each package has a detailed `MAP.md` file explaining its internal architecture:
 - ✅ Retrieval (Navigator): Highly accurate with streaming support
 - ✅ UI: Auto-save, folder management, ingestion wizard, streaming Q&A
 - ✅ Streaming: Real-time sources + answer via SSE
+- ✅ LLM Nuggets: All 12 active LLM calls wrapped with typed I/O, JSON sanitization, and diagnostic testing
 - ⚠️ Arborist: BETA - limited autonomy
 
 ## Coding Guidelines
@@ -298,6 +322,22 @@ Each package has a detailed `MAP.md` file explaining its internal architecture:
   - `event: chunk` - Emits answer text chunks
   - `event: done` - Signals completion with references
   - `event: error` - Error handling
+
+### LLM Nugget Patterns
+All LLM calls are wrapped in **Nuggets** — typed functions in `src/nuggets/`:
+- **Never call `llm.complete()` directly** in Navigator, Fractalizer, or index.ts. Use a nugget's `.run()` method instead.
+- Each nugget declares `expectsJSON` as a readonly property. The adapter uses this to enable JSON mode. Do not pass `expectsJSON` from call sites.
+- For **streaming paths**, use the nugget as the single source of truth for the prompt:
+  ```typescript
+  const nugget = new OracleAskNugget(this.smartLlm);
+  const vars = nugget.prepareVariables(input);
+  const prompt = substituteTemplate(nugget.promptTemplate, vars);
+  await this.smartLlm.stream(prompt, {}, onChunk);
+  ```
+- **Custom prompt overrides** (from config) are passed via the nugget constructor's `promptOverride` parameter.
+- **JSON sanitization** is handled by `BaseNugget.extractJSON()` — it strips markdown fences, finds `{}`/`[]` bounds, fixes double-quoted key hallucinations, and removes trailing commas.
+- **Adding a new LLM call:** Create a new nugget file in `src/nuggets/`, define `TInput`/`TOutput` interfaces, implement `prepareVariables()` and `parseOutput()`, and re-export from `src/nuggets/index.ts`.
+- **Testing nuggets:** Add a test case to `NuggetTester.ts` `buildTestCases()` with sample input and a validator. Run via `fkt test-nuggets`.
 
 ### Streaming Architecture
 The streaming system enables real-time feedback during Q&A:

@@ -16,6 +16,9 @@ import {
   hasContent
 } from './types.js';
 import { DEFAULT_PROMPTS } from '../prompts/default.js';
+import { AssessVectorCandidatesNugget } from '../nuggets/AssessVectorCandidates.js';
+import { GlobalMapScanNugget } from '../nuggets/GlobalMapScan.js';
+import { AssessNeighborhoodNugget } from '../nuggets/AssessNeighborhood.js';
 
 /**
  * Store resolver interface for KB-aware operations
@@ -28,13 +31,20 @@ export interface StoreResolver {
 
 export class Navigator {
   private storeResolver?: StoreResolver;
+  private assessVectorCandidates: AssessVectorCandidatesNugget;
+  private globalMapScan: GlobalMapScanNugget;
+  private assessNeighborhood: AssessNeighborhoodNugget;
 
   constructor(
     private contentStore: ContentStore,
     private treeStore: TreeStore,
     private vectorStore: VectorStore,
     private llm: ILLMAdapter
-  ) {}
+  ) {
+    this.assessVectorCandidates = new AssessVectorCandidatesNugget(llm);
+    this.globalMapScan = new GlobalMapScanNugget(llm);
+    this.assessNeighborhood = new AssessNeighborhoodNugget(llm);
+  }
 
   /**
    * Set a store resolver for KB-aware operations.
@@ -100,14 +110,11 @@ export class Navigator {
       const neighborhoodText = await this.buildNeighborhoodContext(validSeeds, request.treeId);
 
       try {
-        const decisionJson = await this.llm.complete(
-          DEFAULT_PROMPTS.assessVectorCandidates,
+        const decision = await this.assessVectorCandidates.run(
           { query: request.query, neighborhoods: neighborhoodText },
           { maxTokens: 1024 }
         );
-
-        const decision = JSON.parse(decisionJson);
-        const targetIds = decision.relevantNodeIds || [];
+        const targetIds = decision.relevantNodeIds;
 
         console.log(`   Scout selected ${targetIds.length} nodes from vectors.`);
 
@@ -156,30 +163,28 @@ export class Navigator {
       console.log(`   Map too large (${fullTreeMap.length} chars). Split into ${mapChunks.length} chunks.`);
     }
 
-    const scanPromises = mapChunks.map(async (chunk, index) => {
+    // Serialize map scan — each chunk requires an LLM call, and local LLMs
+    // (MLX/Ollama) cannot handle concurrent requests without context thrashing.
+    const allTargets: string[] = [];
+    for (let index = 0; index < mapChunks.length; index++) {
+      const chunk = mapChunks[index];
       try {
         const partialContext = mapChunks.length > 1
           ? `(Part ${index + 1} of ${mapChunks.length})`
           : "";
 
-        const scanJson = await this.llm.complete(
-          DEFAULT_PROMPTS.globalMapScan,
+        const scan = await this.globalMapScan.run(
           {
             query: request.query,
             treeMap: `[Map Segment ${partialContext}]\n${chunk}`
           },
           { maxTokens: 1024 }
         );
-
-        const scan = JSON.parse(scanJson);
-        return scan.targetIds || [];
-      } catch (e) {
-        console.error(`   ❌ Map Scan failed for chunk ${index + 1}:`, e);
-        return [];
+        allTargets.push(...scan.targetIds);
+      } catch (e: any) {
+        console.error(`   ❌ Map Scan failed for chunk ${index + 1}: ${e.message || e}`);
       }
-    });
-
-    const allTargets = (await Promise.all(scanPromises)).flat();
+    }
     const uniqueTargets = [...new Set(allTargets)];
     console.log(`   Strategist identified ${uniqueTargets.length} targets from map scan.`);
     uniqueTargets.forEach((id: string) => candidates.add(id));
@@ -333,21 +338,11 @@ export class Navigator {
     console.log(`   📂 [Scout] Scanning ${children.length} children at "${node.title.slice(0, 30)}..." (${depthContext})`);
 
     try {
-      const decisionJson = await this.llm.complete(
-        DEFAULT_PROMPTS.assessNeighborhood,
+      const decision = await this.assessNeighborhood.run(
         { query, parentContext, childrenList: candidates, depthContext },
         { maxTokens: 1024 }
       );
-
-      let decision;
-      try {
-        decision = JSON.parse(decisionJson);
-      } catch (e) {
-        console.warn("   ⚠️ Scout returned invalid JSON, skipping branch.");
-        return;
-      }
-
-      const targetIds = decision.relevantIds || [];
+      const targetIds = decision.relevantIds;
 
       if (targetIds.length > 0) {
         console.log(`      👉 Scout picked ${targetIds.length} paths.`);

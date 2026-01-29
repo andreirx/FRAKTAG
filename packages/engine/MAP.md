@@ -20,9 +20,11 @@ src/
 │   └── ConversationManager.ts  # Conversation memory/log
 ├── adapters/             # Infrastructure adapters (Hexagonal Architecture)
 │   ├── llm/              # Language model adapters
-│   │   ├── ILLMAdapter.ts
-│   │   ├── OpenAIAdapter.ts
-│   │   └── OllamaAdapter.ts
+│   │   ├── ILLMAdapter.ts        # Interface contract
+│   │   ├── BaseLLMAdapter.ts     # Abstract base (semaphore, vars, clean, extractJSON, logging)
+│   │   ├── OpenAIAdapter.ts      # OpenAI/GPT (retry, reasoning models, SSE)
+│   │   ├── OllamaAdapter.ts      # Ollama local (NDJSON streaming, num_ctx)
+│   │   └── MLXAdapter.ts         # MLX LM Server (OpenAI-compatible, Apple Silicon)
 │   ├── embeddings/       # Embedding adapters
 │   │   ├── IEmbeddingAdapter.ts
 │   │   ├── OpenAIEmbeddingAdapter.ts
@@ -35,7 +37,24 @@ src/
 │       ├── IFileParser.ts
 │       ├── TextParser.ts
 │       └── PdfParser.ts
-├── prompts/              # LLM prompt templates
+├── nuggets/              # LLM Nuggets — typed wrappers for all LLM calls
+│   ├── BaseNugget.ts         # Abstract base: run(), extractJSON(), parseJSONArray()
+│   ├── index.ts              # Re-exports for all nuggets
+│   ├── all.ts                # Barrel import
+│   ├── NuggetTester.ts       # Test runner + DiagnosticLLMProxy + report generator
+│   ├── GlobalMapScan.ts      # Navigator: scan tree map for targets
+│   ├── AssessVectorCandidates.ts  # Navigator: filter vector results
+│   ├── AssessNeighborhood.ts      # Navigator: evaluate children relevance
+│   ├── GenerateGist.ts       # Fractalizer: 1-2 sentence summary
+│   ├── GenerateTitle.ts      # Fractalizer: 3-10 word title
+│   ├── ProposePlacement.ts   # Fractalizer: document placement
+│   ├── AiSplit.ts            # Fractalizer: AI-assisted content splitting
+│   ├── OracleAsk.ts          # RAG synthesis (single query)
+│   ├── OracleChat.ts         # RAG synthesis (conversational)
+│   ├── AnswerGist.ts         # Summarize answer
+│   ├── TurnGist.ts           # Summarize Q&A turn
+│   └── AnalyzeTreeStructure.ts # AI structural audit
+├── prompts/              # LLM prompt templates (legacy DEFAULT_PROMPTS)
 │   └── default.ts
 └── utils/
     ├── Semaphore.ts      # Async concurrency limiter
@@ -81,8 +100,11 @@ const fraktag = await Fraktag.fromConfigFile('./config.json');
 
 **Maintenance Methods:**
 - `verifyTree(treeId)` - Check tree integrity
-- `audit(treeId)` - Structural audit
+- `audit(treeId)` - Structural audit (via `AnalyzeTreeStructureNugget`)
 - `reset(treeId, { pruneContent })` - Clear tree
+
+**LLM Accessors:**
+- `getBasicLlm()` / `getSmartLlm()` / `getExpertLlm()` - Access the Council of Three adapters (used by CLI `test-nuggets` and for external nugget instantiation)
 
 ### 2. ContentStore (`core/ContentStore.ts`)
 
@@ -170,29 +192,38 @@ interface VectorEntry {
 
 ### 5. Fractalizer (`core/Fractalizer.ts`)
 
-Handles document ingestion and intelligent splitting.
+Handles document ingestion and intelligent splitting. All LLM calls use nuggets:
+- `GenerateGistNugget` / `GenerateTitleNugget` — AI content summarization
+- `AiSplitNugget` — AI-assisted semantic boundary detection
+- `ProposePlacementNugget` — AI folder suggestion
+
+Nuggets accept `promptOverride` for config-customized prompts.
 
 **Splitting Strategies:**
 1. **Header-based:** Split on `#`, `##`, `###` markdown headers
 2. **Horizontal Rule:** Split on `---` separators
 3. **Page markers:** Split on PDF page boundaries
 4. **Numbered sections:** Split on `1.`, `A.`, `I.`, `1.1.` patterns
-5. **AI-assisted:** LLM-driven semantic boundary detection
+5. **AI-assisted:** LLM-driven semantic boundary detection (via `AiSplitNugget`)
 
 **Key Methods:**
 - `analyzeContent(content)` - Detect natural boundaries
 - `splitByHeaders(content, level)` - Header-based splitting
-- `generateTitle(content)` / `generateGist(content)` - AI generation
-- `proposePlacement(treeId, title, gist)` - Find best folder
+- `generateTitle(content)` / `generateGist(content)` - AI generation (via nuggets)
+- `generateAiSplits(content, treeId)` - AI-assisted splitting (via `AiSplitNugget`)
+- `proposePlacement(treeId, title, gist)` - Find best folder (via `ProposePlacementNugget`)
 
 ### 6. Navigator (`core/Navigator.ts`)
 
-Retrieval engine using ensemble strategy.
+Retrieval engine using ensemble strategy. All LLM calls use nuggets:
+- `GlobalMapScanNugget` — scan tree map for targets
+- `AssessVectorCandidatesNugget` — filter vector search results
+- `AssessNeighborhoodNugget` — evaluate child relevance during drilling
 
 **Retrieval Phases:**
-1. **Vector Paratroopers:** Fast semantic search to find deep relevant nodes
-2. **Global Map Scan:** LLM analyzes tree gists to identify promising branches
-3. **Precision Drilling:** Recursive exploration with relevance scoring
+1. **Vector Paratroopers:** Fast semantic search to find deep relevant nodes (filtered via `AssessVectorCandidatesNugget`)
+2. **Global Map Scan:** LLM analyzes tree gists to identify promising branches (via `GlobalMapScanNugget`)
+3. **Precision Drilling:** Recursive exploration with relevance scoring (via `AssessNeighborhoodNugget`)
 
 **Resolution Levels:**
 - `L0` - Gists only (fast overview)
@@ -296,6 +327,66 @@ class ConversationManager {
 - References stored as nodeIds (hydrated on demand)
 - Sessions organized by date
 
+### 10. LLM Nuggets (`nuggets/`)
+
+All LLM calls in the engine are wrapped in **Nuggets** — typed functions that encapsulate a prompt template, input/output type contracts, and robust output parsing.
+
+**Design:**
+```typescript
+abstract class BaseNugget<TInput, TOutput> {
+  abstract readonly name: string;
+  abstract readonly promptTemplate: string;
+  abstract readonly expectsJSON: boolean;
+
+  constructor(protected llm: ILLMAdapter, protected promptOverride?: string) {}
+
+  abstract prepareVariables(input: TInput): Record<string, string | number | string[]>;
+  protected abstract parseOutput(raw: string): TOutput;
+
+  async run(input: TInput, options?: { maxTokens?: number }): Promise<TOutput>;
+
+  protected extractJSON<T>(text: string): T;      // Robust JSON object extraction
+  protected parseJSONArray<T>(text: string): T[];  // Robust JSON array extraction
+}
+```
+
+**JSON Sanitization (`extractJSON`):**
+LLMs (especially quantized models) produce near-valid JSON with predictable errors. `extractJSON` handles:
+1. Strips markdown code fences (`` ```json ... ``` ``)
+2. Finds `{}`/`[]` bounds (ignores preamble/postamble text)
+3. Fixes double-quoted keys: `" "relevantIds"` → `"relevantIds"` (common 8-bit hallucination)
+4. Removes trailing commas before `}` or `]`
+
+**All 12 Nuggets:**
+
+| Nugget | Consumer | Input | Output | expectsJSON |
+|--------|----------|-------|--------|-------------|
+| `GlobalMapScan` | Navigator | `{query, treeMap}` | `{targetIds[], reasoning}` | true |
+| `AssessVectorCandidates` | Navigator | `{query, neighborhoods}` | `{relevantNodeIds[]}` | true |
+| `AssessNeighborhood` | Navigator | `{query, parentContext, depthContext, childrenList}` | `{relevantIds[]}` | true |
+| `GenerateGist` | Fractalizer | `{content, organizingPrinciple}` | `string` | false |
+| `GenerateTitle` | Fractalizer | `{content, organizingPrinciple}` | `string` | false |
+| `ProposePlacement` | Fractalizer | `{documentTitle, documentGist, leafFolders}` | `{targetFolderId, confidence, reasoning, newFolderSuggestion?}` | true |
+| `AiSplit` | Fractalizer | `{content, organizingPrinciple}` | `{title, text}[]` | false |
+| `OracleAsk` | index.ts | `{context, query}` | `string` | false |
+| `OracleChat` | index.ts | `{historyContext, ragContext, question}` | `string` | false |
+| `AnswerGist` | index.ts | `{answer}` | `string` | false |
+| `TurnGist` | index.ts | `{question, answer}` | `string` | false |
+| `AnalyzeTreeStructure` | index.ts | `{organizingPrinciple, dogma, treeMap}` | `{issues[]}` | true |
+
+**Prompt Sources:**
+- Navigator and Fractalizer nuggets use prompts from `DEFAULT_PROMPTS` in `prompts/default.ts` (accepts `promptOverride` for config customization).
+- Oracle, Gist, and AiSplit nuggets define their prompts inline (they were inline in the original code).
+
+**Streaming Integration:**
+Oracle nuggets (`OracleAsk`, `OracleChat`) are also used by streaming paths. The streaming caller uses the nugget's `prepareVariables()` + `substituteTemplate()` to render the prompt, then passes it to `llm.stream()` directly. This keeps the nugget as the single source of truth for the prompt.
+
+**Diagnostic Testing (`NuggetTester`):**
+- `DiagnosticLLMProxy` wraps any `ILLMAdapter` and records: rendered prompt, raw output, char counts, timing, adapter/model metadata.
+- `runNuggetTests(llm, filterName?)` runs all nuggets with sample inputs, validates output shape.
+- `generateTextReport(results)` produces a structured `.txt` report with per-nugget sections: input, rendered prompt, raw output, parsed output, validation, and a summary table.
+- CLI: `fkt test-nuggets [name] [--json]` — always writes a timestamped report file.
+
 ## Adapters
 
 ### LLM Adapters
@@ -303,17 +394,31 @@ class ConversationManager {
 **Interface (`ILLMAdapter`):**
 ```typescript
 interface ILLMAdapter {
-  complete(prompt, variables, options?): Promise<string>;
+  readonly modelName?: string;    // e.g. "gpt-4o-mini", "llama3.2:3b"
+  readonly adapterName?: string;  // e.g. "openai", "ollama", "mlx"
+
+  complete(prompt, variables, options?): Promise<string>;  // options includes expectsJSON
   stream?(prompt, variables, onChunk, options?): Promise<string>;
   testConnection(): Promise<boolean>;
 }
 ```
 
-**Implementations:**
-- `OpenAIAdapter` - GPT-4/GPT-5/O-series with streaming support, default concurrency 10
-- `OllamaAdapter` - Local models (Qwen, Llama, DeepSeek), default concurrency 1
+**Base Class (`BaseLLMAdapter`):**
+All adapters extend `BaseLLMAdapter` which handles:
+- Semaphore concurrency control (default: 1, configurable via `LLMConfig.concurrency`)
+- Variable processing and template substitution
+- Output cleaning (think tags, code fences)
+- JSON extraction for structured responses
+- Timestamped logging
+- `expectsJSON` support: `options.expectsJSON` takes precedence over the heuristic `detectJSONExpectation()`. Nuggets pass this explicitly; legacy callers without the flag get old behavior.
+- `modelName` and `adapterName` exposed as public readonly (set by concrete adapters)
 
-Both adapters use `Semaphore` for concurrency control. Concurrency is configurable via `LLMConfig.concurrency`.
+Concrete adapters only implement `performComplete()`, `performStream()`, and `testConnection()`.
+
+**Implementations:**
+- `OpenAIAdapter` - OpenAI/GPT-5/O-series with retry loop, reasoning model detection, SSE streaming
+- `OllamaAdapter` - Local models (Qwen, Llama, DeepSeek) with NDJSON streaming, `num_ctx`/`num_predict`
+- `MLXAdapter` - MLX LM Server (Apple Silicon) with OpenAI-compatible SSE, retry loop
 
 ### Embedding Adapters
 
@@ -463,12 +568,15 @@ Operations isolated to correct context
 ## CLI Commands
 
 ```bash
-fkt setup              # Initialize trees from config
-fkt ingest-file <path> # Ingest single file
-fkt ingest-dir <dir>   # Ingest directory
-fkt browse [treeId]    # Print tree structure
-fkt retrieve <query>   # Search for content
-fkt ask <query>        # RAG with synthesis
-fkt audit [--apply]    # Check tree health
-fkt reset [--prune]    # Clear tree
+fkt setup                        # Initialize trees from config
+fkt ingest-file <path>           # Ingest single file
+fkt ingest-dir <dir>             # Ingest directory
+fkt browse [treeId]              # Print tree structure
+fkt retrieve <query>             # Search for content
+fkt ask <query>                  # RAG with synthesis
+fkt audit [--apply]              # Check tree health
+fkt reset [--prune]              # Clear tree
+fkt test-nuggets [name] [--json] # Run nugget diagnostic tests
 ```
+
+The `test-nuggets` command runs all 12 nuggets (or a single one by name) against the configured LLM and writes a timestamped diagnostic report to the working directory with: rendered prompts, raw LLM output, parsed output, adapter/model metadata, timing, and validation results.
