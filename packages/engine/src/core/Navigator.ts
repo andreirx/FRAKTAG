@@ -13,6 +13,7 @@ import {
   BrowseResult,
   TreeNode,
   isFolder,
+  isDocument,
   hasContent
 } from './types.js';
 import { DEFAULT_PROMPTS } from '../prompts/default.js';
@@ -34,16 +35,19 @@ export class Navigator {
   private assessVectorCandidates: AssessVectorCandidatesNugget;
   private globalMapScan: GlobalMapScanNugget;
   private assessNeighborhood: AssessNeighborhoodNugget;
+  private contextWindow: number;
 
   constructor(
     private contentStore: ContentStore,
     private treeStore: TreeStore,
     private vectorStore: VectorStore,
-    private llm: ILLMAdapter
+    private llm: ILLMAdapter,
+    contextWindow?: number
   ) {
     this.assessVectorCandidates = new AssessVectorCandidatesNugget(llm);
     this.globalMapScan = new GlobalMapScanNugget(llm);
     this.assessNeighborhood = new AssessNeighborhoodNugget(llm);
+    this.contextWindow = contextWindow ?? 25000;
   }
 
   /**
@@ -128,14 +132,11 @@ export class Navigator {
             // Document or Fragment: Grab content directly
             if (hasContent(node)) {
               console.log(`      💎 Captured ${node.type}: "${node.title.slice(0, 50)}..."`);
-              const content = await this.resolveContent(node, request.resolution || 'L2');
-              results.push({
-                nodeId: node.id,
-                path: node.path,
-                resolution: request.resolution || 'L2',
-                content,
-                contentId: node.contentId
-              });
+              const resolved = await this.resolveWithFragments(node, request.query, request.resolution || 'L2', request.treeId);
+              for (const r of resolved) {
+                r.source = 'vector';
+                results.push(r);
+              }
             } else {
               // Folder: Queue for drilling
               visited.delete(id);
@@ -155,7 +156,7 @@ export class Navigator {
     console.log(`\n🔍 [Phase 2] Global Map Scan`);
     const fullTreeMap = await treeStore.generateTreeMap(request.treeId);
 
-    const CHUNK_SIZE = 200000;
+    const CHUNK_SIZE = this.contextWindow;
     const OVERLAP = 1000;
     const mapChunks = this.chunkText(fullTreeMap, CHUNK_SIZE, OVERLAP);
 
@@ -309,16 +310,13 @@ export class Navigator {
     if (visited.has(node.id)) return;
     visited.add(node.id);
 
-    // If this node has content, grab it
+    // If this node has content, grab it (fragment-aware)
     if (hasContent(node)) {
-      const content = await this.resolveContent(node, targetResolution, effectiveTreeId);
-      results.push({
-        nodeId: node.id,
-        path: node.path,
-        resolution: targetResolution,
-        content,
-        contentId: node.contentId
-      });
+      const resolved = await this.resolveWithFragments(node, query, targetResolution, effectiveTreeId);
+      for (const r of resolved) {
+        r.source = 'map';
+        results.push(r);
+      }
       console.log(`      💎 Captured ${node.type}: "${node.title.slice(0, 30)}..."`);
     }
 
@@ -352,17 +350,14 @@ export class Navigator {
           if (!child) continue;
 
           if (hasContent(child)) {
-            // Document or Fragment: Grab directly
+            // Document or Fragment: Grab directly (fragment-aware)
             if (!visited.has(child.id)) {
               visited.add(child.id);
-              const content = await this.resolveContent(child, targetResolution, effectiveTreeId);
-              results.push({
-                nodeId: child.id,
-                path: child.path,
-                resolution: targetResolution,
-                content,
-                contentId: child.contentId
-              });
+              const resolved = await this.resolveWithFragments(child, query, targetResolution, effectiveTreeId);
+              for (const r of resolved) {
+                r.source = 'map';
+                results.push(r);
+              }
               console.log(`      💎 Captured ${child.type}: "${child.title.slice(0, 30)}..."`);
             }
           } else {
@@ -381,6 +376,79 @@ export class Navigator {
     } catch (e) {
       console.error("   ❌ Scout Error", e);
     }
+  }
+
+  /**
+   * Fragment-aware content resolution.
+   * If the node is a document with fragment children, selects up to 3 relevant fragments
+   * instead of returning the full document content (which could be huge).
+   */
+  private async resolveWithFragments(
+    node: TreeNode,
+    query: string,
+    targetResolution: 'L0' | 'L1' | 'L2',
+    treeId: string
+  ): Promise<RetrievedNode[]> {
+    if (!hasContent(node)) return [];
+
+    // Only documents can have fragment children
+    if (isDocument(node)) {
+      const treeStore = this.getTreeStore(treeId);
+      const children = await treeStore.getChildren(node.id);
+      const fragments = children.filter(c => c.type === 'fragment');
+
+      if (fragments.length > 0) {
+        // Document has fragments — use them instead of full document
+        if (fragments.length <= 3) {
+          // Few fragments — return all
+          const results: RetrievedNode[] = [];
+          for (const f of fragments) {
+            const content = await this.resolveContent(f, targetResolution, treeId);
+            results.push({ nodeId: f.id, path: f.path, resolution: targetResolution, content, contentId: (f as any).contentId });
+          }
+          return results;
+        }
+
+        // Many fragments — ask LLM to pick top 3
+        const candidates = fragments.map(c =>
+          `ID: ${c.id}\nType: 🧩 fragment\nTitle: ${c.title}\nGist: ${c.gist.slice(0, 150)}`
+        ).join('\n\n');
+
+        try {
+          const decision = await this.assessNeighborhood.run(
+            { query, parentContext: node.gist || node.title, childrenList: candidates, depthContext: 'Targeting (Specific Search)' },
+            { maxTokens: 1024 }
+          );
+          const selectedIds = decision.relevantIds.slice(0, 3);
+          const results: RetrievedNode[] = [];
+          for (const id of selectedIds) {
+            const frag = fragments.find(f => f.id === id);
+            if (frag) {
+              const content = await this.resolveContent(frag, targetResolution, treeId);
+              results.push({ nodeId: frag.id, path: frag.path, resolution: targetResolution, content, contentId: (frag as any).contentId });
+            }
+          }
+          if (results.length > 0) {
+            console.log(`      🧩 Resolved ${results.length} fragments from document "${node.title.slice(0, 30)}..."`);
+            return results;
+          }
+        } catch (e) {
+          console.error(`      ⚠️ Fragment selection failed, using first 3 fragments`);
+        }
+
+        // Fallback: return first 3 fragments
+        const results: RetrievedNode[] = [];
+        for (const f of fragments.slice(0, 3)) {
+          const content = await this.resolveContent(f, targetResolution, treeId);
+          results.push({ nodeId: f.id, path: f.path, resolution: targetResolution, content, contentId: (f as any).contentId });
+        }
+        return results;
+      }
+    }
+
+    // No fragments or not a document — return the node content directly
+    const content = await this.resolveContent(node, targetResolution, treeId);
+    return [{ nodeId: node.id, path: node.path, resolution: targetResolution, content, contentId: (node as any).contentId }];
   }
 
   private async resolveContent(node: TreeNode, resolution: 'L0' | 'L1' | 'L2', treeId?: string): Promise<string> {

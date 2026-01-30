@@ -7,7 +7,8 @@
     "basicModel": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-6bit",
     "expertModel": "mlx-community/Qwen3-Next-80B-A3B-Instruct-6bit",
     "endpoint": "http://127.0.0.1:11434/v1",
-    "numCtx": 65536,
+    "numCtx": 32768,
+    "contextWindow": 25000,
     "timeoutMs": 600000,
     "concurrency": 1
   },

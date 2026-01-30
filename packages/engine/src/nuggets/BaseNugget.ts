@@ -1,6 +1,7 @@
 // packages/engine/src/nuggets/BaseNugget.ts
 
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
+import { substituteTemplate } from '../prompts/default.js';
 
 /**
  * An LLM Nugget = typed function wrapping an LLM call.
@@ -27,10 +28,17 @@ export abstract class BaseNugget<TInput, TOutput> {
   async run(input: TInput, options?: { maxTokens?: number }): Promise<TOutput> {
     const prompt = this.promptOverride || this.promptTemplate;
     const variables = this.prepareVariables(input);
+
+    // Log input size (rendered prompt)
+    const rendered = substituteTemplate(prompt, variables as Record<string, string | number>);
+    console.log(`   🔤 [${this.name}] Input: ${rendered.length} chars`);
+
     const raw = await this.llm.complete(prompt, variables, {
       maxTokens: options?.maxTokens,
       expectsJSON: this.expectsJSON,
     });
+
+    console.log(`   🔤 [${this.name}] Output: ${raw.length} chars`);
     return this.parseOutput(raw);
   }
 

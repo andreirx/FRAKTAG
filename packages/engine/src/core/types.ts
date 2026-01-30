@@ -50,6 +50,7 @@ export interface LLMConfig {
   apiKey?: string;
   timeoutMs?: number;
   numCtx?: number;
+  contextWindow?: number;  // Max chars for retrieval context budget. Default: 25000
   concurrency?: number;  // Max parallel LLM requests (default: 1 for Ollama, 10 for OpenAI)
   prompts?: Partial<PromptSet>;
 }
@@ -337,6 +338,8 @@ export interface RetrievedNode {
   resolution: 'L0' | 'L1' | 'L2';
   content: string;
   contentId?: string;
+  /** Discovery source: 'vector' (Phase 1) or 'map' (Phase 2/3 map scan + drill) */
+  source?: 'vector' | 'map';
 }
 
 export interface BrowseRequest {

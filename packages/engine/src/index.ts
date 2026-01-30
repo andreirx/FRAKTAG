@@ -1,7 +1,7 @@
 // src/index.ts
 // FRAKTAG ENGINE - Strict Taxonomy Edition
 
-import { readFile } from 'fs/promises';
+import { readFile, writeFile as fsWriteFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { ContentStore } from './core/ContentStore.js';
 import { TreeStore } from './core/TreeStore.js';
@@ -128,7 +128,8 @@ export class Fraktag {
       this.contentStore,
       this.treeStore,
       this.vectorStore,
-      this.basicLlm
+      this.basicLlm,
+      config.llm.contextWindow
     );
 
     // Set store resolver on Fractalizer and Navigator for KB-aware operations
@@ -992,14 +993,24 @@ export class Fraktag {
       };
     }
 
-    const contextPromises = retrieval.nodes.map(async (node, i) => {
-      // Use routing to get node from correct storage
+    // Budget-based context assembly: vector results first, then map results
+    const budget = this.config.llm.contextWindow ?? 25000;
+    const vectorResults = retrieval.nodes.filter(n => n.source === 'vector');
+    const mapResults = retrieval.nodes.filter(n => n.source !== 'vector');
+    const orderedNodes = [...vectorResults, ...mapResults];
+
+    const contextBlocks: string[] = [];
+    let usedChars = 0;
+    let selectedCount = 0;
+
+    for (const node of orderedNodes) {
+      if (usedChars + node.content.length > budget) break;
+
       const treeNode = await this.getNode(node.nodeId);
       const title = treeNode?.title || "Untitled Segment";
 
       let sourceInfo = "";
       if (node.contentId) {
-        // Use routing to get content from correct storage
         const atom = await this.getContent(node.contentId);
         if (atom?.sourceUri) {
           const filename = atom.sourceUri.split('/').pop();
@@ -1007,12 +1018,14 @@ export class Fraktag {
         }
       }
 
-      console.log(`   📄 [${i+1}] ${title.slice(0, 160)}${title.length > 160 ? '...' : ''} ${sourceInfo}`);
+      selectedCount++;
+      console.log(`   📄 [${selectedCount}] ${title.slice(0, 160)}${title.length > 160 ? '...' : ''} ${sourceInfo}`);
 
-      return `--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`;
-    });
+      contextBlocks.push(`--- [SOURCE ${selectedCount}] Title: "${title}" ${sourceInfo} ---\n${node.content}`);
+      usedChars += node.content.length;
+    }
 
-    const contextBlocks = await Promise.all(contextPromises);
+    console.log(`   📊 Context budget: ${usedChars}/${budget} chars, ${selectedCount}/${orderedNodes.length} sources`);
     const context = contextBlocks.join('\n\n');
 
     console.log(`   📝 Synthesizing answer from ${retrieval.nodes.length} sources...`);
@@ -1057,19 +1070,25 @@ export class Fraktag {
         return;
       }
 
-      // Process nodes and emit sources as they're discovered
+      // Budget-based context assembly: vector results first, then map results
+      const budget = this.config.llm.contextWindow ?? 25000;
+      const vectorResults = retrieval.nodes.filter(n => n.source === 'vector');
+      const mapResults = retrieval.nodes.filter(n => n.source !== 'vector');
+      const orderedNodes = [...vectorResults, ...mapResults];
+
       const contextBlocks: string[] = [];
       const references: string[] = [];
+      let usedChars = 0;
+      let selectedCount = 0;
 
-      for (let i = 0; i < retrieval.nodes.length; i++) {
-        const node = retrieval.nodes[i];
-        // Use routing to get node from correct storage
+      for (const node of orderedNodes) {
+        if (usedChars + node.content.length > budget) break;
+
         const treeNode = await this.getNode(node.nodeId);
         const title = treeNode?.title || "Untitled Segment";
 
         let sourceInfo = "";
         if (node.contentId) {
-          // Use routing to get content from correct storage
           const atom = await this.getContent(node.contentId);
           if (atom?.sourceUri) {
             const filename = atom.sourceUri.split('/').pop();
@@ -1077,11 +1096,13 @@ export class Fraktag {
           }
         }
 
+        selectedCount++;
+
         // Emit the source as it's discovered
         onEvent({
           type: 'source',
           data: {
-            index: i + 1,
+            index: selectedCount,
             title,
             path: node.path,
             sourceInfo,
@@ -1093,10 +1114,12 @@ export class Fraktag {
           }
         });
 
-        contextBlocks.push(`--- [SOURCE ${i+1}] Title: "${title}" ${sourceInfo} ---\n${node.content}`);
+        contextBlocks.push(`--- [SOURCE ${selectedCount}] Title: "${title}" ${sourceInfo} ---\n${node.content}`);
         references.push(node.path);
+        usedChars += node.content.length;
       }
 
+      console.log(`   📊 Context budget: ${usedChars}/${budget} chars, ${selectedCount}/${orderedNodes.length} sources`);
       const context = contextBlocks.join('\n\n');
 
       console.log(`   📝 Streaming answer from ${retrieval.nodes.length} sources...`);
@@ -1787,8 +1810,13 @@ export class Fraktag {
       allResults = (await Promise.all(retrievalPromises)).flat();
     }
 
-    // Assign sequential source indices and emit events
+    // Budget-based context assembly
+    const budget = this.config.llm.contextWindow ?? 25000;
+    let usedChars = 0;
+
     for (const result of allResults) {
+      if (usedChars + result.content.length > budget) break;
+
       sourceIndex++;
       references.push({ nodeId: result.nodeId });
       sourceData.push({ nodeId: result.nodeId, title: result.title });
@@ -1810,9 +1838,10 @@ export class Fraktag {
       }
 
       contextBlocks.push(`--- [SOURCE ${sourceIndex}] ${result.title} ---\n${result.content}`);
+      usedChars += result.content.length;
     }
 
-    console.log(`📚 Found ${sourceIndex} sources for context`);
+    console.log(`📚 Context budget: ${usedChars}/${budget} chars, ${sourceIndex}/${allResults.length} sources`);
 
     // 2. Context Injection (Short-Term Memory)
     // Fetch recent turns so the LLM can resolve follow-up references like "it", "that", "explain more"
@@ -1855,6 +1884,18 @@ export class Fraktag {
       question,
     });
     const prompt = substituteTemplate(oracleChat.promptTemplate, chatVars);
+
+    // Debug: save large prompts for inspection
+    const DEBUG_PROMPT_THRESHOLD = 25000;
+    if (prompt.length > DEBUG_PROMPT_THRESHOLD) {
+      try {
+        const debugDir = resolve(this.storage.getBasePath(), 'debug');
+        await mkdir(debugDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        await fsWriteFile(resolve(debugDir, `chat-prompt-${ts}.txt`), prompt, 'utf-8');
+        console.log(`🐛 Debug: saved prompt (${prompt.length} chars) to debug/chat-prompt-${ts}.txt`);
+      } catch { /* ignore debug save errors */ }
+    }
 
     let answer = '';
 

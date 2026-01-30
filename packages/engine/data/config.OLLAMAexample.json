@@ -7,7 +7,8 @@
     "basicModel": "qwen3-coder:30b",
     "expertModel": "gpt-oss:120b",
     "endpoint": "http://localhost:11434",
-    "numCtx": 65536,
+    "numCtx": 32768,
+    "contextWindow": 25000,
     "timeoutMs": 600000
   },
   "trees": [
