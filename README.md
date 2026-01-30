@@ -714,7 +714,76 @@ The result: documentation that evolves with your codebase, maintained by the sam
 
 ---
 
-## 7. Current Status
+## 7. Claude Code Memory (MCP Integration)
+
+FRAKTAG can serve as Claude Code's **persistent Repository Memory** via the [Model Context Protocol](https://modelcontextprotocol.io). This gives Claude Code the ability to search, browse, and write to a structured knowledge base across sessions.
+
+### How It Works
+
+The `@fraktag/mcp` package exposes FRAKTAG as an MCP server over stdio. Claude Code connects to it automatically and gains 8 tools:
+
+| Tool | LLM? | Purpose |
+|------|-------|---------|
+| `fraktag_search` | Yes | Full retrieval pipeline — vector + map scan + drill |
+| `fraktag_ask` | Yes | RAG synthesis with source references |
+| `fraktag_ingest` | No | Save documents to the knowledge base |
+| `fraktag_list_trees` | No | Discover available knowledge trees |
+| `fraktag_browse` | No | Navigate tree structure and find folders |
+| `fraktag_vector_search` | No | Raw vector similarity search (Claude IS the brain) |
+| `fraktag_tree_map` | No | Get full table of contents for a tree |
+| `fraktag_get_node` | No | Fetch a specific node's full content |
+
+The "No LLM" tools implement **Inversion of Control** — Claude Code performs the reasoning that FRAKTAG's Navigator normally does, using the same data but with its own intelligence.
+
+### Setup
+
+```bash
+# 1. Create the Repository Memory tree with standard taxonomy
+./scripts/setup-memory.sh
+
+# 2. Build and configure the MCP server for Claude Code
+./scripts/setup-mcp.sh
+
+# 3. Restart Claude Code to pick up the new MCP server
+```
+
+### The Organizing Principle
+
+Repository Memory uses a standard four-category taxonomy:
+
+```
+/Architecture   — System design decisions, component boundaries, technology choices
+/Patterns       — Reusable code patterns, style guides, naming conventions
+/Learnings      — Post-mortems, bug root causes, lessons learned
+/Operational    — Scripts, deployment procedures, configuration guides
+```
+
+Each category has sub-folders (e.g., `/Learnings/Debugging`, `/Patterns/Testing`). Missing intermediate folders are created automatically when ingesting.
+
+### Nightly Compounding
+
+Run the compounding script at the end of a work session to have Claude Code reflect on recent changes and save learnings:
+
+```bash
+# Review today's git activity and save learnings
+./scripts/nightly-compound.sh
+
+# Look back further
+./scripts/nightly-compound.sh --days 3
+```
+
+This drives Claude Code to review recent commits, identify architectural decisions, patterns, and lessons learned, then save them to the appropriate folders in Repository Memory.
+
+### Configuration
+
+The MCP server discovers its config in order:
+1. `FRAKTAG_CONFIG` environment variable
+2. `.fraktag/config.json` in the current working directory
+3. `packages/engine/data/config.json` (development fallback)
+
+---
+
+## 8. Current Status
 
 *   **Ingestion:** Human-supervised with full audit trail. AI proposes, humans approve.
 *   **Retrieval:** Highly accurate due to the Ensemble (Vector + Graph) approach. Parallel multi-tree search.
@@ -724,7 +793,7 @@ The result: documentation that evolves with your codebase, maintained by the sam
 *   **Maintenance:** Manual folder/content management with rule enforcement.
 *   **UI:** Functional with auto-save, resizable panels, ingestion wizard, conversation management, and KB management.
 
-### 7.1. Parallel Multi-Tree Search
+### 8.1. Parallel Multi-Tree Search
 
 Multi-tree retrieval in `Fraktag.chat` runs all tree searches concurrently via `Promise.all`. An async `Semaphore` inside each LLM adapter gates how many requests actually hit the backend at once, preventing VRAM overflow (Ollama) or rate-limit hits (OpenAI).
 
@@ -754,7 +823,7 @@ To run parallel inference on Ollama, you must configure both sides:
 
 ---
 
-## 8. Design Principles
+## 9. Design Principles
 
 1.  **Human in the Loop:** AI assists but doesn't dictate. Every significant decision requires human approval.
 2.  **Full Traceability:** Audit logs capture every decision with actor attribution.
@@ -764,7 +833,7 @@ To run parallel inference on Ollama, you must configure both sides:
 
 ---
 
-## 9. Next Steps
+## 10. Next Steps
 
 *   **Q&A Caching:** Leverage conversation history as a cache — if a similar question was asked before, surface the prior answer before hitting the LLM.
 *   **Cloud Deployment:** AWS CDK infrastructure defined, still to actually deploy.

@@ -440,6 +440,75 @@ export class Fraktag {
     return await store.getLeafFolders(treeId);
   }
 
+  /**
+   * Resolve a folder by path string (e.g., "/Engineering/Standards").
+   * Walks the tree matching folder titles case-insensitively.
+   * Returns null if any segment is not found.
+   */
+  async resolveFolderByPath(treeId: string, pathStr: string): Promise<FolderNode | null> {
+    const treeStore = this.getTreeStoreForTree(treeId);
+    const tree = await treeStore.getTree(treeId);
+
+    if (pathStr === '/' || pathStr === 'root') {
+      const root = await treeStore.getNode(tree.rootNodeId);
+      return root && isFolder(root) ? root : null;
+    }
+
+    const segments = pathStr.split('/').filter(Boolean);
+    let currentId = tree.rootNodeId;
+
+    for (const segment of segments) {
+      const children = await treeStore.getChildren(currentId);
+      const match = children.find(c =>
+        isFolder(c) && c.title.toLowerCase() === segment.toLowerCase()
+      );
+      if (!match) return null;
+      currentId = match.id;
+    }
+
+    const node = await treeStore.getNode(currentId);
+    return node && isFolder(node) ? node : null;
+  }
+
+  /**
+   * Resolve a folder by path, creating missing intermediate folders automatically.
+   * E.g., "/Patterns/React/Hooks" will create "Patterns", "React", and "Hooks"
+   * folders as needed, skipping any that already exist.
+   */
+  async resolveOrCreateFolderByPath(treeId: string, pathStr: string): Promise<FolderNode> {
+    const treeStore = this.getTreeStoreForTree(treeId);
+    const tree = await treeStore.getTree(treeId);
+
+    if (pathStr === '/' || pathStr === 'root') {
+      const root = await treeStore.getNode(tree.rootNodeId);
+      if (!root || !isFolder(root)) throw new Error('Root node is not a folder');
+      return root;
+    }
+
+    const segments = pathStr.split('/').filter(Boolean);
+    let currentId = tree.rootNodeId;
+
+    for (const segment of segments) {
+      const children = await treeStore.getChildren(currentId);
+      const match = children.find(c =>
+        isFolder(c) && c.title.toLowerCase() === segment.toLowerCase()
+      );
+      if (match) {
+        currentId = match.id;
+      } else {
+        // Create the missing folder
+        const newFolder = await treeStore.createFolder(
+          treeId, currentId, segment, `${segment} — auto-created by agent`
+        );
+        currentId = newFolder.id;
+      }
+    }
+
+    const node = await treeStore.getNode(currentId);
+    if (!node || !isFolder(node)) throw new Error(`Failed to resolve/create path: ${pathStr}`);
+    return node;
+  }
+
   // ============ FOLDER MANAGEMENT ============
 
   async createFolder(treeId: string, parentId: string, title: string, gist: string): Promise<FolderNode> {
@@ -454,6 +523,62 @@ export class Fraktag {
    */
   analyzeSplits(content: string, sourceUri: string): SplitAnalysis {
     return this.fractalizer.analyzeSplits(content, sourceUri);
+  }
+
+  /**
+   * Direct Ingestion (Agent Mode).
+   * Bypasses the Proposal/Review UI flow and LLM gist generation.
+   * Used by MCP/CLI when the agent has already reasoned about the placement.
+   * All parameters are required — no LLM calls are made.
+   */
+  async directIngest(
+    content: string,
+    treeId: string,
+    targetFolder: string,
+    title: string,
+    gist: string
+  ): Promise<DocumentNode> {
+    // 1. Resolve folder — path string (with auto-creation) or direct ID
+    let folderId: string;
+    if (targetFolder.startsWith('/') || targetFolder === 'root') {
+      // Path string — resolve or create missing intermediate folders
+      const folder = await this.resolveOrCreateFolderByPath(treeId, targetFolder);
+      folderId = folder.id;
+    } else {
+      // Assume direct folder ID
+      const node = await this.getNode(targetFolder);
+      if (!node || !isFolder(node)) {
+        throw new Error(`Target folder not found: "${targetFolder}"`);
+      }
+      folderId = node.id;
+    }
+
+    // 2. Create content atom (no LLM involved)
+    const contentStore = this.getContentStoreForTree(treeId);
+    const atom = await contentStore.create({
+      payload: content,
+      mediaType: 'text/plain',
+      createdBy: 'agent-mcp',
+      editMode: 'readonly'
+    });
+
+    // 3. Create document node
+    const treeStore = this.getTreeStoreForTree(treeId);
+    const doc = await treeStore.createDocument(
+      treeId,
+      folderId,
+      title,
+      gist,
+      atom.id,
+      'readonly'
+    );
+
+    // 4. Index for retrieval
+    const vectorStore = this.getVectorStoreForTree(treeId);
+    await vectorStore.add(doc.id, `${title}\n${gist}\n${content.slice(0, 500)}`);
+    await vectorStore.save(treeId);
+
+    return doc;
   }
 
   /**
@@ -681,6 +806,27 @@ export class Fraktag {
       }
     }
     return false;
+  }
+
+  // ============ RAW ACCESS (No LLM) ============
+
+  /**
+   * Raw vector similarity search — no LLM involved.
+   * Returns top-K node IDs with similarity scores.
+   */
+  async rawVectorSearch(treeId: string, query: string, topK: number = 10): Promise<{ id: string; score: number }[]> {
+    const vectorStore = this.getVectorStoreForTree(treeId);
+    await vectorStore.load(treeId);
+    return await vectorStore.search(query, topK);
+  }
+
+  /**
+   * Get the full tree map (table of contents) — no LLM involved.
+   * Returns the indented node listing used by the Navigator's GlobalMapScan.
+   */
+  async getTreeMap(treeId: string): Promise<string> {
+    const treeStore = this.getTreeStoreForTree(treeId);
+    return await treeStore.generateTreeMap(treeId);
   }
 
   // ============ LEGACY INGESTION (Deprecated) ============
