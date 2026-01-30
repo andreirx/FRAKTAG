@@ -2,6 +2,7 @@
 
 import { ILLMAdapter } from '../adapters/llm/ILLMAdapter.js';
 import { substituteTemplate } from '../prompts/default.js';
+import type { ProgressCallback } from '../core/types.js';
 
 /**
  * An LLM Nugget = typed function wrapping an LLM call.
@@ -12,6 +13,9 @@ import { substituteTemplate } from '../prompts/default.js';
  * - run(input): end-to-end execution
  */
 export abstract class BaseNugget<TInput, TOutput> {
+  /** Module-level progress callback, set by the engine during retrieval */
+  static onProgress?: ProgressCallback;
+
   abstract readonly name: string;
   abstract readonly promptTemplate: string;
   abstract readonly expectsJSON: boolean;
@@ -31,14 +35,18 @@ export abstract class BaseNugget<TInput, TOutput> {
 
     // Log input size (rendered prompt)
     const rendered = substituteTemplate(prompt, variables as Record<string, string | number>);
-    console.log(`   🔤 [${this.name}] Input: ${rendered.length} chars`);
+    const inMsg = `🔤 [${this.name}] Input: ${rendered.length} chars`;
+    console.log(`   ${inMsg}`);
+    BaseNugget.onProgress?.(inMsg, 'nugget');
 
     const raw = await this.llm.complete(prompt, variables, {
       maxTokens: options?.maxTokens,
       expectsJSON: this.expectsJSON,
     });
 
-    console.log(`   🔤 [${this.name}] Output: ${raw.length} chars`);
+    const outMsg = `🔤 [${this.name}] Output: ${raw.length} chars`;
+    console.log(`   ${outMsg}`);
+    BaseNugget.onProgress?.(outMsg, 'nugget');
     return this.parseOutput(raw);
   }
 

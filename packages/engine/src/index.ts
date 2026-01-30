@@ -18,12 +18,14 @@ import { OracleChatNugget } from './nuggets/OracleChat.js';
 import { AnswerGistNugget } from './nuggets/AnswerGist.js';
 import { TurnGistNugget } from './nuggets/TurnGist.js';
 import { AnalyzeTreeStructureNugget } from './nuggets/AnalyzeTreeStructure.js';
+import { BaseNugget } from './nuggets/BaseNugget.js';
 import {
   FraktagConfig,
   IngestRequest,
   IngestResult,
   RetrieveRequest,
   RetrieveResult,
+  ProgressCallback,
   BrowseRequest,
   BrowseResult,
   ContentAtom,
@@ -733,8 +735,8 @@ export class Fraktag {
 
   // ============ RETRIEVAL ============
 
-  async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
-    return await this.navigator.retrieve(request);
+  async retrieve(request: RetrieveRequest, onProgress?: ProgressCallback, signal?: AbortSignal): Promise<RetrieveResult> {
+    return await this.navigator.retrieve(request, onProgress, signal);
   }
 
   async browse(request: BrowseRequest): Promise<BrowseResult> {
@@ -1046,11 +1048,17 @@ export class Fraktag {
     query: string,
     treeId: string,
     onEvent: (event: {
-      type: 'source' | 'answer_chunk' | 'done' | 'error';
+      type: 'source' | 'answer_chunk' | 'done' | 'error' | 'thinking';
       data: any;
-    }) => void
+    }) => void,
+    signal?: AbortSignal
   ): Promise<void> {
     console.log(`\n🧠 [Synthesis Streaming] Asking: "${query}"`);
+
+    const onProgress: ProgressCallback = (message, phase) => {
+      onEvent({ type: 'thinking', data: { message, phase } });
+    };
+    BaseNugget.onProgress = onProgress;
 
     try {
       // First, do retrieval and emit sources as we process them
@@ -1059,7 +1067,7 @@ export class Fraktag {
         treeId,
         maxDepth: 5,
         resolution: 'L2'
-      });
+      }, onProgress, signal);
 
       if (retrieval.nodes.length === 0) {
         onEvent({
@@ -1124,6 +1132,9 @@ export class Fraktag {
 
       console.log(`   📝 Streaming answer from ${retrieval.nodes.length} sources...`);
 
+      // Clear thinking progress — retrieval phase is done
+      BaseNugget.onProgress = undefined;
+
       // Use OracleAskNugget as single source of truth for the prompt
       const oracleAsk = new OracleAskNugget(this.smartLlm);
       const vars = oracleAsk.prepareVariables({ context, query });
@@ -1145,6 +1156,8 @@ export class Fraktag {
     } catch (error: any) {
       console.error('askStream error:', error);
       onEvent({ type: 'error', data: error.message || 'Unknown error' });
+    } finally {
+      BaseNugget.onProgress = undefined;
     }
   }
 
@@ -1744,8 +1757,15 @@ export class Fraktag {
     sessionId: string,
     question: string,
     sourceTreeIds: string[],
-    onEvent?: (event: { type: 'source' | 'answer_chunk' | 'done' | 'error'; data: any }) => void
+    onEvent?: (event: { type: 'source' | 'answer_chunk' | 'done' | 'error' | 'thinking'; data: any }) => void,
+    signal?: AbortSignal
   ): Promise<{ answer: string; references: ConversationReference[] }> {
+    // Set up progress callback for thinking events
+    const onProgress: ProgressCallback | undefined = onEvent
+      ? (message, phase) => { onEvent({ type: 'thinking', data: { message, phase } }); }
+      : undefined;
+    BaseNugget.onProgress = onProgress;
+
     // Build search scope: conversation tree + reference trees
     const searchScope = [sessionId, ...sourceTreeIds];
 
@@ -1768,7 +1788,7 @@ export class Fraktag {
           query: question,
           maxDepth: 5,
           resolution: 'L2'
-        });
+        }, onProgress, signal);
 
         const treeResults: Array<{
           nodeId: string; title: string; gist: string;
@@ -1876,6 +1896,9 @@ export class Fraktag {
       return { answer: noContextAnswer, references: [] };
     }
 
+    // Clear thinking progress — retrieval phase is done
+    BaseNugget.onProgress = undefined;
+
     // Use OracleChatNugget as single source of truth for the prompt
     const oracleChat = new OracleChatNugget(this.smartLlm);
     const chatVars = oracleChat.prepareVariables({
@@ -1886,8 +1909,8 @@ export class Fraktag {
     const prompt = substituteTemplate(oracleChat.promptTemplate, chatVars);
 
     // Debug: save large prompts for inspection
-    const DEBUG_PROMPT_THRESHOLD = 25000;
-    if (prompt.length > DEBUG_PROMPT_THRESHOLD) {
+    const debugThreshold = this.config.llm.contextWindow || 25000;
+    if (prompt.length > debugThreshold) {
       try {
         const debugDir = resolve(this.storage.getBasePath(), 'debug');
         await mkdir(debugDir, { recursive: true });

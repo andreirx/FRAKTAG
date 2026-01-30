@@ -47,7 +47,8 @@ Then edit `packages/engine/data/config.json` and add your API key:
     "model": "gpt-4.1-mini",
     "basicModel": "gpt-4.1-mini",
     "expertModel": "gpt-4.1",
-    "apiKey": "sk-your-api-key-here"
+    "apiKey": "sk-your-api-key-here",
+    "contextWindow": 250000
   },
   "embedding": {
     "adapter": "openai",
@@ -79,7 +80,9 @@ The Ollama config looks like:
     "adapter": "ollama",
     "model": "qwen2.5:14b",
     "basicModel": "qwen2.5:7b",
-    "endpoint": "http://localhost:11434"
+    "endpoint": "http://localhost:11434",
+    "numCtx": 32768,
+    "contextWindow": 25000
   },
   "embedding": {
     "adapter": "ollama",
@@ -88,6 +91,8 @@ The Ollama config looks like:
   }
 }
 ```
+
+**Context window tuning:** `numCtx` sets the Ollama model's context window in **tokens**. `contextWindow` sets the max **characters** of source content packed into retrieval prompts (also used for map scan chunking and debug prompt saving). Since 1 token is roughly 3-4 characters, set `contextWindow` conservatively below `numCtx * 3` to leave room for the prompt template, user question, and conversation history. For example, `numCtx: 32768` (~100k chars) pairs well with `contextWindow: 25000-50000`. Cloud models with large context windows (OpenAI, Anthropic) can use much higher values like `250000`.
 
 ### Initialize Trees
 

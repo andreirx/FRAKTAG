@@ -20,7 +20,10 @@ import {
   Database,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Settings2,
+  Eye,
+  Square,
 } from "lucide-react";
 import { SourcePopup, StreamingSourceData } from "./SourcePopup";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -109,6 +112,10 @@ export function ChatDialog({
   const [streamingQuestion, setStreamingQuestion] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // Thinking card state
+  const [thinkingLogs, setThinkingLogs] = useState<string[]>([]);
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
+
   // Source hover/click state (for streaming sources)
   const [hoveredSource, setHoveredSource] = useState<StreamingSource | null>(null);
 
@@ -126,6 +133,7 @@ export function ChatDialog({
   // Refs
   const chatEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const thinkingEndRef = useRef<HTMLDivElement>(null);
 
   // TRACKING REF: This is the fix for "Ghost Turns"
   // We keep track of the ID we *want* to show. If async loadTurns returns for an old ID, we ignore it.
@@ -145,6 +153,13 @@ export function ChatDialog({
       chatEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [turns, streamingAnswer]);
+
+  // Auto-scroll thinking log
+  useEffect(() => {
+    if (thinkingEndRef.current && !thinkingCollapsed) {
+      thinkingEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [thinkingLogs, thinkingCollapsed]);
 
   // Initialize on open
   useEffect(() => {
@@ -308,6 +323,8 @@ export function ChatDialog({
     setStreamingSources([]);
     setStreamingAnswer("");
     setStreamingQuestion(question);
+    setThinkingLogs([]);
+    setThinkingCollapsed(false);
     setIsStreaming(true);
 
     // Cancel previous request if any
@@ -390,7 +407,12 @@ export function ChatDialog({
             try {
               const data = JSON.parse(dataStr);
 
-              if (eventType === 'source') {
+              if (eventType === 'thinking') {
+                setThinkingLogs(prev => [...prev, data.message]);
+              }
+              else if (eventType === 'source') {
+                // Collapse thinking card when sources start arriving
+                setThinkingCollapsed(true);
                 gatheredSources.push(data);
                 setStreamingSources(prev => [...prev, data]);
               }
@@ -434,6 +456,8 @@ export function ChatDialog({
       setStreamingSources([]);
       setStreamingAnswer("");
       setStreamingQuestion("");
+      setThinkingLogs([]);
+      setThinkingCollapsed(false);
 
       // 4. Background Sync
       setTimeout(async () => {
@@ -710,6 +734,61 @@ export function ChatDialog({
                           <Bot className="w-4 h-4 text-purple-600" />
                         </div>
                         <div className="flex-1 space-y-3">
+                          {/* Thinking Card */}
+                          {thinkingLogs.length > 0 && (
+                              <div className="border border-zinc-200 rounded-lg overflow-hidden bg-zinc-50 animate-in fade-in duration-300">
+                                {/* Header */}
+                                <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-600">
+                                  <button
+                                      onClick={() => setThinkingCollapsed(!thinkingCollapsed)}
+                                      className="flex items-center gap-2 flex-1 hover:text-zinc-900 transition-colors"
+                                  >
+                                    {!thinkingCollapsed ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-500 shrink-0" />
+                                    ) : (
+                                        <Eye className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                                    )}
+                                    <span className="font-medium">
+                                      {thinkingCollapsed ? "Thinking complete" : "Thinking..."}
+                                    </span>
+                                    <span className="text-zinc-400">
+                                      ({thinkingLogs.length} step{thinkingLogs.length !== 1 ? 's' : ''})
+                                    </span>
+                                    {thinkingCollapsed ? (
+                                        <ChevronRight className="w-3.5 h-3.5 ml-auto" />
+                                    ) : (
+                                        <ChevronUp className="w-3.5 h-3.5 ml-auto" />
+                                    )}
+                                  </button>
+                                  {!thinkingCollapsed && (
+                                      <button
+                                          onClick={() => {
+                                            if (abortControllerRef.current) {
+                                              abortControllerRef.current.abort();
+                                            }
+                                          }}
+                                          className="flex items-center gap-1 px-2 py-1 rounded border border-zinc-300 hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition-colors shrink-0"
+                                          title="Stop retrieval"
+                                      >
+                                        <Square className="w-3 h-3 fill-current" />
+                                        <span>Stop</span>
+                                      </button>
+                                  )}
+                                </div>
+                                {/* Body */}
+                                {!thinkingCollapsed && (
+                                    <div className="max-h-40 overflow-y-auto border-t border-zinc-200 px-3 py-2 font-mono text-[11px] text-zinc-500 space-y-0.5">
+                                      {thinkingLogs.map((log, i) => (
+                                          <div key={i} className="animate-in fade-in duration-200 leading-relaxed">
+                                            {log}
+                                          </div>
+                                      ))}
+                                      <div ref={thinkingEndRef} />
+                                    </div>
+                                )}
+                              </div>
+                          )}
+
                           {/* Sources */}
                           {streamingSources.length > 0 && (
                               <div className="flex flex-wrap gap-1.5">
@@ -756,12 +835,12 @@ export function ChatDialog({
                                 <Loader2 className="w-4 h-4 animate-spin" />
                                 Generating answer...
                               </div>
-                          ) : (
+                          ) : thinkingLogs.length === 0 ? (
                               <div className="flex items-center gap-2 text-sm text-zinc-500">
                                 <Loader2 className="w-4 h-4 animate-spin" />
                                 Searching knowledge base...
                               </div>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     </div>

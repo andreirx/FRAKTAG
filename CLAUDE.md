@@ -199,8 +199,11 @@ fkt test-nuggets [name] [--json]  # Run nugget tests, write diagnostic report
 Copy `config.OLLAMAexample.json` or `config.OpenAIexample.json` to `packages/engine/data/config.json`.
 
 Key settings:
-- `llm.adapter`: "openai" | "ollama"
+- `llm.adapter`: "openai" | "ollama" | "mlx"
 - `llm.model`, `llm.basicModel`, `llm.expertModel`: Council of Three models
+- `llm.numCtx`: Ollama context window size in **tokens** (e.g., 32768)
+- `llm.contextWindow`: Max **characters** for retrieval context budget (default: 25000). Controls how much source content is packed into the oracle prompt, and also the chunk size for global map scanning. Set this conservatively relative to `numCtx` — since 1 token ~ 3-4 chars, a `numCtx` of 32768 tokens (~100k chars) pairs well with a `contextWindow` of 25000-50000 chars, leaving ample room for the prompt template, question, and conversation history. For cloud models with large context windows (e.g., OpenAI), this can be set much higher (e.g., 250000).
+- `llm.concurrency`: Max parallel LLM requests (default: 1 for local, 10 for cloud) - NOT ACTIVE RIGHT NOW
 - `embedding.adapter`: "openai" | "ollama"
 - `ingestion.splitThreshold`, `maxDepth`, `chunkOverlap`
 - `trees[].seedFolders`: Pre-defined folder structure

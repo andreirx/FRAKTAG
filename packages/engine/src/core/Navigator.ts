@@ -12,6 +12,7 @@ import {
   BrowseRequest,
   BrowseResult,
   TreeNode,
+  ProgressCallback,
   isFolder,
   isDocument,
   hasContent
@@ -88,7 +89,16 @@ export class Navigator {
     return this.vectorStore;
   }
 
-  async retrieve(request: RetrieveRequest): Promise<RetrieveResult> {
+  async retrieve(request: RetrieveRequest, onProgress?: ProgressCallback, signal?: AbortSignal): Promise<RetrieveResult> {
+    const log = (msg: string, phase?: string) => {
+      console.log(msg);
+      onProgress?.(msg, phase);
+    };
+
+    const checkAbort = () => {
+      if (signal?.aborted) throw new DOMException('Retrieval aborted', 'AbortError');
+    };
+
     // Get the correct stores for this tree (KB-aware routing)
     const treeStore = this.getTreeStore(request.treeId);
     const vectorStore = this.getVectorStore(request.treeId);
@@ -96,8 +106,8 @@ export class Navigator {
     const tree = await treeStore.getTree(request.treeId);
     await vectorStore.load(request.treeId);
 
-    console.log(`\n🧭 Starting Retrieval: ${tree.name}`);
-    console.log(`   Quest: "${request.query}"`);
+    log(`🧭 Starting Retrieval: ${tree.name}`, 'init');
+    log(`   Quest: "${request.query}"`, 'init');
 
     const results: RetrievedNode[] = [];
     const visited = new Set<string>();
@@ -106,7 +116,7 @@ export class Navigator {
     // =========================================================
     // PHASE 1: VECTOR BATCH RECONNAISSANCE
     // =========================================================
-    console.log(`\n🔍 [Phase 1] Vector Neighborhood Scan`);
+    log(`🔍 [Phase 1] Vector Neighborhood Scan`, 'vector');
     const seeds = await vectorStore.search(request.query, 5);
     const validSeeds = seeds.filter(s => s.score > 0.25);
 
@@ -116,11 +126,11 @@ export class Navigator {
       try {
         const decision = await this.assessVectorCandidates.run(
           { query: request.query, neighborhoods: neighborhoodText },
-          { maxTokens: 1024 }
+          { maxTokens: 2048 }
         );
         const targetIds = decision.relevantNodeIds;
 
-        console.log(`   Scout selected ${targetIds.length} nodes from vectors.`);
+        log(`   Scout selected ${targetIds.length} nodes from vectors.`, 'vector');
 
         for (const id of targetIds) {
           if (visited.has(id)) continue;
@@ -131,7 +141,7 @@ export class Navigator {
 
             // Document or Fragment: Grab content directly
             if (hasContent(node)) {
-              console.log(`      💎 Captured ${node.type}: "${node.title.slice(0, 50)}..."`);
+              log(`   💎 Captured ${node.type}: "${node.title.slice(0, 50)}..."`, 'vector');
               const resolved = await this.resolveWithFragments(node, request.query, request.resolution || 'L2', request.treeId);
               for (const r of resolved) {
                 r.source = 'vector';
@@ -141,7 +151,7 @@ export class Navigator {
               // Folder: Queue for drilling
               visited.delete(id);
               candidates.add(id);
-              console.log(`      📂 Queueing Folder: "${node.title.slice(0, 50)}..."`);
+              log(`   📂 Queueing Folder: "${node.title.slice(0, 50)}..."`, 'vector');
             }
           }
         }
@@ -150,10 +160,12 @@ export class Navigator {
       }
     }
 
+    checkAbort();
+
     // =========================================================
     // PHASE 2: GLOBAL MAP SCAN
     // =========================================================
-    console.log(`\n🔍 [Phase 2] Global Map Scan`);
+    log(`🔍 [Phase 2] Global Map Scan`, 'map');
     const fullTreeMap = await treeStore.generateTreeMap(request.treeId);
 
     const CHUNK_SIZE = this.contextWindow;
@@ -161,13 +173,14 @@ export class Navigator {
     const mapChunks = this.chunkText(fullTreeMap, CHUNK_SIZE, OVERLAP);
 
     if (mapChunks.length > 1) {
-      console.log(`   Map too large (${fullTreeMap.length} chars). Split into ${mapChunks.length} chunks.`);
+      log(`   Map too large (${fullTreeMap.length} chars). Split into ${mapChunks.length} chunks.`, 'map');
     }
 
     // Serialize map scan — each chunk requires an LLM call, and local LLMs
     // (MLX/Ollama) cannot handle concurrent requests without context thrashing.
     const allTargets: string[] = [];
     for (let index = 0; index < mapChunks.length; index++) {
+      checkAbort();
       const chunk = mapChunks[index];
       try {
         const partialContext = mapChunks.length > 1
@@ -179,7 +192,7 @@ export class Navigator {
             query: request.query,
             treeMap: `[Map Segment ${partialContext}]\n${chunk}`
           },
-          { maxTokens: 1024 }
+          { maxTokens: 2048 }
         );
         allTargets.push(...scan.targetIds);
       } catch (e: any) {
@@ -187,20 +200,23 @@ export class Navigator {
       }
     }
     const uniqueTargets = [...new Set(allTargets)];
-    console.log(`   Strategist identified ${uniqueTargets.length} targets from map scan.`);
+    log(`   Strategist identified ${uniqueTargets.length} targets from map scan.`, 'map');
     uniqueTargets.forEach((id: string) => candidates.add(id));
+
+    checkAbort();
 
     // =========================================================
     // PHASE 3: PRECISION DRILLING
     // =========================================================
-    console.log(`\n🔍 [Phase 3] Investigating ${candidates.size} Candidates`);
+    log(`🔍 [Phase 3] Investigating ${candidates.size} Candidates`, 'drill');
 
     for (const id of candidates) {
+      checkAbort();
       if (visited.has(id)) continue;
       const node = await treeStore.getNode(id);
       if (!node) continue;
 
-      console.log(`   🪂 Dive: ${node.title.slice(0, 50)}...`);
+      log(`   🪂 Dive: ${node.title.slice(0, 50)}...`, 'drill');
 
       await this.drill(
         node,
@@ -213,20 +229,22 @@ export class Navigator {
         0,
         10,
         true,
-        request.treeId
+        request.treeId,
+        onProgress,
+        signal
       );
 
       // Check parent context
       if (node.parentId) {
         const parent = await treeStore.getNode(node.parentId);
         if (parent && !visited.has(parent.id)) {
-          await this.drill(parent, request.query, 1, request.resolution || 'L2', results, visited, 0, 0, 10, false, request.treeId);
+          await this.drill(parent, request.query, 1, request.resolution || 'L2', results, visited, 0, 0, 10, false, request.treeId, onProgress, signal);
         }
       }
     }
 
     const uniqueResults = Array.from(new Map(results.map(item => [item.nodeId, item])).values());
-    console.log(`\n🏁 Exploration Complete. Found ${uniqueResults.length} relevant nodes.`);
+    log(`🏁 Exploration Complete. Found ${uniqueResults.length} relevant nodes.`, 'done');
     return { nodes: uniqueResults, navigationPath: Array.from(visited) };
   }
 
@@ -300,8 +318,17 @@ export class Navigator {
     orientationThreshold: number,
     totalTreeDepth: number,
     forceCheck: boolean = false,
-    treeId?: string
+    treeId?: string,
+    onProgress?: ProgressCallback,
+    signal?: AbortSignal
   ): Promise<void> {
+    if (signal?.aborted) return;
+
+    const log = (msg: string, phase?: string) => {
+      console.log(msg);
+      onProgress?.(msg, phase);
+    };
+
     // Get the correct tree store for KB-aware routing
     const effectiveTreeId = treeId || node.treeId;
     const treeStore = this.getTreeStore(effectiveTreeId);
@@ -317,7 +344,7 @@ export class Navigator {
         r.source = 'map';
         results.push(r);
       }
-      console.log(`      💎 Captured ${node.type}: "${node.title.slice(0, 30)}..."`);
+      log(`   💎 Captured ${node.type}: "${node.title.slice(0, 30)}..."`, 'drill');
     }
 
     const children = await treeStore.getChildren(node.id);
@@ -333,17 +360,17 @@ export class Navigator {
     const depthContext = isOrientation ? "Orientation (Broad Search)" : "Targeting (Specific Search)";
     const parentContext = node.gist || node.title;
 
-    console.log(`   📂 [Scout] Scanning ${children.length} children at "${node.title.slice(0, 30)}..." (${depthContext})`);
+    log(`   📂 [Scout] Scanning ${children.length} children at "${node.title.slice(0, 30)}..." (${depthContext})`, 'drill');
 
     try {
       const decision = await this.assessNeighborhood.run(
         { query, parentContext, childrenList: candidates, depthContext },
-        { maxTokens: 1024 }
+        { maxTokens: 2048 }
       );
       const targetIds = decision.relevantIds;
 
       if (targetIds.length > 0) {
-        console.log(`      👉 Scout picked ${targetIds.length} paths.`);
+        log(`   👉 Scout picked ${targetIds.length} paths.`, 'drill');
 
         for (const targetId of targetIds) {
           const child = children.find(c => c.id === targetId);
@@ -358,19 +385,19 @@ export class Navigator {
                 r.source = 'map';
                 results.push(r);
               }
-              console.log(`      💎 Captured ${child.type}: "${child.title.slice(0, 30)}..."`);
+              log(`   💎 Captured ${child.type}: "${child.title.slice(0, 30)}..."`, 'drill');
             }
           } else {
             // Folder: Recurse
             await this.drill(
               child, query, maxDepth, targetResolution,
               results, visited, depth + 1, orientationThreshold, totalTreeDepth,
-              false, effectiveTreeId
+              false, effectiveTreeId, onProgress, signal
             );
           }
         }
       } else {
-        console.log("      🛑 Dead End. Scout sees no leads.");
+        log(`   🛑 Dead End. Scout sees no leads.`, 'drill');
       }
 
     } catch (e) {
@@ -417,7 +444,7 @@ export class Navigator {
         try {
           const decision = await this.assessNeighborhood.run(
             { query, parentContext: node.gist || node.title, childrenList: candidates, depthContext: 'Targeting (Specific Search)' },
-            { maxTokens: 1024 }
+            { maxTokens: 2048 }
           );
           const selectedIds = decision.relevantIds.slice(0, 3);
           const results: RetrievedNode[] = [];

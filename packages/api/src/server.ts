@@ -268,9 +268,15 @@ app.post('/api/chat/stream', async (req, res) => {
   res.flushHeaders();
 
   const sendEvent = (type: string, data: any) => {
-    res.write(`event: ${type}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (!res.writableEnded) {
+      res.write(`event: ${type}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
   };
+
+  // Abort on client disconnect
+  const abortController = new AbortController();
+  res.on('close', () => { if (!res.writableFinished) abortController.abort(); });
 
   try {
     await fraktag.chat(
@@ -279,6 +285,9 @@ app.post('/api/chat/stream', async (req, res) => {
         treeIds,
         (event) => {
           switch (event.type) {
+            case 'thinking':
+              sendEvent('thinking', event.data);
+              break;
             case 'source':
               sendEvent('source', event.data);
               break;
@@ -292,10 +301,15 @@ app.post('/api/chat/stream', async (req, res) => {
               sendEvent('error', { message: event.data });
               break;
           }
-        }
+        },
+        abortController.signal
     );
   } catch (e: any) {
-    sendEvent('error', { message: e.message || 'Unknown error' });
+    if (e.name === 'AbortError') {
+      console.log('🛑 Chat stream aborted by client');
+    } else {
+      sendEvent('error', { message: e.message || 'Unknown error' });
+    }
   } finally {
     res.end();
   }
@@ -807,9 +821,15 @@ app.post('/api/ask/stream', async (req, res) => {
 
   // Helper to send SSE events
   const sendEvent = (event: string, data: any) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (!res.writableEnded) {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
   };
+
+  // Abort on client disconnect
+  const abortController = new AbortController();
+  res.on('close', () => { if (!res.writableFinished) abortController.abort(); });
 
   try {
     await fraktag.askStream(
@@ -817,6 +837,9 @@ app.post('/api/ask/stream', async (req, res) => {
       (treeId as string) || 'notes',
       (event) => {
         switch (event.type) {
+          case 'thinking':
+            sendEvent('thinking', event.data);
+            break;
           case 'source':
             sendEvent('source', event.data);
             break;
@@ -830,10 +853,15 @@ app.post('/api/ask/stream', async (req, res) => {
             sendEvent('error', { message: event.data });
             break;
         }
-      }
+      },
+      abortController.signal
     );
   } catch (e: any) {
-    sendEvent('error', { message: e.message || 'Unknown error' });
+    if (e.name === 'AbortError') {
+      console.log('🛑 Ask stream aborted by client');
+    } else {
+      sendEvent('error', { message: e.message || 'Unknown error' });
+    }
   } finally {
     res.end();
   }

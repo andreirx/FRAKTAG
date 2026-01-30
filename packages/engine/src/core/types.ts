@@ -318,6 +318,11 @@ export interface IngestResult {
   }[];
 }
 
+// ============ PROGRESS CALLBACK ============
+
+/** Callback for streaming progress messages during retrieval */
+export type ProgressCallback = (message: string, phase?: string) => void;
+
 // ============ API TYPES ============
 
 export interface RetrieveRequest {
