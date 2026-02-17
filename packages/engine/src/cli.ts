@@ -95,6 +95,8 @@ KNOWLEDGE BASE:
   kb list            List all loaded knowledge bases
   kb create <path>   Create a new knowledge base
                      --name "Name" --principle "Organizing principle"
+  kb import <json>   Create KB from JSON definition file
+                     JSON: { name, organizingPrinciple, seedFolders: [...] }
   kb add-tree <kbId> <treeId>
                      Add a new tree to a knowledge base
   kb info <kbId>     Show knowledge base details
@@ -126,8 +128,10 @@ CONTENT OPERATIONS:
 
 INGESTION:
   analyze <file>     Analyze file for split points (no ingestion)
-  ingest <file> <treeId> <folderId> [title]
+  ingest <file> <treeId> <folderId>
                      Ingest file into specific folder
+                     --title "..." to set custom title
+                     --gist "..." to set custom gist (auto-generated if not provided)
 
 RETRIEVAL:
   retrieve <query> [treeId]
@@ -330,6 +334,67 @@ HUMAN EXAMPLES:
               console.log(`   Principle: ${kb.organizingPrinciple}`);
               console.log(`   Trees: ${trees.map(t => t.id).join(', ') || 'none'}`);
             }
+            break;
+          }
+
+          case 'import': {
+            const jsonFile = ARG2;
+            if (!jsonFile) {
+              output(
+                { error: 'JSON file required', usage: 'fkt kb import <json-file>' },
+                'Usage: fkt kb import <json-file>\n\nThe JSON file should contain:\n{\n  "name": "KB Name",\n  "organizingPrinciple": "...",\n  "seedFolders": [\n    { "title": "Folder 1", "gist": "...", "children": [...] }\n  ]\n}'
+              );
+              process.exit(1);
+            }
+
+            // Read and parse the JSON file
+            const absPath = resolve(jsonFile);
+            log(`📄 Reading: ${absPath}`);
+
+            const jsonContent = await readFile(absPath, 'utf-8');
+            const kbDef = JSON.parse(jsonContent);
+
+            if (!kbDef.name || !kbDef.organizingPrinciple) {
+              output(
+                { error: 'JSON must have "name" and "organizingPrinciple"' },
+                '❌ JSON must have "name" and "organizingPrinciple" fields'
+              );
+              process.exit(1);
+            }
+
+            log(`📦 Creating KB: ${kbDef.name}`);
+
+            // Create the KB with seedFolders from JSON
+            const newKb = await fraktag.createKnowledgeBaseInStorage({
+              name: kbDef.name,
+              organizingPrinciple: kbDef.organizingPrinciple,
+              seedFolders: kbDef.seedFolders || [],
+              dogma: kbDef.dogma,
+            });
+
+            // Create the tree (this uses seedFolders automatically)
+            const tree = await newKb.createTree();
+
+            // Count folders recursively
+            const countFolders = (folders: any[]): number => {
+              let count = folders.length;
+              for (const f of folders) {
+                if (f.children) count += countFolders(f.children);
+              }
+              return count;
+            };
+            const folderCount = countFolders(kbDef.seedFolders || []);
+
+            output(
+              {
+                success: true,
+                kbId: newKb.id,
+                kbPath: newKb.path,
+                treeId: tree.id,
+                folderCount
+              },
+              `✅ Created KB "${newKb.name}"\n   ID: ${newKb.id}\n   Path: ${newKb.path}\n   Tree: ${tree.id}\n   Folders: ${folderCount}`
+            );
             break;
           }
 
@@ -601,8 +666,8 @@ HUMAN EXAMPLES:
       case 'ingest': {
         if (!ARG1 || !ARG2 || !ARG3) {
           output(
-            { error: 'Missing arguments', usage: 'fkt ingest <file> <treeId> <folderId> [--title "..."]' },
-            'Usage: fkt ingest <file> <treeId> <folderId> [--title "..."]\n\nRun "fkt folders <treeId>" to see folder IDs.'
+            { error: 'Missing arguments', usage: 'fkt ingest <file> <treeId> <folderId> [--title "..."] [--gist "..."]' },
+            'Usage: fkt ingest <file> <treeId> <folderId> [--title "..."] [--gist "..."]\n\nRun "fkt folders <treeId>" to see folder IDs.'
           );
           process.exit(1);
         }
@@ -611,6 +676,7 @@ HUMAN EXAMPLES:
         const treeId = ARG2;
         const folderId = ARG3;
         const customTitle = options.title || ARG4;
+        const customGist = options.gist;
 
         const absPath = resolve(filePath);
         log(`📥 Ingesting: ${absPath}`);
@@ -626,9 +692,10 @@ HUMAN EXAMPLES:
         const title = customTitle || await fraktag.generateTitle(text, treeId);
         log(`   Title: ${title}`);
 
-        const doc = await fraktag.ingestDocument(text, treeId, folderId, title);
+        // Pass gist to ingestDocument - if not provided, it will be auto-generated
+        const doc = await fraktag.ingestDocument(text, treeId, folderId, title, customGist);
 
-        output(doc, `✅ Ingested: ${doc.title}\n   ID: ${doc.id}\n   Path: ${doc.path}`);
+        output(doc, `✅ Ingested: ${doc.title}\n   ID: ${doc.id}\n   Path: ${doc.path}\n   Gist: ${doc.gist}`);
         break;
       }
 

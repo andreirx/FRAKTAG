@@ -39,6 +39,7 @@ export interface FraktagConfig {
   trees: TreeConfig[];                  // Legacy: inline tree definitions
   knowledgeBases?: KnowledgeBaseRef[];  // New: portable KB references
   ingestion: IngestionConfig;
+  chunking?: ChunkingConfig;            // Chunking strategies for nodes and embeddings
 }
 
 export interface LLMConfig {
@@ -94,6 +95,118 @@ export interface IngestionConfig {
   splitThreshold: number;
   maxDepth: number;
   chunkOverlap: number;
+}
+
+// ============ CHUNKING CONFIGURATION ============
+
+/**
+ * Strategy types for chunking
+ *
+ * Node strategies (for tree structure):
+ * - 'document-structure': Split on markdown headers/sections (default)
+ * - 'page': Split on PDF page boundaries
+ * - 'ai-assisted': Use LLM to detect semantic boundaries
+ *
+ * Embedding strategies (for vector retrieval):
+ * - 'recursive': Recursive character splitting (recommended, 69% accuracy)
+ * - 'fixed-512': Fixed 512 tokens with 50 token overlap (67% accuracy)
+ * - 'fixed-1024': Fixed 1024 tokens with 100 token overlap
+ * - 'semantic': Embedding-based boundary detection (54% accuracy - fragile)
+ * - 'proposition': LLM-decomposed atomic propositions (51% accuracy)
+ */
+export type NodeChunkingStrategy = 'document-structure' | 'page' | 'toc' | 'ai-assisted';
+export type EmbeddingChunkingStrategy = 'recursive' | 'fixed-512' | 'fixed-1024' | 'semantic' | 'proposition';
+
+/**
+ * Configuration for chunking strategies
+ */
+export interface ChunkingConfig {
+  /**
+   * Strategy for creating tree nodes (Documents/Fragments)
+   * Optimized for human navigation and semantic boundaries
+   * Default: 'document-structure'
+   */
+  nodeStrategy: NodeChunkingStrategy;
+
+  /**
+   * Strategy for creating embedding chunks
+   * Optimized for vector retrieval quality
+   * Default: 'recursive' (best overall at 69% accuracy)
+   */
+  embeddingStrategy: EmbeddingChunkingStrategy;
+
+  /**
+   * Whether to create multiple embedding chunks per tree node
+   * When true: each Document/Fragment can have many embedding entries
+   * When false: one embedding per node (legacy behavior)
+   * Default: true
+   */
+  multiChunkEmbeddings: boolean;
+
+  /**
+   * Target tokens per embedding chunk
+   * Default: 512 (article's tested value)
+   */
+  embeddingChunkTokens?: number;
+
+  /**
+   * Overlap tokens between consecutive embedding chunks
+   * Default: 50 (article's tested value)
+   */
+  embeddingOverlapTokens?: number;
+
+  /**
+   * Minimum chunk size (discard smaller chunks)
+   * Default: 50 tokens
+   */
+  minChunkTokens?: number;
+}
+
+/**
+ * Default chunking configuration based on RAG benchmark results
+ */
+export const DEFAULT_CHUNKING_CONFIG: ChunkingConfig = {
+  nodeStrategy: 'document-structure',
+  embeddingStrategy: 'recursive',
+  multiChunkEmbeddings: true,
+  embeddingChunkTokens: 512,
+  embeddingOverlapTokens: 50,
+  minChunkTokens: 50,
+};
+
+/**
+ * An embedding chunk belonging to a tree node
+ *
+ * When multiChunkEmbeddings is enabled, each Document/Fragment
+ * can have multiple embedding chunks for better retrieval coverage.
+ */
+export interface EmbeddingChunk {
+  /** Unique chunk ID: {nodeId}:chunk:{index} */
+  id: string;
+
+  /** Parent tree node ID */
+  nodeId: string;
+
+  /** Tree ID (for efficient KB routing) */
+  treeId: string;
+
+  /** The chunk text that was embedded */
+  text: string;
+
+  /** Start position in the node's full content */
+  startOffset: number;
+
+  /** End position in the node's full content */
+  endOffset: number;
+
+  /** Index of this chunk within the node (0-based) */
+  chunkIndex: number;
+
+  /** Total number of chunks for this node */
+  totalChunks: number;
+
+  /** Strategy used to create this chunk */
+  strategy: EmbeddingChunkingStrategy;
 }
 
 export interface PromptSet {

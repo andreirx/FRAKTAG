@@ -117,7 +117,10 @@ export class Navigator {
     // PHASE 1: VECTOR BATCH RECONNAISSANCE
     // =========================================================
     log(`🔍 [Phase 1] Vector Neighborhood Scan`, 'vector');
-    const seeds = await vectorStore.search(request.query, 5);
+    // Use searchNodes for multi-chunk aware search with node-level aggregation
+    const nodeResults = await vectorStore.searchNodes(request.query, 5);
+    // Convert to legacy format for buildNeighborhoodContext
+    const seeds = nodeResults.map(r => ({ id: r.nodeId, score: r.score }));
     const validSeeds = seeds.filter(s => s.score > 0.25);
 
     if (validSeeds.length > 0) {

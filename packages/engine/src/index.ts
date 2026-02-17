@@ -123,7 +123,8 @@ export class Fraktag {
       this.basicLlm,
       this.smartLlm,
       config.ingestion,
-      prompts
+      prompts,
+      config.chunking  // Pass chunking config for multi-chunk embeddings
     );
 
     this.navigator = new Navigator(
@@ -571,7 +572,7 @@ export class Fraktag {
       if (node) {
         const vectorStore = this.getVectorStoreForTree(node.treeId);
         await vectorStore.load(node.treeId);
-        await vectorStore.remove(nodeId);
+        await vectorStore.removeByNodeId(nodeId);
         await vectorStore.add(nodeId, `${node.title}\n${node.gist}\n${newPayload.slice(0, 500)}`);
         await vectorStore.save(node.treeId);
         console.log(`📊 Updated vector index for node ${nodeId}`);
@@ -815,8 +816,8 @@ export class Fraktag {
 
     await treeStore.saveNode(node);
 
-    // Update vector index with new title/gist
-    await this.vectorStore.remove(nodeId);
+    // Update vector index with new title/gist (removeByNodeId handles multi-chunk cleanup)
+    await this.vectorStore.removeByNodeId(nodeId);
     let indexText = `${node.title}\n${node.gist}`;
     if (hasContent(node)) {
       const content = await contentStore.get(node.contentId);
@@ -870,9 +871,9 @@ export class Fraktag {
     await treeStore.deleteNode(nodeId);
     console.log(`🗑️ Deleted ${nodesToDelete.length} node(s) from tree`);
 
-    // Remove from vector index
+    // Remove from vector index (removeByNodeId handles multi-chunk cleanup)
     for (const n of nodesToDelete) {
-      await this.vectorStore.remove(n.id);
+      await this.vectorStore.removeByNodeId(n.id);
     }
     await this.vectorStore.save(treeId);
     console.log(`🗑️ Removed ${nodesToDelete.length} vector entries`);
@@ -2008,5 +2009,5 @@ export class Fraktag {
 
 // Export all types
 export * from './core/types.js';
-export { DiscoveredKB } from './core/KnowledgeBase.js';
-export { ConversationSession, ConversationTurn, ConversationReference, TurnData } from './core/ConversationManager.js';
+export type { DiscoveredKB } from './core/KnowledgeBase.js';
+export type { ConversationSession, ConversationTurn, ConversationReference, TurnData } from './core/ConversationManager.js';

@@ -27,6 +27,7 @@ Read the relevant doc before working in an unfamiliar area:
 - `docs/ingestion-workflow.md` — Human-supervised vs direct (agent) ingestion
 - `docs/retrieval-pipeline.md` — Navigator phases, budget control, MCP raw tools
 - `docs/lessons-learned.md` — Past bugs and gotchas (read to avoid repeating them)
+- `docs/lessons-learned-details.md` — Deep dives - use it when planning or major refactors
 
 ## Build & Verify
 
@@ -50,6 +51,8 @@ Config: copy `packages/engine/data/config.OpenAIexample.json` or `config.OLLAMAe
 - UI page: `packages/ui/src/pages/KnowledgeTree.tsx`
 
 ## Coding Rules
+
+**Treat user feedback as HARD DATA.** never assume your code is correct even if it looks correct. Maybe there's something else affecting it.
 
 ### Strict Node Types — NEVER violate these
 - `folder | document | fragment` — three types, no exceptions.
@@ -84,3 +87,21 @@ Events: `thinking`, `source`, `chunk`, `done`, `error`.
 - `llm.contextWindow`: Max chars for retrieval context budget (default 25000)
 - `llm.numCtx`: Ollama context window in tokens. Rule: `contextWindow < numCtx * 3`
 - `embedding.adapter`: `"openai" | "ollama"`
+
+
+# System Intent (WHY)
+This repository contains a high-reliability, safety-critical product. The objective is rock-solid execution, not a Minimum Viable Product. Structural decisions must prioritize long-term maintainability, hardware-independence, and off-target testability. 
+
+# Clean Architecture Directives (UNIVERSAL RULES)
+1. **The Dependency Rule:** Source code dependencies must point strictly inward toward `core/`. Elements in `core/` must never import or reference entities from `adapters/` or `infrastructure/`.
+2. **Boundary Enforcement:** Data crossing architectural boundaries must utilize simple Data Transfer Objects (DTOs). Do not pass framework-specific objects, hardware structs, or database rows across boundaries.
+3. **Volatility Isolation:** Hardware, databases, and frameworks are volatile external details. Isolate them behind strict abstraction layers (e.g., HAL, OSAL, Gateways).
+4. **Architectural Decisions:** When encountering an architectural fork, halt and ask for clarification. Do not unilaterally select an architecture pattern. Provide evidence and explain the underlying mechanics of available options to facilitate a decision.
+
+# Progressive Disclosure Context
+Do not assume domain specifics. Read the relevant files din docs before modifying their associated domains (and update them when the user input justifies it)
+* architecture decisions: Historical context and existing structural boundaries.
+* hardware abstractions: Protocols for the HAL and off-target simulation requirements.
+* database schema: Persistence layer rules and Gateway interface implementations.
+* testing strategy: Rules for the Test API and decoupled verification.
+

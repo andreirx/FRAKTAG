@@ -14,6 +14,8 @@ import {
   SplitAnalysis,
   DetectedSplit,
   ContentEditMode,
+  ChunkingConfig,
+  DEFAULT_CHUNKING_CONFIG,
   hasContent
 } from './types.js';
 import { VectorStore } from './VectorStore.js';
@@ -21,6 +23,7 @@ import { GenerateGistNugget } from '../nuggets/GenerateGist.js';
 import { GenerateTitleNugget } from '../nuggets/GenerateTitle.js';
 import { AiSplitNugget } from '../nuggets/AiSplit.js';
 import { ProposePlacementNugget } from '../nuggets/ProposePlacement.js';
+import { type IChunkingStrategy, type Chunk, createChunker } from '../adapters/chunking/index.js';
 
 /**
  * Store resolver interface for KB-aware operations
@@ -37,6 +40,8 @@ export class Fractalizer {
   private titleNugget: GenerateTitleNugget;
   private aiSplitNugget: AiSplitNugget;
   private placementNugget: ProposePlacementNugget;
+  private chunkingConfig: ChunkingConfig;
+  private embeddingChunker: IChunkingStrategy;
 
   constructor(
     private contentStore: ContentStore,
@@ -45,12 +50,17 @@ export class Fractalizer {
     private basicLlm: ILLMAdapter,
     private smartLlm: ILLMAdapter,
     private config: IngestionConfig,
-    private prompts: PromptSet
+    private prompts: PromptSet,
+    chunkingConfig?: ChunkingConfig
   ) {
     this.gistNugget = new GenerateGistNugget(basicLlm, prompts.generateGist);
     this.titleNugget = new GenerateTitleNugget(basicLlm, prompts.generateTitle || prompts.generateGist);
     this.aiSplitNugget = new AiSplitNugget(smartLlm);
     this.placementNugget = new ProposePlacementNugget(smartLlm, prompts.proposePlacement);
+
+    // Initialize chunking
+    this.chunkingConfig = chunkingConfig ?? DEFAULT_CHUNKING_CONFIG;
+    this.embeddingChunker = createChunker(this.chunkingConfig.embeddingStrategy);
   }
 
   /**
@@ -89,6 +99,61 @@ export class Fractalizer {
       return this.storeResolver.getVectorStoreForTree(treeId);
     }
     return this.vectorStore;
+  }
+
+  // ============ EMBEDDING INDEXING ============
+
+  /**
+   * Index content for retrieval using the configured chunking strategy
+   *
+   * When multiChunkEmbeddings is enabled, splits content into overlapping chunks
+   * for better retrieval coverage. Each chunk is prefixed with title+gist for
+   * metadata searchability.
+   *
+   * @param nodeId - The tree node ID
+   * @param treeId - The tree ID (for store resolution)
+   * @param title - Document/fragment title
+   * @param gist - Document/fragment gist
+   * @param content - Full content to index
+   */
+  private async indexForRetrieval(
+    nodeId: string,
+    treeId: string,
+    title: string,
+    gist: string,
+    content: string
+  ): Promise<void> {
+    const vectorStore = this.getVectorStore(treeId);
+
+    if (this.chunkingConfig.multiChunkEmbeddings && content.length > 500) {
+      // Multi-chunk mode: split content and create multiple embeddings
+      const chunks = await this.embeddingChunker.chunk(content, {
+        maxTokens: this.chunkingConfig.embeddingChunkTokens,
+        overlapTokens: this.chunkingConfig.embeddingOverlapTokens,
+        minChunkTokens: this.chunkingConfig.minChunkTokens,
+      });
+
+      if (chunks.length > 0) {
+        // Enrich chunks with title+gist for metadata searchability
+        const enrichedChunks: Chunk[] = chunks.map((chunk, i) => ({
+          ...chunk,
+          // Prepend metadata to each chunk so title/gist keywords are searchable
+          text: i === 0
+            ? `${title}\n${gist}\n\n${chunk.text}`
+            : `[${title}]\n${chunk.text}`,
+        }));
+
+        await vectorStore.addChunks(nodeId, enrichedChunks);
+      } else {
+        // Fallback if chunking produced no results
+        await vectorStore.add(nodeId, `${title}\n${gist}\n${content.slice(0, 500)}`);
+      }
+    } else {
+      // Legacy single-embedding mode (for short content or when disabled)
+      await vectorStore.add(nodeId, `${title}\n${gist}\n${content.slice(0, 500)}`);
+    }
+
+    await vectorStore.save(treeId);
   }
 
   // ============ SPLIT ANALYSIS (Programmatic - No AI) ============
@@ -470,10 +535,8 @@ export class Fractalizer {
       editMode
     );
 
-    // 4. Index for retrieval (using KB-aware vector store)
-    const vectorStore = this.getVectorStore(treeId);
-    await vectorStore.add(doc.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
-    await vectorStore.save(treeId);
+    // 4. Index for retrieval (using chunking strategy)
+    await this.indexForRetrieval(doc.id, treeId, title, finalGist, content);
 
     return doc;
   }
@@ -492,7 +555,6 @@ export class Fractalizer {
     // Get the correct stores for this tree (KB-aware routing)
     const contentStore = this.getContentStore(treeId);
     const treeStore = this.getTreeStore(treeId);
-    const vectorStore = this.getVectorStore(treeId);
 
     // 1. Create content atom
     const contentAtom = await contentStore.create({
@@ -518,9 +580,8 @@ export class Fractalizer {
       editMode
     );
 
-    // 4. Index for retrieval (using KB-aware vector store)
-    await vectorStore.add(fragment.id, `${title}\n${finalGist}\n${content.slice(0, 500)}`);
-    await vectorStore.save(treeId);
+    // 4. Index for retrieval (using chunking strategy)
+    await this.indexForRetrieval(fragment.id, treeId, title, finalGist, content);
 
     return fragment;
   }

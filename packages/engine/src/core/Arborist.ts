@@ -97,7 +97,7 @@ export class Arborist {
         const nodeName = node?.title || nodeId;
 
         await this.treeStore.deleteNode(nodeId);
-        await this.vectorStore.remove(nodeId);
+        await this.vectorStore.removeByNodeId(nodeId);
         await this.vectorStore.save(treeId);
 
         return `Deleted node "${nodeName}"`;
@@ -111,7 +111,7 @@ export class Arborist {
         node.title = newName;
         node.updatedAt = new Date().toISOString();
 
-        await this.vectorStore.remove(nodeId);
+        await this.vectorStore.removeByNodeId(nodeId);
         await this.vectorStore.add(nodeId, `Title: ${newName}\nGist: ${node.gist}`);
 
         await this.treeStore.saveNode(node);

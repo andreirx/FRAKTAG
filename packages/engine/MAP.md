@@ -466,6 +466,68 @@ interface IFileParser {
 - `TextParser` - Plain text, markdown, code files
 - `PdfParser` - PDF extraction with page markers
 
+### Chunking Adapters
+
+Pluggable text chunking strategies for both tree node creation and embedding generation. Based on RAG benchmark research showing chunking strategy significantly impacts retrieval quality.
+
+**Interface (`IChunkingStrategy`):**
+```typescript
+interface Chunk {
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface IChunkingStrategy {
+  readonly name: string;
+  chunk(text: string, options?: ChunkingOptions): Promise<Chunk[]>;
+  estimateTokens(text: string): number;
+}
+```
+
+**Options:**
+```typescript
+interface ChunkingOptions {
+  maxTokens?: number;      // Target chunk size (default: 512)
+  overlapTokens?: number;  // Overlap between chunks (default: 50)
+  minChunkTokens?: number; // Discard smaller chunks (default: 50)
+  // Or use character-based: maxChars, overlapChars, minChunkChars
+}
+```
+
+**Implementations (by benchmark accuracy):**
+
+| Strategy | Accuracy | Use Case |
+|----------|----------|----------|
+| `RecursiveCharacterChunker` | 69% | **Default for embeddings** - splits at paragraph → sentence → word |
+| `FixedSize512Chunker` | 67% | Simple baseline, 512 tokens with 50 overlap |
+| `FixedSize1024Chunker` | 61% | Better document-level F1, larger context |
+| `DocumentStructureChunker` | N/A | **For tree nodes** - splits on headers, pages, HRs |
+
+**Factory:**
+```typescript
+import { createChunker, createDefaultChunker } from './adapters/chunking';
+
+const chunker = createChunker('recursive');  // or 'fixed-512', 'fixed-1024'
+const defaultChunker = createDefaultChunker();  // RecursiveCharacterChunker
+```
+
+**Configuration (`ChunkingConfig`):**
+```typescript
+interface ChunkingConfig {
+  nodeStrategy: 'document-structure' | 'page' | 'toc' | 'ai-assisted';
+  embeddingStrategy: 'recursive' | 'fixed-512' | 'fixed-1024' | 'semantic' | 'proposition';
+  multiChunkEmbeddings: boolean;  // Multiple embedding chunks per tree node
+  embeddingChunkTokens?: number;  // Default: 512
+  embeddingOverlapTokens?: number;  // Default: 50
+}
+```
+
+**Dual-Strategy Workflow:**
+- **Node strategy** (document-structure): Preserves semantic boundaries for human navigation
+- **Embedding strategy** (recursive): Creates overlapping chunks for better retrieval
+
 ## Data Flow
 
 ### Ingestion Flow

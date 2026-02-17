@@ -117,8 +117,9 @@ export default function KnowledgeTree() {
         try {
             const url = includeConversations ? '/api/trees' : '/api/trees?type=knowledge';
             const treeRes = await axios.get(url);
-            setTrees(treeRes.data);
-            return treeRes.data;
+            const data = Array.isArray(treeRes.data) ? treeRes.data : [];
+            setTrees(data);
+            return data;
         } catch (e) {
             console.error("Failed to load trees", e);
             return [];
@@ -200,7 +201,7 @@ export default function KnowledgeTree() {
     const reloadTrees = async () => {
         try {
             const treeRes = await axios.get('/api/trees');
-            setTrees(treeRes.data);
+            setTrees(Array.isArray(treeRes.data) ? treeRes.data : []);
             // Reload current tree structure if active
             if (activeTreeId) {
                 loadTreeStructure(activeTreeId);
