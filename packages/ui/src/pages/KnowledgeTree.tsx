@@ -739,7 +739,7 @@ export default function KnowledgeTree() {
                                                 {node.type === 'fragment' && <Puzzle className="w-4 h-4 text-amber-500 shrink-0" />}
                                                 <div className="truncate min-w-0">
                                                     <div className="font-medium truncate">{node.title}</div>
-                                                    <div className="text-[10px] text-zinc-400 truncate">{node.gist}</div>
+                                                    <div className="text-xs text-zinc-500 truncate">{node.gist}</div>
                                                 </div>
                                             </div>
                                         </div>
@@ -846,7 +846,7 @@ export default function KnowledgeTree() {
                                 {/* Gist Card (The "Readme") - Always editable */}
                                 <div className="bg-zinc-50 rounded-xl border p-6">
                                     <div className="flex items-center justify-between mb-3">
-                                        <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+                                        <h3 className="text-sm font-semibold text-zinc-600">
                                             Summary
                                         </h3>
                                         {selectedNode.contentId && contentPayload && contentPayload.trim().length > 10 && (
@@ -869,7 +869,7 @@ export default function KnowledgeTree() {
                                     <textarea
                                         value={editGist}
                                         onChange={(e) => handleGistChange(e.target.value)}
-                                        className="w-full min-h-[120px] p-3 text-sm border border-transparent hover:border-zinc-200 focus:border-purple-300 rounded-lg resize-y bg-white"
+                                        className="w-full min-h-[140px] p-4 text-base leading-relaxed border border-transparent hover:border-zinc-200 focus:border-purple-300 rounded-lg resize-y bg-white text-zinc-700"
                                         placeholder="Summary/gist..."
                                     />
                                 </div>
@@ -941,7 +941,7 @@ export default function KnowledgeTree() {
                                                 />
                                             ) : (
                                                 // Read-only content - rendered markdown
-                                                <div className="p-6 overflow-auto">
+                                                <div className="p-6 overflow-auto select-text">
                                                     <MarkdownRenderer content={contentPayload || ""} />
                                                 </div>
                                             )}
