@@ -100,6 +100,9 @@ KNOWLEDGE BASE:
   kb add-tree <kbId> <treeId>
                      Add a new tree to a knowledge base
   kb info <kbId>     Show knowledge base details
+  kb export-md <kbId>
+                     Export full KB to markdown folder tree
+                     --out "./exports" --force
 
 TREE MANAGEMENT:
   setup              Initialize trees from config (with seed folders)
@@ -264,6 +267,36 @@ HUMAN EXAMPLES:
                 console.log(`     Path: ${kb.path}`);
                 console.log(`     Principle: ${kb.organizingPrinciple.slice(0, 60)}...`);
                 console.log('');
+              }
+            }
+            break;
+          }
+
+          case 'export-md': {
+            const kbId = ARG2;
+            const outDir = options.out || './exports';
+            const force = flags.force;
+
+            if (!kbId) {
+              output(
+                { error: 'KB ID required', usage: 'fkt kb export-md <kbId> [--out ./exports] [--force]' },
+                'Usage: fkt kb export-md <kbId> [--out ./exports] [--force]'
+              );
+              process.exit(1);
+            }
+
+            const result = await fraktag.exportKnowledgeBaseToMarkdown(kbId, { outDir, force });
+
+            if (OUTPUT_JSON) {
+              output(result);
+            } else {
+              console.log(`✅ Exported KB "${result.kbName}" (${result.kbId})`);
+              console.log(`   Output: ${result.outPath}`);
+              console.log(`   Trees: ${result.trees.length}`);
+              for (const t of result.trees) {
+                console.log(`   - ${t.treeName} (${t.treeId})`);
+                console.log(`     Path: ${t.outPath}`);
+                console.log(`     Nodes: ${t.nodeCount} (folders: ${t.folderCount}, documents: ${t.documentCount})`);
               }
             }
             break;

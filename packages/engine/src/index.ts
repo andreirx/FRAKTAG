@@ -49,6 +49,7 @@ import { Arborist, TreeOperation } from './core/Arborist.js';
 import { FileProcessor } from './utils/FileProcessor.js';
 import { KnowledgeBase, KnowledgeBaseManager, DiscoveredKB } from './core/KnowledgeBase.js';
 import { ConversationManager, TurnData, ConversationSession, ConversationTurn, ConversationReference } from './core/ConversationManager.js';
+import { KnowledgeBaseMarkdownExporter, ExportKnowledgeBaseToMarkdownResult } from './core/KnowledgeBaseMarkdownExporter.js';
 
 /**
  * Fraktag Engine - Strict Taxonomy Knowledge Management
@@ -1390,6 +1391,28 @@ export class Fraktag {
    */
   getKnowledgeBase(id: string): KnowledgeBase | undefined {
     return this.kbManager?.get(id);
+  }
+
+  /**
+   * Export a full knowledge base to a tree-mirrored markdown filesystem layout.
+   *
+   * Output contract:
+   * - `<out>/<kbName>__<kbId>/`
+   * - Per-tree: `<treeName>__<treeId>/`
+   * - Per-folder: `MAP.md`
+   * - Per-document: `<title>.md` and `<title>.MAP.md`
+   */
+  async exportKnowledgeBaseToMarkdown(
+    kbId: string,
+    options: { outDir: string; force?: boolean }
+  ): Promise<ExportKnowledgeBaseToMarkdownResult> {
+    const kb = this.kbManager?.get(kbId);
+    if (!kb) {
+      throw new Error(`Knowledge base not found: ${kbId}`);
+    }
+
+    const exporter = new KnowledgeBaseMarkdownExporter();
+    return await exporter.exportKnowledgeBase(kb, options);
   }
 
   /**

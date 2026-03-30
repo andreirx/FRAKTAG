@@ -17,6 +17,7 @@ src/
 │   ├── Navigator.ts      # Retrieval and graph traversal
 │   ├── Arborist.ts       # Tree maintenance and auditing
 │   ├── KnowledgeBase.ts  # Portable KB management
+│   ├── KnowledgeBaseMarkdownExporter.ts # KB -> Markdown tree export
 │   └── ConversationManager.ts  # Conversation memory/log
 ├── adapters/             # Infrastructure adapters (Hexagonal Architecture)
 │   ├── llm/              # Language model adapters
@@ -631,13 +632,14 @@ Operations isolated to correct context
 
 ```bash
 fkt setup                        # Initialize trees from config
-fkt ingest-file <path>           # Ingest single file
-fkt ingest-dir <dir>             # Ingest directory
-fkt browse [treeId]              # Print tree structure
-fkt retrieve <query>             # Search for content
-fkt ask <query>                  # RAG with synthesis
-fkt audit [--apply]              # Check tree health
-fkt reset [--prune]              # Clear tree
+fkt kb list                      # List loaded knowledge bases
+fkt kb export-md <kbId>          # Export full KB to markdown folder tree (--out, --force)
+fkt tree [treeId]                # Print visual tree structure
+fkt browse [treeId] [nodeId]     # Browse tree structure
+fkt retrieve <query> [treeId]    # Search for content
+fkt ask <query> [treeId]         # RAG with synthesis
+fkt audit [treeId] [--apply]     # Check tree health
+fkt reset [treeId] [--prune]     # Clear tree
 fkt test-nuggets [name] [--json] # Run nugget diagnostic tests
 ```
 
